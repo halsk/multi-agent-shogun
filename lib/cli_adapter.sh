@@ -494,6 +494,17 @@ get_recommended_model() {
     result=$("$CLI_ADAPTER_PROJECT_ROOT/.venv/bin/python3" -c "
 import yaml, sys
 
+def parse_bloom_range(key):
+    '''parse 'L1-L3' -> [1,2,3], 'L4-L5' -> [4,5], 'L6' -> [6]'''
+    key = key.strip()
+    if '-' in key[1:]:  # e.g. L1-L3
+        parts = key.split('-')
+        start = int(parts[0].lstrip('Ll'))
+        end = int(parts[1].lstrip('Ll'))
+        return list(range(start, end + 1))
+    else:  # e.g. L6
+        return [int(key.lstrip('Ll'))]
+
 try:
     with open('${settings}') as f:
         cfg = yaml.safe_load(f) or {}
@@ -511,6 +522,40 @@ try:
     else:
         allowed_groups = None
 
+    # bloom_model_preference: 定義あり→優先順位ルーティング
+    preference = cfg.get('bloom_model_preference')
+    if preference and isinstance(preference, dict):
+        # 入力bloom_levelに該当するレンジキーを特定
+        matched_list = None
+        for range_key, model_list in preference.items():
+            try:
+                levels = parse_bloom_range(range_key)
+                if bloom in levels:
+                    matched_list = model_list
+                    break
+            except (ValueError, IndexError):
+                continue
+
+        if matched_list and isinstance(matched_list, list):
+            # リスト順にモデルを走査
+            for pref_model in matched_list:
+                spec = tiers.get(pref_model)
+                if not isinstance(spec, dict):
+                    continue
+                mb = spec.get('max_bloom', 6)
+                cg = spec.get('cost_group', 'unknown')
+                # (a) available_cost_groups除外チェック
+                if allowed_groups is not None and cg not in allowed_groups:
+                    continue
+                # (b) capability_tiersのmax_bloom >= bloom_level
+                if isinstance(mb, int) and mb >= bloom:
+                    print(pref_model)
+                    sys.exit(0)
+            # 全滅 → fallback + 警告
+            print('WARNING: All preferred models unavailable for bloom level ' + str(bloom) + ', falling back to cost_priority', file=sys.stderr)
+            # fallthrough to legacy cost_priority logic
+
+    # 従来のcost_priority自動選択（後方互換）
     candidates = []
     all_models = []
     for model, spec in tiers.items():

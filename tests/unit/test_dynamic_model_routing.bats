@@ -285,6 +285,93 @@ capability_tiers:
     cost_group: chatgpt_pro
 YAML
 
+    # bloom_model_preference テスト用: 標準preference定義（4段構成）
+    cat > "${TEST_TMP}/settings_with_preference.yaml" << 'YAML'
+capability_tiers:
+  gpt-5.3-codex-spark:
+    max_bloom: 3
+    cost_group: chatgpt_pro
+  claude-haiku-4-5-20251001:
+    max_bloom: 3
+    cost_group: claude_max
+  gpt-5.3:
+    max_bloom: 5
+    cost_group: chatgpt_pro
+  claude-sonnet-4-6:
+    max_bloom: 5
+    cost_group: claude_max
+  claude-opus-4-6:
+    max_bloom: 6
+    cost_group: claude_max
+bloom_model_preference:
+  L1-L2:
+    - gpt-5.3-codex-spark
+    - claude-haiku-4-5-20251001
+  L3:
+    - gpt-5.3
+    - gpt-5.3-codex-spark
+    - claude-haiku-4-5-20251001
+  L4-L5:
+    - claude-sonnet-4-6
+    - gpt-5.3
+  L6:
+    - claude-opus-4-6
+    - claude-sonnet-4-6
+YAML
+
+    # bloom_model_preference テスト用: 1番目capability不足 → 2番目fallback
+    cat > "${TEST_TMP}/settings_preference_cap_fallback.yaml" << 'YAML'
+capability_tiers:
+  gpt-5.3-codex-spark:
+    max_bloom: 3
+    cost_group: chatgpt_pro
+  claude-sonnet-4-6:
+    max_bloom: 5
+    cost_group: claude_max
+bloom_model_preference:
+  L4-L5:
+    - gpt-5.3-codex-spark
+    - claude-sonnet-4-6
+YAML
+
+    # bloom_model_preference テスト用: preference全滅 → cost_priorityへfallback
+    cat > "${TEST_TMP}/settings_preference_all_fail.yaml" << 'YAML'
+capability_tiers:
+  gpt-5.3-codex-spark:
+    max_bloom: 3
+    cost_group: chatgpt_pro
+  claude-haiku-4-5-20251001:
+    max_bloom: 3
+    cost_group: claude_max
+  claude-sonnet-4-6:
+    max_bloom: 5
+    cost_group: claude_max
+bloom_model_preference:
+  L4-L5:
+    - gpt-5.3-codex-spark
+    - claude-haiku-4-5-20251001
+YAML
+
+    # bloom_model_preference テスト用: available_cost_groups=[claude_max]でSparkを除外
+    cat > "${TEST_TMP}/settings_preference_claude_only.yaml" << 'YAML'
+available_cost_groups:
+  - claude_max
+capability_tiers:
+  gpt-5.3-codex-spark:
+    max_bloom: 3
+    cost_group: chatgpt_pro
+  claude-haiku-4-5-20251001:
+    max_bloom: 3
+    cost_group: claude_max
+  claude-sonnet-4-6:
+    max_bloom: 5
+    cost_group: claude_max
+bloom_model_preference:
+  L1-L3:
+    - gpt-5.3-codex-spark
+    - claude-haiku-4-5-20251001
+YAML
+
     # .venvへのsymlinkを作成
     if [ -d "${PROJECT_ROOT}/.venv" ]; then
         ln -sf "${PROJECT_ROOT}/.venv" "${TEST_TMP}/.venv"
@@ -979,4 +1066,66 @@ print(len(doc.get('history', [])))
     # karo (claude-sonnet-4-5-20250929) は候補に入らない
     # 他のashiguruにもこのモデルがないのでフォールバック
     [[ "$result" =~ ^ashigaru[0-9]+$ ]]
+}
+
+# =============================================================================
+# TC-PREF-001〜007: bloom_model_preference ルーティング
+# =============================================================================
+
+@test "TC-PREF-001: preference defined → first choice selected (range key L1-L2)" {
+    load_adapter_with "${TEST_TMP}/settings_with_preference.yaml"
+    # bloom_level=2, L1-L2の1番目はgpt-5.3-codex-spark
+    result=$(get_recommended_model 2)
+    [ "$result" = "gpt-5.3-codex-spark" ]
+}
+
+@test "TC-PREF-002: first preference capability insufficient → fallback to second" {
+    load_adapter_with "${TEST_TMP}/settings_preference_cap_fallback.yaml"
+    # bloom_level=4, L4-L5の1番目はgpt-5.3-codex-spark(max_bloom=3 < 4) → skip
+    # 2番目はclaude-sonnet-4-6(max_bloom=5 >= 4) → 選択
+    result=$(get_recommended_model 4)
+    [ "$result" = "claude-sonnet-4-6" ]
+}
+
+@test "TC-PREF-003: no preference defined → legacy cost_priority behavior" {
+    load_adapter_with "${TEST_TMP}/settings_with_tiers.yaml"
+    # settings_with_tiers.yaml にはbloom_model_preferenceなし → 従来動作
+    # bloom_level=4: gpt-5.3(mb4,chatgpt_pro=0) vs sonnet(mb5,claude_max=1)
+    # cost_priority: chatgpt_pro=0 が優先 → gpt-5.3
+    result=$(get_recommended_model 4)
+    [ "$result" = "gpt-5.3" ]
+}
+
+@test "TC-PREF-004: single key L3 matches bloom_level=3 → gpt-5.3 selected" {
+    load_adapter_with "${TEST_TMP}/settings_with_preference.yaml"
+    # bloom_level=3, L3（単一キー）の1番目はgpt-5.3
+    result=$(get_recommended_model 3)
+    [ "$result" = "gpt-5.3" ]
+}
+
+@test "TC-PREF-005: all preferred models unavailable → fallback to cost_priority with warning" {
+    load_adapter_with "${TEST_TMP}/settings_preference_all_fail.yaml"
+    # bloom=4, L4-L5: [spark(max3<4), haiku(max3<4)] → 全滅 → fallback
+    # cost_priority fallback: claude-sonnet-4-6(mb5,claude_max)のみ候補
+    result=$(get_recommended_model 4 2>/dev/null)
+    [ "$result" = "claude-sonnet-4-6" ]
+    # stderr に WARNING が出力される
+    run bash -c "export CLI_ADAPTER_SETTINGS='${TEST_TMP}/settings_preference_all_fail.yaml'; export CLI_ADAPTER_PROJECT_ROOT='${PROJECT_ROOT}'; source '${PROJECT_ROOT}/lib/cli_adapter.sh' 2>/dev/null; get_recommended_model 4 2>&1 1>/dev/null"
+    [[ "$output" =~ "WARNING" ]]
+}
+
+@test "TC-PREF-006: available_cost_groups exclusion with preference → skip excluded model, use next" {
+    load_adapter_with "${TEST_TMP}/settings_preference_claude_only.yaml"
+    # available_cost_groups=[claude_max] → chatgpt_proモデル除外
+    # bloom=2, L1-L2: [spark(chatgpt_pro→除外), haiku(claude_max→OK)]
+    result=$(get_recommended_model 2)
+    [ "$result" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "TC-PREF-007: no available_cost_groups → all models are candidates for preference" {
+    load_adapter_with "${TEST_TMP}/settings_with_preference.yaml"
+    # available_cost_groups未定義 → 全cost_group許可
+    # bloom=2, L1-L2の1番目=gpt-5.3-codex-spark(chatgpt_pro) → 除外されずに選択
+    result=$(get_recommended_model 2)
+    [ "$result" = "gpt-5.3-codex-spark" ]
 }
