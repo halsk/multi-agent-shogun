@@ -310,6 +310,7 @@ When processing large datasets (30+ items requiring individual web search, API c
 | 3 | main/master への直接 commit/push をブロック | 全プロジェクト共通ルール |
 | 4 | git push 前に npm typecheck & lint を実行 | Post-Review Completion Rule |
 | 5 | GH_TOKEN 設定時に gh コマンドをブロック | Lessons Learned |
+| 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 
 設定場所: `~/.claude/settings.json` の `hooks.PreToolUse`
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
