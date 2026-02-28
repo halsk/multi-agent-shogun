@@ -46,7 +46,11 @@ check "D001: rm -rf /home/*" block "rm -rf /home/*"
 check "D001: rm -rf ~" block "rm -rf ~"
 check "D003: git push --force" block "git push origin main --force"
 check "D003: git push -f" block "git push origin main -f"
+# D003 allow test needs valid .code-review-done (Hook 6 checks push)
+HEAD_HASH_D003=$(git rev-parse HEAD 2>/dev/null || echo "")
+[[ -n "$HEAD_HASH_D003" ]] && echo "$HEAD_HASH_D003" > .code-review-done
 check "D003: git push --force-with-lease (OK)" allow "git push origin feat/my-branch --force-with-lease"
+rm -f .code-review-done
 check "D004: git reset --hard" block "git reset --hard HEAD~1"
 check "D004: git checkout -- ." block "git checkout -- ."
 check "D004: git restore ." block "git restore ."
@@ -69,7 +73,11 @@ echo "=== Hook 3: main ブランチ保護 ==="
 CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
 if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
   check "git commit on non-main branch (allow)" allow 'git commit -m "fix: test"'
+  # Hook 3 push allow test needs valid .code-review-done (Hook 6 checks push)
+  HEAD_HASH_H3=$(git rev-parse HEAD 2>/dev/null || echo "")
+  [[ -n "$HEAD_HASH_H3" ]] && echo "$HEAD_HASH_H3" > .code-review-done
   check "git push on non-main branch (allow)" allow 'git push origin feat/test-branch'
+  rm -f .code-review-done
   echo "  ℹ️  main ブランチ保護は main ブランチ上でのみブロック動作します（現在: $CURRENT_BRANCH）"
 else
   echo "  ⚠️  現在 main ブランチのため Hook 3 ブロックテストをスキップ"
@@ -90,6 +98,30 @@ fi
 # Test without GH_TOKEN
 unset GH_TOKEN
 check "gh command without GH_TOKEN (allow)" allow "gh pr list"
+
+echo ""
+echo "=== Hook 6: code-review-expert 実行強制 ==="
+REVIEW_FILE=".code-review-done"
+HEAD_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
+
+# Test: no .code-review-done file → block
+rm -f "$REVIEW_FILE"
+check "git push without .code-review-done (block)" block "git push origin feat/test"
+
+# Test: .code-review-done with wrong hash → block
+echo "0000000000000000000000000000000000000000" > "$REVIEW_FILE"
+check "git push with wrong hash in .code-review-done (block)" block "git push origin feat/test"
+
+# Test: .code-review-done with correct HEAD hash → allow
+if [[ -n "$HEAD_HASH" ]]; then
+  echo "$HEAD_HASH" > "$REVIEW_FILE"
+  check "git push with correct HEAD hash (allow)" allow "git push origin feat/test"
+else
+  echo "  ℹ️  HEAD hash 取得不可のため Hook 6 allow テストをスキップ"
+fi
+
+# Cleanup
+rm -f "$REVIEW_FILE"
 
 echo ""
 echo "=== 正常コマンドの通過確認 ==="

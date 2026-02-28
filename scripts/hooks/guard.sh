@@ -145,4 +145,23 @@ if echo "$COMMAND" | grep -qE '\bgh\b'; then
   fi
 fi
 
+# ============================================================
+# Hook 6: code-review-expert 実行強制（マーカーファイル方式）
+# ============================================================
+if echo "$COMMAND" | grep -qE 'git\s+push\b'; then
+  HEAD_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
+  if [[ -n "$HEAD_HASH" ]]; then
+    REVIEW_DONE_FILE=".code-review-done"
+    if [[ ! -f "$REVIEW_DONE_FILE" ]]; then
+      echo "❌ code-review-expert を実行してください。push 前にレビューが必要です。" >&2
+      exit 2
+    fi
+    REVIEW_HASH=$(tr -d '[:space:]' < "$REVIEW_DONE_FILE" 2>/dev/null || echo "")
+    if [[ "$REVIEW_HASH" != "$HEAD_HASH" ]]; then
+      echo "❌ code-review-expert を実行してください。push 前にレビューが必要です。（コミット後に再レビューが必要です）" >&2
+      exit 2
+    fi
+  fi
+fi
+
 exit 0
