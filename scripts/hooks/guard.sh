@@ -14,9 +14,33 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # ============================================================
+# Helper: detect git subcommand invocation
+# Catches: direct (git push), full path (/usr/bin/git push),
+#   command/env wrapper, function alias (f(){ git "$@"; }; f push),
+#   variable alias (v=git; $v push)
+# ============================================================
+has_git_subcmd() {
+  local cmd="$1"
+  local subcmd="$2"
+  # Direct: git push, git commit
+  echo "$cmd" | grep -qE "git\s+$subcmd\b" && return 0
+  # Full path: /usr/bin/git push
+  echo "$cmd" | grep -qE "/git\s+$subcmd\b" && return 0
+  # command/env wrapper: command git push, env git push
+  echo "$cmd" | grep -qE "(command|env)\s+git\s+$subcmd\b" && return 0
+  # Function alias: f() { git "$@"; } ... f push
+  echo "$cmd" | grep -qE '\(\)\s*\{[^}]*git\b' && echo "$cmd" | grep -qE "\b$subcmd\b" && return 0
+  # Variable alias: v=git; $v push
+  echo "$cmd" | grep -qE '\w+=git(\s|;|&|$)' && echo "$cmd" | grep -qE "\b$subcmd\b" && return 0
+  # Variable subcommand: SUBCMD=push; git $SUBCMD
+  echo "$cmd" | grep -qiE "\w+=$subcmd(\s|;|&|\"|$)" && echo "$cmd" | grep -qE 'git\s+\$' && return 0
+  return 1
+}
+
+# ============================================================
 # Hook 1: Co-Authored-By 禁止
 # ============================================================
-if echo "$COMMAND" | grep -qE 'git\s+commit' && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
   echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
   exit 2
 fi
@@ -32,22 +56,22 @@ if echo "$COMMAND" | grep -qE 'rm\s+-rf\s+(/\*?$|/mnt/\*|/home/\*|~(/|$| ))' || 
   exit 2
 fi
 
-# D003: git push --force / git push -f (without --force-with-lease)
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*--force\b' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
+# D003: git push --force / -f (without --force-with-lease)
+if has_git_subcmd "$COMMAND" "push" && echo "$COMMAND" | grep -qE '\-\-force\b' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
   echo "❌ 破壊的操作が検出されました: git push --force。D003 違反です。--force-with-lease を使用してください。" >&2
   exit 2
 fi
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*\s-f\b'; then
+if has_git_subcmd "$COMMAND" "push" && echo "$COMMAND" | grep -qE '(^|\s)-f\b'; then
   echo "❌ 破壊的操作が検出されました: git push -f。D003 違反です。--force-with-lease を使用してください。" >&2
   exit 2
 fi
 
 # D004: git reset --hard / git checkout -- . / git restore . / git clean -f
-if echo "$COMMAND" | grep -qE 'git\s+reset\s+--hard'; then
+if has_git_subcmd "$COMMAND" "reset" && echo "$COMMAND" | grep -q '\-\-hard'; then
   echo "❌ 破壊的操作が検出されました: git reset --hard。D004 違反です。git stash を使用してください。" >&2
   exit 2
 fi
-if echo "$COMMAND" | grep -qE 'git\s+checkout\s+--\s+\.'; then
+if has_git_subcmd "$COMMAND" "checkout" && echo "$COMMAND" | grep -qE '\-\-\s+\.'; then
   echo "❌ 破壊的操作が検出されました: git checkout -- .。D004 違反です。" >&2
   exit 2
 fi
@@ -77,7 +101,7 @@ if echo "$COMMAND" | grep -qE 'tmux\s+kill-(server|session)'; then
   exit 2
 fi
 
-# D007: mkfs/dd if=/fdisk/mount/umount
+# D007: mkfs/dd if=/fdisk
 if echo "$COMMAND" | grep -qE '\b(mkfs|fdisk)\b'; then
   echo "❌ 破壊的操作が検出されました: mkfs/fdisk。D007 違反です。" >&2
   exit 2
@@ -96,7 +120,7 @@ fi
 # ============================================================
 # Hook 3: main ブランチ保護
 # ============================================================
-if echo "$COMMAND" | grep -qE 'git\s+(commit|push)\b'; then
+if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
   CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
   if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
     echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
@@ -107,7 +131,7 @@ fi
 # ============================================================
 # Hook 4: push 前 lint/typecheck チェック
 # ============================================================
-if echo "$COMMAND" | grep -qE 'git\s+push\b'; then
+if has_git_subcmd "$COMMAND" "push"; then
   PKG_JSON=$(find . -maxdepth 2 -name "package.json" ! -path "*/node_modules/*" 2>/dev/null | head -1)
   if [[ -n "$PKG_JSON" ]]; then
     PKG_DIR=$(dirname "$PKG_JSON")
@@ -148,7 +172,7 @@ fi
 # ============================================================
 # Hook 6: code-review-expert 実行強制（マーカーファイル方式）
 # ============================================================
-if echo "$COMMAND" | grep -qE 'git\s+push\b'; then
+if has_git_subcmd "$COMMAND" "push"; then
   HEAD_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
   if [[ -n "$HEAD_HASH" ]]; then
     REVIEW_DONE_FILE=".code-review-done"

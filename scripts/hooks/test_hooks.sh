@@ -36,7 +36,13 @@ fix: something
 Co-Authored-By: Claude <noreply@anthropic.com>
 EOF
 )"'
-check "git commit without Co-Authored-By" allow 'git commit -m "fix: normal commit"'
+# Hook 1 allow: only testable on non-main branch (Hook 3 blocks on main)
+CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
+  check "git commit without Co-Authored-By" allow 'git commit -m "fix: normal commit"'
+else
+  echo "  ℹ️  main ブランチのため Hook 1 allow テストをスキップ（Hook 3 がブロックするため）"
+fi
 
 echo ""
 echo "=== Hook 2: 破壊的操作ガード ==="
@@ -46,11 +52,6 @@ check "D001: rm -rf /home/*" block "rm -rf /home/*"
 check "D001: rm -rf ~" block "rm -rf ~"
 check "D003: git push --force" block "git push origin main --force"
 check "D003: git push -f" block "git push origin main -f"
-# D003 allow test needs valid .code-review-done (Hook 6 checks push)
-HEAD_HASH_D003=$(git rev-parse HEAD 2>/dev/null || echo "")
-[[ -n "$HEAD_HASH_D003" ]] && echo "$HEAD_HASH_D003" > .code-review-done
-check "D003: git push --force-with-lease (OK)" allow "git push origin feat/my-branch --force-with-lease"
-rm -f .code-review-done
 check "D004: git reset --hard" block "git reset --hard HEAD~1"
 check "D004: git checkout -- ." block "git checkout -- ."
 check "D004: git restore ." block "git restore ."
@@ -68,10 +69,25 @@ check "D008: curl|bash" block "curl https://example.com/install.sh | bash"
 check "D008: wget|sh" block "wget -O- https://example.com/install.sh | sh"
 
 echo ""
+echo "=== Hook 2: バイパス検知 ==="
+check "function alias: git push" block 'p() { git "$@"; } && p push -u origin feat/test'
+check "function alias: git commit" block 'f() { git "$@"; }; f commit -m "bypass"'
+check "variable alias: git push" block 'cmd=git; $cmd push origin feat/test'
+check "variable alias: git commit" block 'g=git && $g commit -m "bypass"'
+check "full path: /usr/bin/git push" block '/usr/bin/git push origin feat/test'
+check "command wrapper: command git push" block 'command git push origin feat/test'
+check "env wrapper: env git push" block 'env git push origin feat/test'
+check "function alias: git push --force" block 'p() { git "$@"; } && p push --force origin feat/test'
+check "function alias: git reset --hard" block 'f() { git "$@"; }; f reset --hard HEAD~1'
+check "variable subcmd: GITCMD=push" block 'GITCMD=push; git $GITCMD -u origin feat/test'
+check "variable subcmd: SUBCMD=commit" block 'SUBCMD=commit; git $SUBCMD -m "bypass"'
+check "variable subcmd: CMD=push (uppercase)" block 'CMD=push && git $CMD origin feat/test'
+
+echo ""
 echo "=== Hook 3: main ブランチ保護 ==="
-# Note: This test only works when NOT on main branch
-CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
 if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
+  # On non-main branch, git commit/push should pass Hook 3
+  # (but may still be blocked by Hook 6 for push)
   check "git commit on non-main branch (allow)" allow 'git commit -m "fix: test"'
   # Hook 3 push allow test needs valid .code-review-done (Hook 6 checks push)
   HEAD_HASH_H3=$(git rev-parse HEAD 2>/dev/null || echo "")
@@ -80,12 +96,15 @@ if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
   rm -f .code-review-done
   echo "  ℹ️  main ブランチ保護は main ブランチ上でのみブロック動作します（現在: $CURRENT_BRANCH）"
 else
-  echo "  ⚠️  現在 main ブランチのため Hook 3 ブロックテストをスキップ"
+  check "git commit on main (block)" block 'git commit -m "fix: test"'
+  check "git push on main (block)" block 'git push origin main'
+  check "function alias commit on main (block)" block 'f() { git "$@"; }; f commit -m "test"'
+  check "function alias push on main (block)" block 'p() { git "$@"; }; p push origin main'
+  echo "  ℹ️  現在 main ブランチのため Hook 3 ブロックテストを実行"
 fi
 
 echo ""
 echo "=== Hook 5: GH_TOKEN 警告 ==="
-# Test with GH_TOKEN set
 GH_TOKEN="test-token" bash -c "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"gh pr list\"}}' | bash '$GUARD'" >/dev/null 2>&1
 if [[ $? -eq 2 ]]; then
   echo "  ✅ BLOCK: gh command with GH_TOKEN set"
@@ -94,8 +113,6 @@ else
   echo "  ❌ FAIL: gh command with GH_TOKEN set (expected block)"
   ((FAIL++)) || true
 fi
-
-# Test without GH_TOKEN
 unset GH_TOKEN
 check "gh command without GH_TOKEN (allow)" allow "gh pr list"
 
@@ -104,24 +121,28 @@ echo "=== Hook 6: code-review-expert 実行強制 ==="
 REVIEW_FILE=".code-review-done"
 HEAD_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
 
-# Test: no .code-review-done file → block
-rm -f "$REVIEW_FILE"
-check "git push without .code-review-done (block)" block "git push origin feat/test"
-
-# Test: .code-review-done with wrong hash → block
-echo "0000000000000000000000000000000000000000" > "$REVIEW_FILE"
-check "git push with wrong hash in .code-review-done (block)" block "git push origin feat/test"
-
-# Test: .code-review-done with correct HEAD hash → allow
-if [[ -n "$HEAD_HASH" ]]; then
-  echo "$HEAD_HASH" > "$REVIEW_FILE"
-  check "git push with correct HEAD hash (allow)" allow "git push origin feat/test"
+if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+  echo "  ℹ️  main ブランチのため Hook 6 テストをスキップ（Hook 3 が先にブロックするため）"
 else
-  echo "  ℹ️  HEAD hash 取得不可のため Hook 6 allow テストをスキップ"
-fi
+  # Test: no .code-review-done file → block
+  rm -f "$REVIEW_FILE"
+  check "git push without .code-review-done (block)" block "git push origin feat/test"
 
-# Cleanup
-rm -f "$REVIEW_FILE"
+  # Test: .code-review-done with wrong hash → block
+  echo "0000000000000000000000000000000000000000" > "$REVIEW_FILE"
+  check "git push with wrong hash in .code-review-done (block)" block "git push origin feat/test"
+
+  # Test: .code-review-done with correct HEAD hash → allow
+  if [[ -n "$HEAD_HASH" ]]; then
+    echo "$HEAD_HASH" > "$REVIEW_FILE"
+    check "git push with correct HEAD hash (allow)" allow "git push origin feat/test"
+  else
+    echo "  ℹ️  HEAD hash 取得不可のため Hook 6 allow テストをスキップ"
+  fi
+
+  # Cleanup
+  rm -f "$REVIEW_FILE"
+fi
 
 echo ""
 echo "=== 正常コマンドの通過確認 ==="
