@@ -14,6 +14,25 @@ if [[ -z "$COMMAND" ]]; then
 fi
 
 # ============================================================
+# Helper: resolve effective working directory from cd in command
+# Handles: "cd /path && git push", "cd /path; git commit"
+# Falls back to current directory if no cd found
+# ============================================================
+resolve_git_dir() {
+  local cmd="$1"
+  # Extract last cd target (handles: cd /path, cd "/path with spaces")
+  local cd_target
+  cd_target=$(echo "$cmd" | grep -oP 'cd\s+\K("[^"]+"|[^\s&;|]+)' | tail -1 | tr -d '"')
+  if [[ -n "$cd_target" && -d "$cd_target" ]]; then
+    echo "$cd_target"
+  else
+    echo "."
+  fi
+}
+
+GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
+
+# ============================================================
 # Helper: detect git subcommand invocation
 # Catches: direct (git push), full path (/usr/bin/git push),
 #   command/env wrapper, function alias (f(){ git "$@"; }; f push),
@@ -119,9 +138,12 @@ fi
 
 # ============================================================
 # Hook 3: main ブランチ保護
+# Uses GIT_TARGET_DIR to check the correct repo's branch
+# (prevents false block when CWD is multi-agent-shogun/main
+#  but command targets an external repo on a feature branch)
 # ============================================================
 if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
-  CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+  CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
   if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
     echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
     exit 2
@@ -130,9 +152,10 @@ fi
 
 # ============================================================
 # Hook 4: push 前 lint/typecheck チェック
+# Uses GIT_TARGET_DIR to find package.json in the correct repo
 # ============================================================
 if has_git_subcmd "$COMMAND" "push"; then
-  PKG_JSON=$(find . -maxdepth 2 -name "package.json" ! -path "*/node_modules/*" 2>/dev/null | head -1)
+  PKG_JSON=$(find "$GIT_TARGET_DIR" -maxdepth 2 -name "package.json" ! -path "*/node_modules/*" 2>/dev/null | head -1)
   if [[ -n "$PKG_JSON" ]]; then
     PKG_DIR=$(dirname "$PKG_JSON")
     HAS_TYPECHECK=$(jq -r '.scripts.typecheck // ""' "$PKG_JSON")
@@ -171,11 +194,12 @@ fi
 
 # ============================================================
 # Hook 6: code-review-expert 実行強制（マーカーファイル方式）
+# Uses GIT_TARGET_DIR for HEAD hash and .code-review-done lookup
 # ============================================================
 if has_git_subcmd "$COMMAND" "push"; then
-  HEAD_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
+  HEAD_HASH=$(git -C "$GIT_TARGET_DIR" rev-parse HEAD 2>/dev/null || echo "")
   if [[ -n "$HEAD_HASH" ]]; then
-    REVIEW_DONE_FILE=".code-review-done"
+    REVIEW_DONE_FILE="$GIT_TARGET_DIR/.code-review-done"
     if [[ ! -f "$REVIEW_DONE_FILE" ]]; then
       echo "❌ code-review-expert を実行してください。push 前にレビューが必要です。" >&2
       exit 2

@@ -86,10 +86,7 @@ check "variable subcmd: CMD=push (uppercase)" block 'CMD=push && git $CMD origin
 echo ""
 echo "=== Hook 3: main ブランチ保護 ==="
 if [[ "$CURRENT_BRANCH" != "main" && "$CURRENT_BRANCH" != "master" ]]; then
-  # On non-main branch, git commit/push should pass Hook 3
-  # (but may still be blocked by Hook 6 for push)
   check "git commit on non-main branch (allow)" allow 'git commit -m "fix: test"'
-  # Hook 3 push allow test needs valid .code-review-done (Hook 6 checks push)
   HEAD_HASH_H3=$(git rev-parse HEAD 2>/dev/null || echo "")
   [[ -n "$HEAD_HASH_H3" ]] && echo "$HEAD_HASH_H3" > .code-review-done
   check "git push on non-main branch (allow)" allow 'git push origin feat/test-branch'
@@ -101,6 +98,31 @@ else
   check "function alias commit on main (block)" block 'f() { git "$@"; }; f commit -m "test"'
   check "function alias push on main (block)" block 'p() { git "$@"; }; p push origin main'
   echo "  ℹ️  現在 main ブランチのため Hook 3 ブロックテストを実行"
+fi
+
+echo ""
+echo "=== Hook 3: cd 外部リポ対応（GIT_TARGET_DIR） ==="
+# Find a directory that is NOT on main (any worktree or external repo)
+EXTERNAL_REPO=""
+for wt in /home/hal/workspace/geonicdb-demo-app-wt18 /home/hal/workspace/geonicdb-demo-app /home/hal/workspace/geonicdb-console; do
+  if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
+    WT_BRANCH=$(git -C "$wt" branch --show-current 2>/dev/null || echo "")
+    if [[ -n "$WT_BRANCH" && "$WT_BRANCH" != "main" && "$WT_BRANCH" != "master" ]]; then
+      EXTERNAL_REPO="$wt"
+      break
+    fi
+  fi
+done
+if [[ -n "$EXTERNAL_REPO" ]]; then
+  WT_BRANCH=$(git -C "$EXTERNAL_REPO" branch --show-current 2>/dev/null)
+  check "cd external repo + git commit (allow, branch=$WT_BRANCH)" allow "cd $EXTERNAL_REPO && git commit -m \"fix: test\""
+  # For push test, need .code-review-done in external repo
+  EXT_HEAD=$(git -C "$EXTERNAL_REPO" rev-parse HEAD 2>/dev/null || echo "")
+  [[ -n "$EXT_HEAD" ]] && echo "$EXT_HEAD" > "$EXTERNAL_REPO/.code-review-done"
+  check "cd external repo + git push (allow, branch=$WT_BRANCH)" allow "cd $EXTERNAL_REPO && git push origin $WT_BRANCH"
+  rm -f "$EXTERNAL_REPO/.code-review-done"
+else
+  echo "  ℹ️  外部リポ（非mainブランチ）が見つからないため cd テストをスキップ"
 fi
 
 echo ""
