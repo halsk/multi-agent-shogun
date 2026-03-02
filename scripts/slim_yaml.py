@@ -3,17 +3,17 @@
 YAML Slimming Utility
 
 Removes completed/archived items from YAML queue files to maintain performance.
-- For Karo: Archives done/cancelled commands from shogun_to_karo.yaml
-- For all agents: Archives read: true messages from inbox files
+- For Karo: Archives completed task/report files and finished command queue entries.
+- For all agents: Archives read: true messages from inbox files.
 """
 
-import sys
-import yaml
 import os
+import sys
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
+import yaml
 
 CANONICAL_TASKS = {f'ashigaru{i}' for i in range(1, 9)} | {'gunshi'}
 CANONICAL_REPORTS = {f'ashigaru{i}_report' for i in range(1, 9)} | {'gunshi_report'}
@@ -48,67 +48,151 @@ def get_timestamp():
     return datetime.now().strftime('%Y%m%d%H%M%S')
 
 
-def slim_shogun_to_karo(dry_run=False):
-    """Archive done/cancelled commands from shogun_to_karo.yaml."""
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
-    archive_dir = queue_dir / 'archive'
+def get_queue_dir():
+    return Path(__file__).resolve().parent.parent / 'queue'
+
+
+def get_active_cmd_ids():
+    """Return command IDs in shogun_to_karo that are not done."""
+    queue_dir = get_queue_dir()
     shogun_file = queue_dir / 'shogun_to_karo.yaml'
-
-    if not shogun_file.exists():
-        print(f"Warning: {shogun_file} not found", file=sys.stderr)
-        return True
-
     data = load_yaml(shogun_file)
-    # Support both 'commands' and 'queue' keys for backwards compatibility
+
     key = 'commands' if 'commands' in data else 'queue'
-    if not data or key not in data:
-        return True
+    commands = data.get(key, []) if isinstance(data, dict) else []
+    if not isinstance(commands, list):
+        return set()
 
-    queue = data.get(key, [])
-    if not isinstance(queue, list):
-        print("Error: queue is not a list", file=sys.stderr)
-        return False
+    active = set()
+    for cmd in commands:
+        if not isinstance(cmd, dict):
+            continue
+        if cmd.get('id') is None:
+            continue
+        if cmd.get('status') == 'done':
+            continue
+        active.add(cmd.get('id'))
+    return active
 
-    # Separate active and archived commands
-    active = []
-    archived = []
 
-    for cmd in queue:
-        status = cmd.get('status', 'unknown')
-        if status in ['done', 'cancelled']:
-            archived.append(cmd)
-        else:
-            active.append(cmd)
+def ensure_parent_dir(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    # If nothing to archive, return success without writing
-    if not archived:
-        return True
 
-    # Write archived commands to timestamped file
-    archive_timestamp = get_timestamp()
-    archive_file = archive_dir / f'shogun_to_karo_{archive_timestamp}.yaml'
-
+def archive_taskspec(filepath, archive_path, data, dry_run=False):
     if dry_run:
-        print(f"[DRY-RUN] would archive: {len(archived)} commands to {archive_file}")
+        print(f"[DRY-RUN] would archive: {filepath}")
+        print(f"[DRY-RUN] would write: {archive_path}")
         return True
 
-    archive_data = {key: archived}
-    if not save_yaml(archive_file, archive_data):
+    ensure_parent_dir(archive_path)
+    if not save_yaml(archive_path, data):
         return False
 
-    # Update main file with active commands only
-    data[key] = active
-    if not save_yaml(shogun_file, data):
-        print(f"Error: Failed to update {shogun_file}, but archive was created", file=sys.stderr)
-        return False
+    if filepath.name in archive_path.name:
+        return True
+    return filepath.rename(archive_path)
 
-    print(f"Archived {len(archived)} commands to {archive_file.name}", file=sys.stderr)
+
+def slim_tasks(dry_run=False):
+    queue_dir = get_queue_dir()
+    tasks_dir = queue_dir / 'tasks'
+    archive_dir = queue_dir / 'archive' / 'tasks'
+
+    if not tasks_dir.exists():
+        return True
+
+    timestamp = get_timestamp()
+    done_statuses = {'done', 'completed', 'cancelled'}
+
+    for filepath in sorted(tasks_dir.glob('*.yaml')):
+        data = load_yaml(filepath)
+        if not isinstance(data, dict):
+            continue
+
+        task = data.get('task', {}) if isinstance(data.get('task', {}), dict) else {}
+        status = task.get('status', '') if isinstance(task, dict) else ''
+        if not status:
+            continue
+
+        stem = filepath.stem
+        if stem in CANONICAL_TASKS:
+            if status not in done_statuses:
+                continue
+
+            archive_path = archive_dir / f'{stem}_{timestamp}.yaml'
+            if not archive_taskspec(filepath, archive_path, data, dry_run=dry_run):
+                return False
+
+            if dry_run:
+                print(f"[DRY-RUN] would overwrite: {filepath} with {IDLE_STUB}")
+                continue
+
+            if not save_yaml(filepath, IDLE_STUB):
+                return False
+            continue
+
+        if status not in {'done', 'cancelled'}:
+            continue
+
+        archive_path = archive_dir / filepath.name
+        if archive_path.exists():
+            archive_path = archive_dir / f'{filepath.stem}_{timestamp}{filepath.suffix}'
+
+        if dry_run:
+            print(f"[DRY-RUN] would archive: {filepath}")
+            print(f"[DRY-RUN] would move to: {archive_path}")
+            continue
+
+        ensure_parent_dir(archive_path)
+        filepath.rename(archive_path)
+
+    return True
+
+
+def slim_reports(dry_run=False):
+    queue_dir = get_queue_dir()
+    reports_dir = queue_dir / 'reports'
+    archive_dir = queue_dir / 'archive' / 'reports'
+
+    if not reports_dir.exists():
+        return True
+
+    active_cmd_ids = get_active_cmd_ids()
+    timestamp = get_timestamp()
+
+    for filepath in sorted(reports_dir.glob('*.yaml')):
+        if filepath.stem in CANONICAL_REPORTS:
+            continue
+
+        data = load_yaml(filepath)
+        parent_cmd = data.get('parent_cmd') if isinstance(data, dict) else None
+        is_active = parent_cmd in active_cmd_ids
+        is_stale = (time.time() - filepath.stat().st_mtime) >= 86400
+
+        if not is_stale:
+            continue
+        if is_active:
+            continue
+
+        archive_path = archive_dir / filepath.name
+        if archive_path.exists():
+            archive_path = archive_dir / f'{filepath.stem}_{timestamp}{filepath.suffix}'
+
+        if dry_run:
+            print(f"[DRY-RUN] would archive: {filepath}")
+            print(f"[DRY-RUN] would move to: {archive_path}")
+            continue
+
+        ensure_parent_dir(archive_path)
+        filepath.rename(archive_path)
+
     return True
 
 
 def slim_inbox(agent_id, dry_run=False):
     """Archive read: true messages from inbox file."""
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
+    queue_dir = get_queue_dir()
     archive_dir = queue_dir / 'archive'
     inbox_file = queue_dir / 'inbox' / f'{agent_id}.yaml'
 
@@ -140,15 +224,16 @@ def slim_inbox(agent_id, dry_run=False):
     if not archived:
         return True
 
-    # Write archived messages to timestamped file
     archive_timestamp = get_timestamp()
     archive_file = archive_dir / f'inbox_{agent_id}_{archive_timestamp}.yaml'
 
-    archive_data = {'messages': archived}
     if dry_run:
-        print(f"[DRY-RUN] would archive: {len(archived)} messages from {agent_id} to {archive_file.name}")
+        print(f"[DRY-RUN] would archive: {inbox_file}")
+        print(f"[DRY-RUN] would move to: {archive_file}")
         return True
 
+    # Write archived messages to timestamped file
+    archive_data = {'messages': archived}
     if not save_yaml(archive_file, archive_data):
         return False
 
@@ -163,185 +248,129 @@ def slim_inbox(agent_id, dry_run=False):
     return True
 
 
-def slim_tasks(dry_run=False):
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
-    tasks_dir = queue_dir / 'tasks'
-    archive_dir = queue_dir / 'archive' / 'tasks'
+def slim_shugun_to_karo():
+    """Archive done/cancelled commands from shogun_to_karo.yaml."""
+    queue_dir = get_queue_dir()
+    archive_dir = queue_dir / 'archive'
+    shogun_file = queue_dir / 'shogun_to_karo.yaml'
 
-    if not tasks_dir.exists():
+    if not shogun_file.exists():
+        print(f"Warning: {shogun_file} not found", file=sys.stderr)
         return True
 
-    for filepath in tasks_dir.glob('*.yaml'):
-        data = load_yaml(filepath)
-        if not isinstance(data, dict) or 'task' not in data or not isinstance(data.get('task'), dict):
-            continue
+    data = load_yaml(shogun_file)
+    # Support both 'commands' and 'queue' keys for backwards compatibility
+    key = 'commands' if isinstance(data, dict) and 'commands' in data else 'queue'
+    if not data or key not in data:
+        return True
 
-        task_body = data['task']
-        status = str(task_body.get('status', '')).lower()
-        is_canonical = filepath.stem in CANONICAL_TASKS
+    queue = data.get(key, [])
+    if not isinstance(queue, list):
+        print("Error: queue is not a list", file=sys.stderr)
+        return False
 
-        if is_canonical and status not in ['done', 'completed', 'cancelled']:
-            continue
-        if not is_canonical and status not in ['done', 'cancelled']:
-            continue
+    # Separate active and archived commands
+    active = []
+    archived = []
 
-        archive_timestamp = get_timestamp()
-        archive_file = archive_dir / f'{filepath.stem}_{archive_timestamp}.yaml'
-
-        if not is_canonical:
-            archive_file = archive_dir / filepath.name
-            if archive_file.exists():
-                archive_file = archive_dir / f'{filepath.stem}_{archive_timestamp}.yaml'
-
-        print(f"[DRY-RUN] would archive: {filepath} -> {archive_file}") if dry_run else None
-        if dry_run:
-            continue
-
-        if not save_yaml(archive_file, data):
-            return False
-
-        if is_canonical:
-            if not save_yaml(filepath, IDLE_STUB):
-                return False
+    for cmd in queue:
+        status = cmd.get('status', 'unknown')
+        if status in ['done', 'cancelled']:
+            archived.append(cmd)
         else:
-            try:
-                filepath.unlink()
-            except OSError as e:
-                print(f"Error: failed to remove {filepath}: {e}", file=sys.stderr)
-                return False
+            active.append(cmd)
 
+    # If nothing to archive, return success without writing
+    if not archived:
+        return True
+
+    # Write archived commands to timestamped file
+    archive_timestamp = get_timestamp()
+    archive_file = archive_dir / f'shogun_to_karo_{archive_timestamp}.yaml'
+
+    archive_data = {key: archived}
+    if not save_yaml(archive_file, archive_data):
+        return False
+
+    # Update main file with active commands only
+    data[key] = active
+    if not save_yaml(shogun_file, data):
+        print(f"Error: Failed to update {shogun_file}, but archive was created", file=sys.stderr)
+        return False
+
+    print(f"Archived {len(archived)} commands to {archive_file.name}", file=sys.stderr)
     return True
 
 
-def is_active_command(parent_cmd, queue_file):
-    data = load_yaml(queue_file)
-    key = 'commands' if 'commands' in data else 'queue'
-    queue = data.get(key, []) if isinstance(data, dict) else []
-
-    for cmd in queue:
-        if not isinstance(cmd, dict):
-            continue
-        if str(cmd.get('id')) == str(parent_cmd) and str(cmd.get('status')) != 'done':
-            return True
-    return False
-
-
-def slim_reports(dry_run=False):
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
-    reports_dir = queue_dir / 'reports'
-    archive_dir = queue_dir / 'archive' / 'reports'
-    command_file = queue_dir / 'shogun_to_karo.yaml'
-
-    if not reports_dir.exists():
+def slim_all_inboxes(dry_run=False):
+    queue_dir = get_queue_dir()
+    inbox_dir = queue_dir / 'inbox'
+    if not inbox_dir.exists():
         return True
 
-    for filepath in reports_dir.glob('*.yaml'):
-        stem = filepath.stem
-        if stem in CANONICAL_REPORTS:
-            continue
-
-        data = load_yaml(filepath)
-        if not isinstance(data, dict):
-            continue
-        parent_cmd = data.get('parent_cmd')
-
-        age_ok = time.time() - filepath.stat().st_mtime >= 86400
-        if not age_ok:
-            continue
-
-        if parent_cmd and is_active_command(parent_cmd, command_file):
-            continue
-
-        archive_file = archive_dir / filepath.name
-        print(f"[DRY-RUN] would archive: {filepath} -> {archive_file}") if dry_run else None
+    for filepath in sorted(inbox_dir.glob('*.yaml')):
+        agent_id = filepath.stem
         if dry_run:
-            continue
-
-        if not save_yaml(archive_file, data):
+            print(f"[DRY-RUN] processing inbox file: {filepath}")
+        if not slim_inbox(agent_id, dry_run=dry_run):
             return False
-        try:
-            filepath.unlink()
-        except OSError as e:
-            print(f"Error: failed to remove {filepath}: {e}", file=sys.stderr)
-            return False
+        if dry_run:
+            print(f"[DRY-RUN] finished inbox file: {filepath}")
 
     return True
 
 
 def migration(dry_run=False):
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
-    source_dir = queue_dir / 'reports' / 'archive'
-    dest_dir = queue_dir / 'archive' / 'reports'
-
-    if not source_dir.exists():
+    queue_dir = get_queue_dir()
+    legacy_archive_dir = queue_dir / 'reports' / 'archive'
+    if not legacy_archive_dir.exists():
         return True
 
-    files = [f for f in source_dir.glob('*.yaml') if f.is_file()]
-    if not files:
+    target_dir = queue_dir / 'archive' / 'reports'
+    candidates = sorted(legacy_archive_dir.glob('*.yaml'))
+    if not candidates:
+        if not dry_run:
+            legacy_archive_dir.rmdir()
         return True
 
     if dry_run:
-        print(f"[DRY-RUN] would migrate: {len(files)} files")
+        print(f"[DRY-RUN] would migrate: {len(candidates)} files")
         return True
 
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    for filepath in files:
-        try:
-            filepath.rename(dest_dir / filepath.name)
-        except OSError as e:
-            print(f"Error: failed to migrate {filepath}: {e}", file=sys.stderr)
-            return False
+    target_dir.mkdir(parents=True, exist_ok=True)
+    for path in candidates:
+        dest = target_dir / path.name
+        path.rename(dest)
 
-    try:
-        source_dir.rmdir()
-    except OSError:
-        pass
+    if not any(legacy_archive_dir.iterdir()):
+        legacy_archive_dir.rmdir()
+
     return True
 
 
-def slim_all_inboxes(dry_run=False):
-    queue_dir = Path(__file__).resolve().parent.parent / 'queue'
-    inbox_dir = queue_dir / 'inbox'
+def parse_arguments():
+    args = [arg for arg in sys.argv[1:] if arg != '--dry-run']
+    dry_run = '--dry-run' in sys.argv[1:]
+    if len(args) < 1:
+        print("Usage: slim_yaml.py <agent_id> [--dry-run]", file=sys.stderr)
+        sys.exit(1)
 
-    if not inbox_dir.exists():
-        return True
-
-    for filepath in inbox_dir.glob('*.yaml'):
-        stem = filepath.stem
-        if dry_run:
-            print(f"[DRY-RUN] processing inbox: {filepath}")
-        if not slim_inbox(stem, dry_run):
-            return False
-        if dry_run:
-            print(f"[DRY-RUN] finished inbox: {filepath}")
-
-    return True
+    return args[0], dry_run
 
 
 def main():
     """Main entry point."""
-    if len(sys.argv) < 2:
-        print("Usage: slim_yaml.py <agent_id>", file=sys.stderr)
-        sys.exit(1)
-
-    dry_run = '--dry-run' in sys.argv
-    agent_id = next((arg for arg in sys.argv[1:] if arg != '--dry-run'), None)
-    if not agent_id:
-        print("Usage: slim_yaml.py <agent_id>", file=sys.stderr)
-        sys.exit(1)
+    agent_id, dry_run = parse_arguments()
 
     # Ensure archive directory exists
-    archive_dir = Path(__file__).resolve().parent.parent / 'queue' / 'archive'
+    archive_dir = get_queue_dir() / 'archive'
     archive_dir.mkdir(parents=True, exist_ok=True)
-    (archive_dir / 'tasks').mkdir(parents=True, exist_ok=True)
-    (archive_dir / 'reports').mkdir(parents=True, exist_ok=True)
 
     # Process shogun_to_karo if this is Karo
     if agent_id == 'karo':
-        if not slim_shogun_to_karo(dry_run):
+        if not slim_shugun_to_karo():
             sys.exit(1)
-        if not migration(dry_run):
-            sys.exit(1)
+        migration(dry_run)
         if not slim_tasks(dry_run):
             sys.exit(1)
         if not slim_reports(dry_run):
