@@ -830,7 +830,9 @@ send_wakeup() {
             continue
         fi
         # 送信成功
-        rm -f "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}"
+        # NOTE: アイドルフラグは削除しない。nudge送信≠エージェント起動確認。
+        # フラグを消すと agent_is_busy()=true → 以降のnudge全スキップ → デッドロック。
+        # フラグはエージェントが実際に作業開始した時に自然消滅する（stop_hook設計と整合）。
         echo "[$(date)] Wake-up sent to $AGENT_ID (${unread_count} unread, attempt $((attempt+1)))" >&2
         return 0
     done
