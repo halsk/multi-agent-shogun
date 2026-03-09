@@ -597,7 +597,7 @@ YAML
     [ "$result" = "Haiku" ]
 }
 
-@test "get_model_display_name: Sonnet + thinking未設定 → Sonnet (no +T)" {
+@test "get_model_display_name: Sonnet + thinking未設定 → Sonnet+T (default ON)" {
     cat > "${TEST_TMP}/settings_display.yaml" << 'YAML'
 cli:
   default: claude
@@ -608,7 +608,7 @@ cli:
 YAML
     load_adapter_with "${TEST_TMP}/settings_display.yaml"
     result=$(get_model_display_name "ashigaru3")
-    [ "$result" = "Sonnet" ]
+    [ "$result" = "Sonnet+T" ]
 }
 
 @test "get_model_display_name: Codex Spark → Spark (thinking無関係)" {
@@ -625,7 +625,7 @@ YAML
     [ "$result" = "Spark" ]
 }
 
-@test "get_model_display_name: Codex 5.3 → Codex" {
+@test "get_model_display_name: Codex 5.3 → Codex5.3" {
     cat > "${TEST_TMP}/settings_display.yaml" << 'YAML'
 cli:
   default: claude
@@ -636,7 +636,7 @@ cli:
 YAML
     load_adapter_with "${TEST_TMP}/settings_display.yaml"
     result=$(get_model_display_name "ashigaru5")
-    [ "$result" = "Codex" ]
+    [ "$result" = "Codex5.3" ]
 }
 
 @test "get_model_display_name: Kimi → Kimi" {
@@ -682,7 +682,7 @@ YAML
     [ "$(get_model_display_name ashigaru2)" = "Opus" ]
     [ "$(get_model_display_name ashigaru3)" = "Haiku+T" ]
     [ "$(get_model_display_name ashigaru4)" = "Spark" ]
-    [ "$(get_model_display_name ashigaru5)" = "Codex" ]
+    [ "$(get_model_display_name ashigaru5)" = "Codex5.3" ]
 }
 
 # =============================================================================

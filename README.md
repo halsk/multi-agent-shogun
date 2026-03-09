@@ -268,9 +268,79 @@ cd /mnt/c/tools/multi-agent-shogun
 ./shutsujin_departure.sh
 ```
 
-### 📱 Mobile Access (Command from anywhere)
+### 📱 Mobile Access — Dedicated Android App (Recommended)
 
-Control your AI army from your phone — bed, café, or bathroom.
+<p align="center">
+  <img src="android/screenshots/01_shogun_terminal.png" alt="Shogun Terminal" width="200">
+  <img src="android/screenshots/02_agents_grid.png" alt="Agents Grid" width="200">
+  <img src="android/screenshots/03_dashboard.png" alt="Dashboard" width="200">
+</p>
+
+Monitor and command 10 AI agents from your phone with the dedicated Android companion app.
+
+| Feature | Description |
+|---------|-------------|
+| **Shogun Terminal** | SSH terminal + voice input + special key bar (C-c, C-b, Tab, etc.) |
+| **Agents Grid** | 9-pane simultaneous monitoring. Tap to expand fullscreen + send commands |
+| **Dashboard** | Renders dashboard.md with full table text selection/copy |
+| **Rate Limit** | Tap the FAB on the Agents tab to check Claude Max 5h/7d usage with progress bars |
+| **Voice Input** | Japanese continuous recognition via Google Speech API — higher accuracy than phone keyboard voice |
+| **Screenshot Share** | Share images via Android share menu → SFTP transfer to server |
+
+> **Note:** Android only for now. No iOS version — the developer doesn't own an iPhone. If there's demand, please open an [Issue](https://github.com/yohey-w/multi-agent-shogun/issues). PRs welcome!
+
+#### Setup
+
+**Prerequisites:**
+- Shogun system running on WSL2 (or Linux server)
+- SSH server started (`sudo service ssh start`)
+- Phone and server on same network (LAN or [Tailscale](https://tailscale.com/))
+
+**Steps:**
+
+1. **Install APK**
+   1. Download [`android/release/multi-agent-shogun.apk`](android/release/multi-agent-shogun.apk) on your phone (open the file on GitHub → "Download raw file")
+   2. Tap the download notification → "Install"
+   3. If "Unknown sources" warning appears → "Settings" → enable "Allow from this source" for your browser → go back → "Install"
+   4. Done → "Open"
+
+2. **Configure SSH** (Settings tab)
+
+   | Field | Example | Description |
+   |-------|---------|-------------|
+   | SSH Host | `100.xxx.xxx.xxx` | Server IP (e.g., Tailscale IP) |
+   | SSH Port | `22` | Usually 22 |
+   | SSH User | `your_username` | SSH login username |
+   | SSH Key Path | `/data/data/.../id_ed25519` | Private key path on phone (*1) |
+   | SSH Password | `****` | Use if no key available |
+   | Project Path | `/mnt/c/tools/multi-agent-shogun` | Server-side project directory |
+   | Shogun Session | `shogun` | tmux session name for Shogun |
+   | Agent Session | `multiagent` | tmux session name for agents |
+
+   *1 Transfer your private key to the phone, or use password authentication
+
+3. **Save → Switch to Shogun tab** → auto-connects
+
+**Using Tailscale (connect from anywhere):**
+
+```bash
+# Server-side (WSL2)
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscaled &
+sudo tailscale up --authkey tskey-auth-XXXXXXXXXXXX
+sudo service ssh start
+```
+
+Install the Tailscale app on your phone, log in with the same account, and use the displayed Tailscale IP as the SSH Host in the app.
+
+**With ntfy notifications:**
+
+See [ntfy setup section](#-8-phone-notifications-ntfy) for push notifications from Karo on task completion.
+
+<details>
+<summary>📟 <b>Termux Method (without the Android app)</b> (click to expand)</summary>
+
+SSH via Termux also works. More limited than the dedicated app, but requires no APK sideloading.
 
 **Requirements (all free):**
 
@@ -302,20 +372,9 @@ Control your AI army from your phone — bed, café, or bathroom.
    csm    # See all 9 panes
    ```
 
-**Disconnect:** Just swipe the Termux window closed. tmux sessions survive — agents keep working. Temporary viewer sessions are auto-cleaned (destroy-unattached).
+**Disconnect:** Just swipe the Termux window closed. tmux sessions survive — agents keep working.
 
-**Recommended: SSH keepalive** — prevents zombie connections when Termux is swiped away:
-```bash
-# On your server (WSL), run once:
-sudo sed -i 's/#ClientAliveInterval 0/ClientAliveInterval 15/' /etc/ssh/sshd_config
-sudo sed -i 's/#ClientAliveCountMax 3/ClientAliveCountMax 3/' /etc/ssh/sshd_config
-sudo systemctl restart ssh
-```
-This detects dead connections within 45 seconds instead of waiting for TCP timeout.
-
-**Voice input:** Use your phone's voice keyboard to speak commands. The Shogun understands natural language, so typos from speech-to-text don't matter.
-
-**Even simpler:** With ntfy configured, you can receive notifications and send commands directly from the ntfy app — no SSH required.
+</details>
 
 ---
 
@@ -574,13 +633,33 @@ Step 3: Agent reads its own inbox
 | Priority | Method | What happens | When used |
 |----------|--------|-------------|-----------|
 | 1st | **Self-Watch** | Agent watches its own inbox file — wakes itself, no nudge needed | Agent has its own `inotifywait` running |
-| 2nd | **tmux send-keys** | Sends short nudge via `tmux send-keys` (text and Enter sent separately for Codex CLI compatibility) | Default fallback if self-watch misses |
+| 2nd | **Stop Hook** | Claude Code agents check inbox at turn end via `.claude/settings.json` Stop hook | Claude Code agents only |
+| 3rd | **tmux send-keys** | Sends short nudge via `tmux send-keys` (text and Enter sent separately for Codex CLI compatibility) | Fallback — disabled in ASW Phase 2+ |
 
-**3-Phase Escalation (v3.2)** — If agent doesn't respond to nudge:
+**Agent Self-Watch (ASW) Phases** — Controls how aggressively the system uses `tmux send-keys` nudges:
+
+| ASW Phase | Nudge behavior | Delivery method | When to use |
+|-----------|---------------|-----------------|-------------|
+| **Phase 1** | Normal nudges enabled | self-watch + send-keys | Initial setup, mixed CLI environments |
+| **Phase 2** | **Busy → suppressed, Idle → nudge** | busy: stop hook delivers at turn end. idle: nudge (unavoidable) | Claude Code agents with stop hook (recommended) |
+| **Phase 3** | `FINAL_ESCALATION_ONLY` | send-keys only as last-resort recovery | Fully stable environments |
+
+Phase 2 uses the idle flag file (`/tmp/shogun_idle_{agent}`) to distinguish busy vs idle agents. The Stop hook creates/removes this flag at turn boundaries. This eliminates nudge interruptions during active work while still waking idle agents.
+
+> **Why can't nudges be fully eliminated?** Claude Code's Stop hook only fires at turn end. An idle agent (sitting at the prompt) has no turn ending, so there's no hook to trigger inbox checks. A future `Notification` hook with `idle_prompt` blocking support or a periodic timer hook could solve this.
+
+Configure in `config/settings.yaml`:
+```yaml
+asw_phase: 2   # Recommended for Claude Code setups
+```
+
+Or set the default directly in `scripts/inbox_watcher.sh` (`ASW_PHASE` variable). Restart inbox_watcher processes after changing.
+
+**3-Phase Escalation (v3.2)** — If agent doesn't respond:
 
 | Phase | Timing | Action |
 |-------|--------|--------|
-| Phase 1 | 0-2 min | Standard nudge (`inbox3` text + Enter) |
+| Phase 1 | 0-2 min | Standard nudge (`inbox3` text + Enter) — *skipped for busy agents in ASW Phase 2+* |
 | Phase 2 | 2-4 min | Escape×2 + C-c to reset cursor, then nudge |
 | Phase 3 | 4+ min | Send `/clear` to force session reset (max once per 5 min) |
 

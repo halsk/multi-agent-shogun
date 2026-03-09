@@ -96,7 +96,16 @@ if [ "${UNREAD_COUNT:-0}" -eq 0 ]; then
     touch "$FLAG"
     exit 0
 fi
-rm -f "$FLAG"
+# NOTE: Do NOT rm -f the flag here. The old logic removed the flag when
+# unread > 0 and blocked the stop, expecting the re-fired stop_hook
+# (with stop_hook_active=True) to restore it. But if the agent processes
+# the unread messages and then the second stop_hook doesn't fire or
+# stop_hook_active isn't set, the flag is permanently lost → deadlock.
+# Instead, keep the flag alive. The watcher will see the agent as idle
+# and send a nudge, which is the correct behavior — the agent IS idle
+# between the block response and the next turn.
+# The flag will be removed naturally when the agent starts its next turn
+# (Claude Code removes it via the busy detection mechanism).
 
 # ─── Extract unread message summaries ───
 SUMMARY=$(python3 -c "

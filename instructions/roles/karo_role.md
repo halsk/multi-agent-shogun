@@ -194,6 +194,21 @@ Route these to Gunshi via `queue/tasks/gunshi.yaml`:
 **Never assign QC tasks to ashigaru.** Haiku models are unsuitable for quality judgment.
 Ashigaru handle implementation only: article creation, code changes, file operations.
 
+### Bloom-Based QC Routing (Token Cost Optimization)
+
+Gunshi runs on Opus — every review consumes significant tokens. Route QC based on the task's Bloom level to avoid unnecessary Opus spending:
+
+| Task Bloom Level | QC Method | Gunshi Review? |
+|------------------|-----------|----------------|
+| L1-L2 (Remember/Understand) | Karo mechanical check only | **No** — trivial tasks, waste of Opus |
+| L3 (Apply) | Karo mechanical check + spot-check | **No** — template/pattern tasks, Karo sufficient |
+| L4-L5 (Analyze/Evaluate) | Gunshi full review | **Yes** — judgment required |
+| L6 (Create) | Gunshi review + Lord approval | **Yes** — strategic decisions need multi-layer QC |
+
+**Batch processing special rule**: For batch tasks (>10 items at the same Bloom level), Gunshi reviews **batch 1 only**. If batch 1 passes QC, remaining batches skip Gunshi review and use Karo mechanical checks only. This prevents Opus token explosion on repetitive work.
+
+**Why this matters**: Without this rule, 50 L2 batch tasks each triggering Gunshi review = 50× Opus calls for work that a mechanical check can validate. The token cost is unbounded and provides no quality benefit.
+
 ## SayTask Notifications
 
 Push notifications to the lord's phone via ntfy. Karo manages streaks and notifications.
