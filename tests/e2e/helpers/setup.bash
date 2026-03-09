@@ -44,9 +44,17 @@ setup_e2e_session() {
         cp "$PROJECT_ROOT/config/settings.yaml" "$E2E_QUEUE/config/" 2>/dev/null || true
     fi
 
-    # Link .venv for inbox_write.sh (uses $SCRIPT_DIR/.venv/bin/python3)
+    # Link .venv for inbox_watcher.sh (uses $SCRIPT_DIR/.venv/bin/python3)
     if [ -d "$PROJECT_ROOT/.venv" ]; then
         ln -sf "$PROJECT_ROOT/.venv" "$E2E_QUEUE/.venv"
+    fi
+    # Fallback: if the symlink target is broken or .venv didn't exist at
+    # PROJECT_ROOT, create a minimal .venv/bin/python3 pointing to the
+    # system python3 so inbox_watcher can still find a working interpreter.
+    if [ ! -x "$E2E_QUEUE/.venv/bin/python3" ] && command -v python3 &>/dev/null; then
+        rm -f "$E2E_QUEUE/.venv"  # remove broken symlink if any
+        mkdir -p "$E2E_QUEUE/.venv/bin"
+        ln -sf "$(command -v python3)" "$E2E_QUEUE/.venv/bin/python3"
     fi
 
     # Initialize empty inboxes

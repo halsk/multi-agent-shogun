@@ -268,9 +268,79 @@ cd /mnt/c/tools/multi-agent-shogun
 ./shutsujin_departure.sh
 ```
 
-### 📱 スマホからアクセス（どこからでも指揮）
+### 📱 スマホからアクセス — 専用Androidアプリ（推奨）
 
-ベッドから、カフェから、トイレから。スマホでAI部下を操作できる。
+<p align="center">
+  <img src="android/screenshots/01_shogun_terminal.png" alt="将軍ターミナル" width="200">
+  <img src="android/screenshots/02_agents_grid.png" alt="エージェント一覧" width="200">
+  <img src="android/screenshots/03_dashboard.png" alt="ダッシュボード" width="200">
+</p>
+
+専用のAndroidアプリで10体のAIエージェントをスマホから監視・指揮できる。
+
+| 機能 | 説明 |
+|------|------|
+| **将軍ターミナル** | SSHターミナル + 音声入力 + 特殊キーバー (C-c, C-b, Tab等) |
+| **エージェント一覧** | 9ペイン同時監視。タップで全画面展開 + コマンド送信 |
+| **ダッシュボード** | dashboard.md をレンダリング表示。表のテキストもコピー可 |
+| **レートリミット** | エージェントタブ右下のボタンからClaude Max 5h/7d消費率をプログレスバーで確認 |
+| **音声入力** | Google Speech APIによる日本語連続認識。キーボード音声入力より高精度 |
+| **スクショ共有** | 共有メニューから画像をSFTP転送 |
+
+> **Note:** 現在Androidのみ対応。iOS版は開発者にテスト端末がないため未対応。ニーズがあれば [Issue](https://github.com/yohey-w/multi-agent-shogun/issues) で教えてください。PRも歓迎！
+
+#### セットアップ手順
+
+**前提条件：**
+- WSL2 (またはLinuxサーバー) で将軍システムが稼働中
+- SSHサーバーが起動済み (`sudo service ssh start`)
+- スマホとサーバーが同一ネットワーク上（LAN or [Tailscale](https://tailscale.com/)）
+
+**手順：**
+
+1. **APKをインストール**
+   1. [`android/release/multi-agent-shogun.apk`](android/release/multi-agent-shogun.apk) をスマホにダウンロード（GitHub上のファイルを開いて「Download raw file」）
+   2. ダウンロード完了の通知をタップ → 「インストール」
+   3. 「提供元不明のアプリ」警告が出たら → 「設定」→ 該当ブラウザの「この提供元を許可」をON → 戻って「インストール」
+   4. インストール完了 → 「開く」
+
+2. **SSH接続情報を設定**（設定タブ）
+
+   | 項目 | 入力例 | 説明 |
+   |------|--------|------|
+   | SSHホスト | `100.xxx.xxx.xxx` | サーバーのIP（Tailscale IPなど） |
+   | SSHポート | `22` | 通常は22 |
+   | SSHユーザー | `your_username` | SSH接続のユーザー名 |
+   | SSH秘密鍵パス | `/data/data/.../id_ed25519` | スマホ上の秘密鍵パス（※1） |
+   | SSHパスワード | `****` | 鍵がない場合はパスワード認証 |
+   | プロジェクトパス | `/mnt/c/tools/multi-agent-shogun` | サーバー側のプロジェクトディレクトリ |
+   | 将軍セッション名 | `shogun` | tmuxの将軍セッション名 |
+   | エージェントセッション名 | `multiagent` | tmuxのエージェントセッション名 |
+
+   ※1 秘密鍵はスマホに転送するか、パスワード認証を使用
+
+3. **保存 → 将軍タブに切り替え** → 自動接続
+
+**Tailscaleを使う場合（外出先からも接続可能）：**
+
+```bash
+# サーバー側（WSL2）
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscaled &
+sudo tailscale up --authkey tskey-auth-XXXXXXXXXXXX
+sudo service ssh start
+```
+
+スマホにもTailscaleアプリをインストールして同じアカウントでログイン。表示されるTailscale IPをアプリのSSHホストに入力。
+
+**ntfy通知も併用する場合：**
+
+[ntfyの設定セクション](#-8-スマホ通知ntfy)を参照。家老からの進捗通知をプッシュで受け取れる。
+
+<details>
+<summary>📟 <b>Termux方式（Androidアプリなし）</b>（クリックで展開）</summary>
+
+Termuxを使ったSSH接続でも操作できる。専用アプリと比べて機能は限定的だが、追加のAPKインストールが不要。
 
 **必要なもの（全部無料）：**
 
@@ -304,9 +374,11 @@ cd /mnt/c/tools/multi-agent-shogun
 
 **切り方：** Termuxのウィンドウをスワイプで閉じるだけ。tmuxセッションは生き残る。AI部下は黙々と作業を続けている。
 
-**音声入力：** スマホの音声入力で喋れば、将軍が自然言語を理解して全軍に指示を出す。音声認識の誤字も文脈で解釈してくれる。
+</details>
 
-**もっと簡単に：** ntfyを設定すると、ntfyアプリから直接通知の受信やコマンドの送信ができます。SSHは不要です。
+**音声入力：** Androidアプリの音声入力ボタンで喋れば、将軍が自然言語を理解して全軍に指示を出す。
+
+**もっと簡単に：** ntfyを設定すると、プッシュ通知で進捗を受け取れます。
 
 ---
 
@@ -566,13 +638,33 @@ Step 3: エージェントが自分のinboxを読む
 | 優先順位 | 方式 | 何が起きるか | いつ使われるか |
 |----------|------|-------------|---------------|
 | 1番 | **自己監視** | エージェントが自分のinboxファイルを監視 — 自力で起床、nudge不要 | エージェント自身が `inotifywait` を実行中 |
-| 2番 | **tmux send-keys** | `tmux send-keys` で短いnudgeを送信（テキストとEnterを分離送信、Codex CLI対応） | 自己監視が反応しない場合のフォールバック |
+| 2番 | **Stop Hook** | Claude Codeエージェントがターン終了時にinboxをチェック（`.claude/settings.json` Stop hook経由） | Claude Codeエージェントのみ |
+| 3番 | **tmux send-keys** | `tmux send-keys` で短いnudgeを送信（テキストとEnterを分離送信、Codex CLI対応） | フォールバック — ASW Phase 2以上では無効 |
 
-**3段階エスカレーション（v3.2）** — エージェントがnudgeに反応しない場合:
+**Agent Self-Watch (ASW) フェーズ** — `tmux send-keys` nudgeの使用をどこまで抑制するかを制御:
+
+| ASWフェーズ | nudge動作 | 配信方式 | 推奨場面 |
+|------------|----------|---------|---------|
+| **Phase 1** | 通常nudge有効 | self-watch + send-keys | 初期セットアップ、混在CLI環境 |
+| **Phase 2** | **busy→抑止、idle→nudge** | busy: stop hookがターン終了時に配信。idle: nudge（不可避） | Claude Codeエージェント＋stop hook環境（推奨） |
+| **Phase 3** | `FINAL_ESCALATION_ONLY` | 最終リカバリ時のみsend-keys | 完全に安定した環境 |
+
+Phase 2はidleフラグファイル（`/tmp/shogun_idle_{agent}`）でbusy/idle状態を判定する。Stop hookがターン境界でフラグを作成/削除する。作業中のnudge割り込みを排除しつつ、idle時の起床は維持する。
+
+> **なぜnudge完全撲滅できないのか？** Claude CodeのStop hookはターン終了時にしか発火しない。idleのエージェント（プロンプトで待機中）はターンが終了しないため、inboxチェックを発火させるhookがない。将来 `Notification` hookの `idle_prompt` タイプがブロック対応になるか、定期タイマーhookが追加されれば解決可能。
+
+`config/settings.yaml` で設定:
+```yaml
+asw_phase: 2   # Claude Code環境では推奨
+```
+
+または `scripts/inbox_watcher.sh` の `ASW_PHASE` 変数を直接変更。変更後はinbox_watcherプロセスの再起動が必要。
+
+**3段階エスカレーション（v3.2）** — エージェントが応答しない場合:
 
 | フェーズ | タイミング | アクション |
 |---------|----------|-----------|
-| Phase 1 | 0-2分 | 標準nudge（`inbox3` テキスト + Enter） |
+| Phase 1 | 0-2分 | 標準nudge（`inbox3` テキスト + Enter） — *ASW Phase 2以上ではbusyエージェントはスキップ* |
 | Phase 2 | 2-4分 | Escape×2 + C-c でカーソルリセット、その後nudge |
 | Phase 3 | 4分以上 | `/clear` 送信でセッション強制リセット（5分間に最大1回） |
 

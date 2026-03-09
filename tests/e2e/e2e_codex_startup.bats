@@ -328,11 +328,11 @@ dump_watcher_log() {
     fi
     [ "$new_count" -eq 1 ]
 
-    # 7. Verify dedup guard logged skips for extra clear_commands
+    # 7. Verify extra clear_commands were suppressed (dedup or busy deferral)
     local skip_count
-    skip_count=$(grep -c "SKIP.*Codex /new already sent" "$log_file" 2>/dev/null || true)
+    skip_count=$(grep -c -E "SKIP.*(Codex /new already sent|is busy.*deferred)" "$log_file" 2>/dev/null || true)
     if [ "$skip_count" -lt 1 ]; then
-        echo "Expected at least 1 dedup skip log, got $skip_count" >&2
+        echo "Expected at least 1 dedup/deferral skip log, got $skip_count" >&2
         dump_watcher_log "$log_file"
     fi
     [ "$skip_count" -ge 1 ]
@@ -393,24 +393,9 @@ dump_watcher_log() {
         > "$log_file" 2>&1 &
     watcher_pid=$!
 
-    # 6. Verify that inbox_watcher created the initial idle flag
-    sleep 2
-    if [ ! -f "$flag_dir/shogun_idle_ashigaru1" ]; then
-        echo "FAIL: inbox_watcher did not create initial idle flag" >&2
-        dump_watcher_log "$log_file"
-        stop_inbox_watcher "$watcher_pid"
-        rm -rf "$flag_dir"
-        return 1
-    fi
-
-    # 7. Verify initial flag creation logged
-    run grep "Created initial idle flag for ashigaru1" "$log_file"
-    if [ "$status" -ne 0 ]; then
-        dump_watcher_log "$log_file"
-    fi
-    assert_success
-
-    # 8. Wait for task to complete (proves nudge was delivered)
+    # 6. Wait for task to complete (proves initial flag + nudge chain worked)
+    #    The initial idle flag is created, then consumed by context-reset→nudge,
+    #    so we verify via log + task completion rather than flag file existence.
     run wait_for_yaml_value "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.status" "done" 45
     if [ "$status" -ne 0 ]; then
         dump_pane_for_debug "$ashigaru1_pane" "ashigaru1-claude-F"
@@ -418,7 +403,14 @@ dump_watcher_log() {
     fi
     assert_success
 
-    # 9. Verify NO "agent is busy" log for this agent
+    # 7. Verify initial flag creation was logged (proves the fix is active)
+    run grep "Created initial idle flag for ashigaru1" "$log_file"
+    if [ "$status" -ne 0 ]; then
+        dump_watcher_log "$log_file"
+    fi
+    assert_success
+
+    # 8. Verify NO "agent is busy" log for this agent
     #    (without the fix, this would show repeated "busy" messages)
     run grep "unread for ashigaru1 but agent is busy (claude)" "$log_file"
     assert_failure
