@@ -132,6 +132,12 @@
 !images/screenshots/hero/latest-translucent-20260210-190453.png
 !images/screenshots/hero/latest-translucent-20260208-084602.png
 
+# Agent skills (.agents/skills/ — project-specific, committed to repo)
+!.agents/
+!.agents/skills/
+!.agents/skills/ud/
+!.agents/skills/ud/SKILL.md
+
 # Skills (public OSS skills committed to repo)
 !skills/
 !skills/skill-creator/
