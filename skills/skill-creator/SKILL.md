@@ -256,13 +256,6 @@ fi
 - 将軍システム連携（inbox_write, task YAML等）が必要なスキルは allowed-tools に Bash を含めよ
 - north_star はフロントマターでなく**本文に記載**（フロントマターのカスタムフィールドはClaude Codeに無視される）
 
-### 将軍システム連携パターン
-
-| パターン | 実行者 | 例 |
-|---------|--------|-----|
-| A: 将軍直接実行 | Shogun | screenshot, x-research 等 |
-| B: 委任実行 | Shogun設計→Karo分解→Ashigaru実行 | shogun-github-reviewer |
-| C: 足軽量産 | Ashigaruが定型作業 | shogun-seo-writer |
 
 ## Anti-Patterns（やってはいけないこと）
 
