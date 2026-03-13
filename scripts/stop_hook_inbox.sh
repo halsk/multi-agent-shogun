@@ -39,6 +39,11 @@ if [ -z "$AGENT_ID" ]; then
     exit 0
 fi
 
+# Shogun is the Lord's conversation pane — skip stop hook entirely
+if [ "$AGENT_ID" = "shogun" ]; then
+    exit 0
+fi
+
 # ─── Define inbox path early (used in multiple places below) ───
 INBOX="$SCRIPT_DIR/queue/inbox/${AGENT_ID}.yaml"
 
