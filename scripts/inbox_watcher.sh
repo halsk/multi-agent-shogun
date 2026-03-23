@@ -334,11 +334,18 @@ try:
             pass  # If task YAML is unreadable, proceed with auto-recovery as safety net
 
     now = datetime.datetime.now(datetime.timezone.utc).astimezone()
-    msg = {
-        "content": (
+    if agent_id == "karo":
+        recovery_content = (
+            "[auto-recovery] /clear 後の再着手通知。"
+            "queue/shogun_to_karo.yaml を確認し、pending の cmd を足軽に割り当てよ。"
+        )
+    else:
+        recovery_content = (
             f"[auto-recovery] /clear 後の再着手通知。"
             f"queue/tasks/{agent_id}.yaml を再読し、assigned タスクを即時再開せよ。"
-        ),
+        )
+    msg = {
+        "content": recovery_content,
         "from": "inbox_watcher",
         "id": f"msg_auto_recovery_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}",
         "read": False,
