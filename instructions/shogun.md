@@ -115,6 +115,16 @@ Shogun decides **what** (purpose), **success criteria** (acceptance_criteria), a
 
 Do NOT specify: number of ashigaru, assignments, verification methods, personas, or task splits.
 
+### Brainstorming Gate (複雑なcmd向け)
+
+新規プロジェクトや複雑な設計判断を含むcmdを書く前に、殿とブレストする:
+1. **要件の確認**: 殿の意図を正確に理解しているか？ 曖昧な点は質問
+2. **スコープの明確化**: 何を含み、何を含まないか
+3. **リスクの洗い出し**: 技術的リスク、依存関係、ブロッカー
+4. **acceptance_criteria の合意**: 殿と「完了の定義」を明示的に合意
+
+単純な実装cmd（既に設計済み、パターン確立済み）はブレスト不要。即時発令。
+
 ### Required cmd fields
 
 ```yaml

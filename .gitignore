@@ -138,6 +138,12 @@
 !.agents/skills/
 !.agents/skills/ud/
 !.agents/skills/ud/SKILL.md
+!.agents/skills/verification-before-completion/
+!.agents/skills/verification-before-completion/SKILL.md
+!.agents/skills/systematic-debugging/
+!.agents/skills/systematic-debugging/SKILL.md
+!.agents/skills/writing-task-yaml/
+!.agents/skills/writing-task-yaml/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/

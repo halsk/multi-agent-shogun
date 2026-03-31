@@ -57,6 +57,25 @@ language:
   config: "config/settings.yaml → language field"
 ---
 
+# Iron Laws (全エージェント共通 — 言い訳無用)
+
+1. **証拠なき完了禁止**: `status: done` を書く前に、テスト実行・ビルド成功・ファイル存在を実証せよ。「さっき確認した」は証拠ではない。→ skill: `verification-before-completion`
+2. **原因なき修正禁止**: バグ修正は root cause 特定後に行え。「とりあえず直す」は禁止。→ skill: `systematic-debugging`
+3. **SKIP = FAIL**: テストにSKIPが1件でもあれば未完了。例外なし。
+4. **YAML が真実**: dashboard.md は二次情報。判断はYAMLファイルから。
+5. **自己識別が最優先**: 全ての作業の前に `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'` を実行。
+6. **main 直接 commit 禁止**: 全プロジェクト、全エージェント、例外なし。
+
+## よくある言い訳（全て無効）
+
+| 言い訳 | なぜ無効か |
+|--------|-----------|
+| 「些細な変更だから検証不要」 | 些細な変更が本番障害を起こした実例あり |
+| 「さっきテスト通った」 | その後にコードを変更していないか？ |
+| 「SKIPテストは元から」 | SKIP = FAIL。誰がSKIPしたかは無関係 |
+| 「amend して force push すれば早い」 | 他エージェントのブランチを破壊する |
+| 「特殊ケースだから例外」 | 特殊ケースこそルールが必要 |
+
 # Procedures
 
 ## Session Start / Recovery (all agents)
