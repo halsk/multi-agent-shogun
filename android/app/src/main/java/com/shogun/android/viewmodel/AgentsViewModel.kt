@@ -178,9 +178,10 @@ class AgentsViewModel(application: Application) : AndroidViewModel(application) 
                 _rateLimitResult.value = "設定画面でプロジェクトパスを設定してください"
                 return@launch
             }
-            val result = sshManager.execCommand("bash $projectPath/scripts/ratelimit_check.sh")
+            val cmd = "bash $projectPath/scripts/ratelimit_check.sh 2>&1"
+            val result = sshManager.execCommand(cmd)
             _rateLimitLoading.value = false
-            _rateLimitResult.value = result.getOrElse { "取得失敗: ${it.message}" }
+            _rateLimitResult.value = result.getOrElse { "SSH取得失敗: ${it.message}\ncmd: $cmd" }
         }
     }
 

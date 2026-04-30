@@ -36,7 +36,7 @@ if %ERRORLEVEL% NEQ 0 (
     )
 
     echo   Installing WSL2...
-    wsl --install --no-launch
+    powershell -Command "wsl --install --no-launch"
 
     echo.
     echo   +============================================================+
@@ -71,7 +71,7 @@ echo   Ubuntu not found. Installing automatically...
 echo   Ubuntu が見つかりません。自動インストール中...
 echo.
 
-wsl --install -d Ubuntu --no-launch
+powershell -Command "wsl --install -d Ubuntu --no-launch"
 
 echo.
 echo   +============================================================+
@@ -126,11 +126,11 @@ echo   ^|                                                            ^|
 echo   ^|  First time only / 初回のみ:                               ^|
 echo   ^|    1. Set username and password when prompted              ^|
 echo   ^|       ユーザー名とパスワードを設定                        ^|
-echo   ^|    2. cd /mnt/c/tools/feature-shogun                      ^|
+echo   ^|    2. cd /mnt/c/tools/multi-agent-shogun                  ^|
 echo   ^|    3. ./first_setup.sh                                    ^|
 echo   ^|                                                            ^|
 echo   ^|  Every time you use / 使うたびに:                          ^|
-echo   ^|    cd /mnt/c/tools/feature-shogun                          ^|
+echo   ^|    cd /mnt/c/tools/multi-agent-shogun                      ^|
 echo   ^|    ./shutsujin_departure.sh                                ^|
 echo   ^|                                                            ^|
 echo   +------------------------------------------------------------+
