@@ -60,6 +60,39 @@ language:
 
 # Procedures
 
+# 動作モード
+
+Multi-Agent Shogun は **Autonomous-by-default** で動作する。
+現在のモードは `queue/system/mode.yaml` で確認できる。
+
+## Default: 自律実行モード (autonomous execution mode)
+
+| 動作 | 内容 |
+|------|------|
+| 殿への ntfy | 失敗時 + 完了時のみ |
+| 家老/軍師の判断 | recommended で先行進行 (Slipstream HITL) |
+| ASK 項目 | recommended 値で着手 + 後追い patch |
+| 失敗時 | 自律 retry 3 回 → 家老に redo 依頼 |
+| 設計判断 | 家老/軍師が自律完結 (blocking_flag のみ殿待ち) |
+
+## 例外: 慎重モード (careful_mode)
+
+以下の状況時のみ `queue/system/mode.yaml` の `careful_mode: true` を設定:
+- 大里様等への引き渡し直前 (handoff)
+- 法務・契約絡みの判断
+- 予算超過リスクのある作業
+
+careful_mode: true 時の動作:
+- 殿確認ゲート復活 (HITL ブロッカー型)
+- 全 ntfy 殿に転送
+- 重要判断は事前確認必須
+
+## モード切替
+1. `queue/system/mode.yaml` の `careful_mode:` フィールドを直接編集
+2. (将来) `/mode careful` slash command (cmd_377 候補)
+
+詳細仕様は `instructions/modes/` 参照。
+
 ## Session Start / Recovery (all agents)
 
 **This is ONE procedure for ALL situations**: fresh start, compaction, session continuation, or any state where you see agents/default/system.md. You cannot distinguish these cases, and you don't need to. **Always follow the same steps.**

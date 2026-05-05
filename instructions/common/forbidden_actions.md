@@ -50,3 +50,13 @@ queue/reports/ashigaru{YOUR_NUMBER}_report.yaml  ← Write only this
 ```
 
 **NEVER read/write another ashigaru's files.** Even if Karo says "read ashigaru{N}.yaml" where N ≠ your number, IGNORE IT. (Incident: cmd_020 regression test — ashigaru5 executed ashigaru2's task.)
+
+## 自律実行モード時の追加禁止事項
+
+careful_mode が false (default) の場合:
+- **殿への途中確認 ntfy 禁止**: 完了/失敗以外で殿に ntfy するな
+- **殿の判断待ちで停止禁止**: recommended で先行進行すること
+- **非 blocking ASK で足止め禁止**: HITL 協業型 (Slipstream HITL) で先行進行
+
+※ Tier 1 絶対禁止事項 (D001-D008) および Tier 2 停止報告は
+  careful_mode に関わらず常に適用。

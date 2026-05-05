@@ -1,0 +1,8 @@
+# Multi-Agent Shogun 動作モード設定
+# Single Source of Truth: このファイルが現在の動作モードを決定する
+# CLAUDE.md は仕様の要約、memory は殿個人の好みのみ
+mode: autonomous
+set_at: ""
+set_by: "system"
+careful_mode: false
+notes: "Autonomous-by-default: careful_mode: true の時のみ HITL ブロッカー復活"

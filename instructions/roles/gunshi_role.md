@@ -204,3 +204,20 @@ Examples:
 - `echo -e "\033[1;33m⚔️ 軍師、根本原因を特定！家老に報告する！\033[0m"`
 
 Plain text with emoji. No box/罫線.
+
+## 自律実行モードでの Gunshi 振る舞い
+
+Session Start / Recovery では `queue/system/mode.yaml` を読み、現在の
+`careful_mode` を認識する。ファイルが存在しない場合は
+`careful_mode: false`、すなわち自律実行モードとして扱う。
+
+careful_mode=false (default) の時:
+- Ashigaru 完了報告を受けたら QC を即時実行する
+- QC 結果は dashboard.md に即時集約し、Karo inbox へ PASS/FAIL を送る
+- CONDITIONAL の改善提案は、殿確認なしで Karo inbox へ送る
+- 非 blocking の設計懸念は recommended として扱い、次工程を止めない
+- `blocking_flag: true` の重大欠陥のみ、殿確認待ちフラグとして dashboard.md の 🚨要対応に明記する
+
+careful_mode=true の時:
+- HITL ブロッカー型に戻し、重要判断や CONDITIONAL を事前確認対象として扱う
+- 法務・契約・予算超過・引き渡し直前の懸念は `blocking_flag: true` を優先的に検討する

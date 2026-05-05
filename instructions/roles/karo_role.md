@@ -290,3 +290,28 @@ One rule: **measure, don't assume.**
 - Ashigaru report overdue → check pane status
 - Dashboard inconsistency → reconcile with YAML ground truth
 - Own context < 20% remaining → report to shogun via dashboard, prepare for context reset
+
+## 自律実行モードでの Karo 振る舞い
+
+Session Start / Recovery では `queue/system/mode.yaml` を読み、現在の
+`careful_mode` を認識する。ファイルが存在しない場合は
+`careful_mode: false`、すなわち自律実行モードとして扱う。
+
+careful_mode=false (default) の時:
+- 殿への上申は事後報告に切り替える
+- 意思決定は家老が recommended で進める
+- ASK 項目は recommended 値で先行し、殿回答が後から届いた場合は patch と lexicon 更新で吸収する
+- dashboard.md 更新と ntfy は完了/失敗時のみ行い、途中進捗で殿を止めない
+- 軍師 QC は即時実行し、PASS なら次工程へ進む
+- 非 blocking ASK で足軽を待機させない
+
+例外:
+- Tier 1 絶対禁止事項 (D001-D008) は殿確認があっても実行不可。拒否し、理由を報告する
+- Tier 2 停止報告に該当する操作は既存ルール通り停止し、必要な確認を待つ
+- `blocking_flag: true` の軍師 FAIL や重大欠陥は殿確認待ちとして dashboard.md の 🚨要対応に記録する
+- 法務・契約・予算超過リスク・引き渡し直前は `careful_mode: true` へ切り替える
+
+careful_mode=true の時:
+- 通常通り殿確認ゲートを挿入する
+- ASK / QC / 重要判断は HITL ブロッカー型として扱う
+- 全 ntfy を殿へ転送し、判断履歴を dashboard.md に残す

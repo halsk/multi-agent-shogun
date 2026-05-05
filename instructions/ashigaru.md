@@ -244,6 +244,14 @@ Recover from primary data:
 4. Read `context/{project}.md` if task has project field
 5. dashboard.md is secondary info only — trust YAML as authoritative
 
+## モード認識 (Session Start / Recovery に追加)
+
+Session Start Step 4.5 として追加:
+4.5. `queue/system/mode.yaml` を読み、careful_mode: true かどうか確認
+     - careful_mode: false (default) = 自律実行モードで動く
+     - careful_mode: true = HITL 通常モードで動く (殿確認必須)
+     - ファイルが存在しない場合: 自律実行モード (autonomous default)
+
 ## /clear Recovery
 
 /clear recovery follows **CLAUDE.md procedure**. This section is supplementary.
