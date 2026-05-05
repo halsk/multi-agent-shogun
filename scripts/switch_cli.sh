@@ -151,6 +151,7 @@ new_lines = []
 in_agent_block = False
 agent_indent = None
 skip_until_next = False
+agent_block_found = False
 
 i = 0
 while i < len(lines):
@@ -159,6 +160,7 @@ while i < len(lines):
 
     # Detect our agent's block start
     if stripped.startswith(f'{agent_id}:'):
+        agent_block_found = True
         in_agent_block = True
         agent_indent = len(line) - len(stripped)
         new_lines.append(line)
@@ -189,12 +191,17 @@ while i < len(lines):
         new_lines.append(line)
     i += 1
 
-with open(settings_path, 'w', encoding='utf-8') as f:
-    f.write('\n'.join(new_lines))
-    if not content.endswith('\n'):
-        pass
-    else:
-        f.write('\n') if not '\n'.join(new_lines).endswith('\n') else None
+if not agent_block_found:
+    # Agent block not found: fall back to yaml.dump (adds new block, comments lost)
+    with open(settings_path, 'w', encoding='utf-8') as f:
+        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+else:
+    with open(settings_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(new_lines))
+        if not content.endswith('\n'):
+            pass
+        else:
+            f.write('\n') if not '\n'.join(new_lines).endswith('\n') else None
 
 print("OK")
 PYEOF
