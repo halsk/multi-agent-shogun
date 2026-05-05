@@ -44,8 +44,6 @@
 !instructions/roles/*.md
 !instructions/common/
 !instructions/common/*.md
-!instructions/modes/
-!instructions/modes/*.md
 
 # Multi-CLI: Generated instruction files (built by build_instructions.sh)
 !instructions/generated/
@@ -72,10 +70,6 @@
 # Config (sample files only, no secrets)
 !config/
 !config/ntfy_auth.env.sample
-
-# System mode SSoT (no secrets)
-!queue/system/
-!queue/system/mode.yaml
 
 # Templates
 !templates/

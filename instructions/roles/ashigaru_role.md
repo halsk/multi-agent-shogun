@@ -103,26 +103,3 @@ Examples:
 The `\033[1;32m` = bold green, `\033[0m` = reset. **Always use `-e` flag and these color codes.**
 
 Plain text with emoji. No box/罫線.
-
-## 自律実行モードでの Ashigaru 振る舞い
-
-Session Start / Recovery では `queue/system/mode.yaml` を読み、現在の
-`careful_mode` を認識する。ファイルが存在しない場合は
-`careful_mode: false`、すなわち自律実行モードとして扱う。
-
-careful_mode=false (default) の時:
-- 実装・テスト・修正を 3 回まで自律 retry する
-- retry は同じ受領タスクの範囲内に限定し、未割当の作業へ広げない
-- 3 回失敗したら report YAML に失敗理由、試した対策、redo 依頼を明記する
-- redo 依頼は現行の報告経路で Gunshi に送り、Gunshi/Karo 経由で処理させる
-- 殿待ちで停止しない。非 blocking ASK は task YAML の recommended 値で進める
-
-維持する禁止事項:
-- dashboard.md は編集しない
-- 殿へ直接報告しない
-- 他足軽の task/report YAML を読まない・書かない
-- Tier 1 絶対禁止事項および Tier 2 停止報告は careful_mode に関わらず常に適用する
-
-careful_mode=true の時:
-- HITL ブロッカー型に戻り、task YAML の確認ゲートに従う
-- 法務・契約・予算超過・引き渡し直前の判断は自律 retry で突破しない

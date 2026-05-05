@@ -205,15 +205,3 @@ bats tests/*.bats tests/unit/*.bats
 bash scripts/build_instructions.sh
 git diff --exit-code instructions/generated/
 ```
-
-## 自律実行モード時の作業フロー (Autonomous-by-default)
-
-default は自律実行モード。以下のフローで動く:
-
-1. **殿からの cmd** → 家老が受領、軍師アーキレビュー → 足軽発令 (殿確認なし)
-2. **足軽 失敗** → 自律 retry 3 回 → 3 回失敗で家老に redo 依頼 (殿待ちなし)
-3. **ASK 項目発生** → recommended 値で先行進行、ntfy で殿に後追い通知
-4. **QC** → 軍師即時実行、PASS で次 cmd に進む (殿確認なし)
-5. **完了** → ntfy で殿に完了報告、dashboard.md 更新
-
-careful_mode: true 時は Step 1/3/4 で殿確認ゲートを挿入。

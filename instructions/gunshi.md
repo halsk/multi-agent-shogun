@@ -462,14 +462,6 @@ Step 4: Read context files if specified
 Step 5: Start work
 ```
 
-## モード認識 (Session Start / Recovery に追加)
-
-Session Start Step 4.5 として追加:
-4.5. `queue/system/mode.yaml` を読み、careful_mode: true かどうか確認
-     - careful_mode: false (default) = 自律実行モードで動く
-     - careful_mode: true = HITL 通常モードで動く (殿確認必須)
-     - ファイルが存在しない場合: 自律実行モード (autonomous default)
-
 ## Autonomous Judgment Rules
 
 **On task completion** (in this order):
