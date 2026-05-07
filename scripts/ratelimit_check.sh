@@ -160,6 +160,37 @@ extract_latest_codex_status_block() {
     ' <<< "$1"
 }
 
+extract_codex_context_left() {
+    awk '
+        /context left/ && match($0, /([0-9]+)%/, m) {
+            context = m[1]
+        }
+        /Context window:/ && match($0, /([0-9]+)% left/, m) {
+            fallback = m[1]
+        }
+        /[0-9]+% left/ && /·/ && match($0, /([0-9]+)% left/, m) {
+            context = m[1]
+        }
+        END {
+            if (context != "") {
+                print context
+            } else if (fallback != "") {
+                print fallback
+            }
+        }
+    ' <<< "$1"
+}
+
+normalize_reset_value() {
+    local reset_value="${1:-}"
+
+    if [[ -n "${reset_value//[[:space:]]/}" ]]; then
+        printf '%s' "$reset_value"
+    else
+        printf 'unknown'
+    fi
+}
+
 # ═══════════════════════════════════════════════════════
 # Phase 3: Collect data per CLI group
 # ═══════════════════════════════════════════════════════
@@ -319,18 +350,17 @@ if [[ ${#CODEX_AGENTS[@]} -gt 0 ]]; then
 
     for agent in "${CODEX_AGENTS[@]}"; do
         pane="${AGENT_PANE[$agent]}"
+        _pane_snapshot=$(capture_tmux_pane_zoomed "$pane" -80)
 
-        # Context: read from status bar (always visible, no /status needed)
-        ctx=$(tmux capture-pane -t "$pane" -p -S -5 2>/dev/null \
-            | grep -oE '[0-9]+% left' | tail -1 \
-            | grep -oE '[0-9]+' || echo "?")
+        # Context: use a zoomed capture so the Codex prompt or recent /status block survives narrow panes.
+        ctx=$(extract_codex_context_left "$_pane_snapshot" || true)
         [[ -z "$ctx" ]] && ctx="?"
         CODEX_CONTEXT["$agent"]="$ctx"
 
         # Quota: capture the latest /status block from a zoomed pane so narrow tiled panes do not
         # truncate "% left" and reset timestamps.
         if ! $_rl_quota_done; then
-            _status_out=$(capture_tmux_pane_zoomed "$pane" -80)
+            _status_out="$_pane_snapshot"
             _status_block=$(extract_latest_codex_status_block "$_status_out")
 
             if [[ ! "$_status_block" =~ [0-9]+%[[:space:]]left ]]; then
@@ -530,21 +560,21 @@ if [[ ${#CODEX_AGENTS[@]} -gt 0 ]]; then
     # Quota display from /status
     printf "  Quota (%s)\n" "${codex_model:-gpt-5.3-codex}"
     if [[ -n "$CODEX_ACCT_5H_LEFT" ]]; then
-        printf "  5h limit: %s%% left (resets %s)\n" "$CODEX_ACCT_5H_LEFT" "$CODEX_ACCT_5H_RESET"
+        printf "  5h limit: %s%% left (resets %s)\n" "$CODEX_ACCT_5H_LEFT" "$(normalize_reset_value "$CODEX_ACCT_5H_RESET")"
     else
         printf "  5h limit: N/A\n"
     fi
     if [[ -n "$CODEX_ACCT_7D_LEFT" ]]; then
-        printf "  Weekly limit: %s%% left (resets %s)\n" "$CODEX_ACCT_7D_LEFT" "$CODEX_ACCT_7D_RESET"
+        printf "  Weekly limit: %s%% left (resets %s)\n" "$CODEX_ACCT_7D_LEFT" "$(normalize_reset_value "$CODEX_ACCT_7D_RESET")"
     else
         printf "  Weekly limit: N/A\n"
     fi
     # Model-level quota
     if [[ -n "$CODEX_MODEL_5H_LEFT" ]]; then
         printf "  %s:\n" "${CODEX_MODEL_LABEL:-Model}"
-        printf "  5h limit: %s%% left (resets %s)\n" "$CODEX_MODEL_5H_LEFT" "$CODEX_MODEL_5H_RESET"
+        printf "  5h limit: %s%% left (resets %s)\n" "$CODEX_MODEL_5H_LEFT" "$(normalize_reset_value "$CODEX_MODEL_5H_RESET")"
         if [[ -n "$CODEX_MODEL_7D_LEFT" ]]; then
-            printf "  Weekly limit: %s%% left (resets %s)\n" "$CODEX_MODEL_7D_LEFT" "$CODEX_MODEL_7D_RESET"
+            printf "  Weekly limit: %s%% left (resets %s)\n" "$CODEX_MODEL_7D_LEFT" "$(normalize_reset_value "$CODEX_MODEL_7D_RESET")"
         fi
     fi
 
