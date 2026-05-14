@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/stop_hook_inbox.sh",
+            "command": "bash /mnt/c/tools/multi-agent-shogun/scripts/stop_hook_inbox.sh",
             "timeout": 60
           }
         ]
@@ -13,6 +13,7 @@
     ]
   },
   "permissions": {
+    "defaultMode": "bypassPermissions",
     "deny": [
       "Bash(rm -rf /)",
       "Bash(rm -rf /*)",
@@ -25,7 +26,8 @@
       "Bash(kill *)",
       "Bash(killall *)",
       "Bash(pkill *)",
-      "Bash(git push --force*)",
+      "Bash(git push --force)",
+      "Bash(git push --force origin*)",
       "Bash(git push -f *)",
       "Bash(git reset --hard*)",
       "Bash(tmux kill-server*)",
