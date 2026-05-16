@@ -541,6 +541,86 @@ JavaScriptフレームワーク上位5つを調査して比較表を作成せよ
 | 足軽 3 | Angular調査 | 完了 |
 ```
 
+### 案件単位での運用（Visual Studio の「ソリューション」相当）
+
+shogun システムは一度セットアップすれば、複数の案件（プロジェクト）を**同じ将軍配下**で切り替えながら扱えます。Visual Studio で言う「ソリューション」に相当する単位は `projects/{name}.yaml` + `context/{name}.md` です。
+
+#### 1. 最小の1案件を動かす流れ
+
+```bash
+# (1) 将軍に接続（shutsujin_departure.sh 完了済みの状態から）
+tmux attach-session -t shogun
+
+# (2) 将軍に案件を指示するだけで自動的に案件が立ち上がる
+#     → 将軍が cmd を queue/shogun_to_karo.yaml に書き、家老に通知
+#     → 家老が足軽に割り振り、並列実行
+#     → 結果は dashboard.md に集約
+```
+
+明示的な「案件を作る」コマンドは不要です。将軍が必要に応じて cmd の `project:` フィールドに案件IDを付け、関連ファイルは自動的に分離されます。
+
+#### 2. 案件を明示登録する場合（任意・長期案件向け）
+
+長期的に同じ案件を回す場合、メタ情報を `projects/{name}.yaml` に置けます:
+
+```yaml
+# projects/example.yaml
+id: example
+name: "サンプル案件"
+working_directory: /path/to/repo
+north_star: "この案件で達成したい最終目標"
+notes: |
+  案件固有のメモ、関係者、特殊ルール
+```
+
+将軍/家老はこのファイルを参照し、cmd 発令時に案件コンテキストを組み込みます。
+
+詳細な案件知識（要件、設計、過去のFB）は `context/{name}.md` に書きます。将軍が案件に関する cmd を発令する際、自動的にこのファイルを参照します。
+
+#### 3. エージェント構成のカスタマイズ
+
+陣営構成（誰にどのCLIを使わせるか）は `config/settings.yaml`：
+
+```yaml
+agents:
+  cli_assignments:
+    ashigaru1:
+      type: codex          # codex / claude / copilot / kimi
+      model: gpt-5.5
+    ashigaru2:
+      type: claude
+      model: claude-sonnet-4-6
+    # ashigaru3-7, gunshi, karo も同様
+```
+
+途中で切り替えたい場合は `scripts/switch_cli.sh` を使います：
+
+```bash
+bash scripts/switch_cli.sh ashigaru3 --type claude --model claude-sonnet-4-6
+```
+
+#### 4. 案件の切り替え／クローズ
+
+「案件をクローズする」明示コマンドはありません。**将軍が次の案件の cmd を発令すれば、自動的にコンテキストは切り替わります**。
+
+- 一時的に脇に置く: 何もしなくてよい。`queue/` の旧 cmd は履歴として残り、将軍が再開時に状態を復元
+- 完全に終了: `projects/{name}.yaml` を削除、または `archived: true` フラグを追加
+- 並行運用: 複数の案件を同時に走らせる場合、cmd の `project:` フィールドで区別
+
+#### 5. 経験値・設定の引き継ぎ
+
+次回以降の案件で活きるのは:
+
+| 引き継がれるもの | 保存先 | 参照タイミング |
+|------------------|--------|----------------|
+| 殿の好み・教訓 | Memory MCP（永続） | 全エージェントの Session Start 時 |
+| プロジェクト固有知識 | `context/{name}.md` | 該当案件の cmd 実行時 |
+| 過去の cmd 履歴 | `queue/shogun_to_karo.yaml` | 将軍が必要時に参照 |
+| カスタムスキル | `~/.claude/skills/`, `skills/` | 関連 trigger 発火時 |
+| エージェント構成 | `config/settings.yaml` | shutsujin 起動時 |
+
+特に **Memory MCP** が「経験値」の中心。殿が「次から〇〇しないで」「△△を覚えとけ」と言えば、将軍が自動的に Memory MCP に記録し、新しい案件でも継続して参照します。
+
 ### 詳細なフロー
 
 ```
