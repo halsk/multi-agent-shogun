@@ -537,6 +537,86 @@ Open `dashboard.md` in your editor for a real-time status view:
 | Ashigaru 3 | Research Angular | Completed |
 ```
 
+### Project-Unit Operation (Equivalent to Visual Studio "Solution")
+
+Once set up, the Shogun system can handle **multiple projects under the same Shogun**, switching between them as needed. The unit equivalent to a Visual Studio "solution" is `projects/{name}.yaml` + `context/{name}.md`.
+
+#### 1. Running your first project
+
+```bash
+# (1) Connect to the Shogun (after shutsujin_departure.sh completes)
+tmux attach-session -t shogun
+
+# (2) Just give the Shogun your command — the project starts automatically
+#     → Shogun writes cmd to queue/shogun_to_karo.yaml and notifies Karo
+#     → Karo distributes to Ashigaru for parallel execution
+#     → Results aggregate in dashboard.md
+```
+
+No explicit "create a project" command is needed. The Shogun attaches a `project:` field to the cmd when relevant, and related files are automatically separated.
+
+#### 2. Explicitly registering a project (optional, for long-term work)
+
+For ongoing projects, you can place metadata in `projects/{name}.yaml`:
+
+```yaml
+# projects/example.yaml
+id: example
+name: "Sample Project"
+working_directory: /path/to/repo
+north_star: "The ultimate goal for this project"
+notes: |
+  Project-specific notes, stakeholders, special rules
+```
+
+The Shogun and Karo reference this file and inject project context when issuing cmds.
+
+Detailed project knowledge (requirements, design, past feedback) lives in `context/{name}.md`. When the Shogun issues a cmd related to the project, it automatically references this file.
+
+#### 3. Customizing the agent formation
+
+The agent formation (which CLI each agent uses) lives in `config/settings.yaml`:
+
+```yaml
+agents:
+  cli_assignments:
+    ashigaru1:
+      type: codex          # codex / claude / copilot / kimi
+      model: gpt-5.5
+    ashigaru2:
+      type: claude
+      model: claude-sonnet-4-6
+    # Same for ashigaru3-7, gunshi, karo
+```
+
+To switch on the fly, use `scripts/switch_cli.sh`:
+
+```bash
+bash scripts/switch_cli.sh ashigaru3 --type claude --model claude-sonnet-4-6
+```
+
+#### 4. Switching or closing a project
+
+There is no explicit "close project" command. **Issuing the next project's cmd automatically switches context.**
+
+- Pause temporarily: do nothing. Old cmds remain in `queue/` as history, and the Shogun restores state when resumed
+- Fully retire: delete `projects/{name}.yaml`, or add an `archived: true` flag
+- Run in parallel: use the `project:` field in cmds to keep concurrent projects distinct
+
+#### 5. Carrying experience and settings between projects
+
+What carries forward to future projects:
+
+| What carries forward | Stored in | Referenced when |
+|----------------------|-----------|-----------------|
+| Lord's preferences and lessons | Memory MCP (persistent) | All agents at Session Start |
+| Project-specific knowledge | `context/{name}.md` | When running the project's cmds |
+| Past cmd history | `queue/shogun_to_karo.yaml` | When the Shogun needs it |
+| Custom skills | `~/.claude/skills/`, `skills/` | When matching triggers fire |
+| Agent formation | `config/settings.yaml` | At shutsujin startup |
+
+**Memory MCP** is the heart of "experience." When you tell the Shogun "don't do X next time" or "remember Y," the Shogun records it in Memory MCP, and all future projects see it.
+
 ### Detailed flow
 
 ```

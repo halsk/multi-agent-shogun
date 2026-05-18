@@ -109,6 +109,7 @@
 !saytask/streaks.yaml.sample
 
 # Reports (private — not tracked)
+logs/
 
 # Memory (MEMORY.md is private; only the sample template is OSS)
 !memory/
@@ -117,6 +118,7 @@
 # Docs
 !docs/
 !docs/philosophy.md
+!docs/vps_pr118_verification_plan.md
 
 # Screenshots (masked — no secrets)
 !images/
