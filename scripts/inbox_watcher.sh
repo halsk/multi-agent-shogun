@@ -334,6 +334,9 @@ try:
             pass  # If task YAML is unreadable, proceed with auto-recovery as safety net
 
     now = datetime.datetime.now(datetime.timezone.utc).astimezone()
+    # Persona re-establishment on /clear is handled by SessionStart hook
+    # (scripts/session_start_hook.sh, matcher=clear). Auto-recovery message only
+    # ensures task resumption after the /clear inbox nudge is consumed.
     msg = {
         "content": (
             f"[auto-recovery] /clear 後の再着手通知。"
