@@ -40,6 +40,15 @@ log_step() {
     echo -e "\n${CYAN}${BOLD}━━━ $1 ━━━${NC}\n"
 }
 
+# Cross-platform `sed -i` (BSD sed on macOS needs '' arg, GNU sed rejects it).
+sed_inplace() {
+    if sed --version >/dev/null 2>&1; then
+        sed -i "$@"
+    else
+        sed -i '' "$@"
+    fi
+}
+
 # スクリプトのディレクトリを取得
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -804,11 +813,11 @@ ALIAS_ADDED=false
 if [ -f "$BASHRC_FILE" ]; then
     # 古い alias 形式を削除（存在する場合）
     if grep -q "alias css=" "$BASHRC_FILE" 2>/dev/null; then
-        sed -i '/alias css=/d' "$BASHRC_FILE"
+        sed_inplace '/alias css=/d' "$BASHRC_FILE"
         log_info "旧 alias css を削除しました"
     fi
     if grep -q "alias csm=" "$BASHRC_FILE" 2>/dev/null; then
-        sed -i '/alias csm=/d' "$BASHRC_FILE"
+        sed_inplace '/alias csm=/d' "$BASHRC_FILE"
         log_info "旧 alias csm を削除しました"
     fi
 
@@ -823,7 +832,7 @@ if [ -f "$BASHRC_FILE" ]; then
         ALIAS_ADDED=true
     else
         # 関数は存在する → 最新版に更新
-        sed -i '/^css()/d' "$BASHRC_FILE"
+        sed_inplace '/^css()/d' "$BASHRC_FILE"
         echo "$CSS_FUNC" >> "$BASHRC_FILE"
         log_info "css 関数を更新しました"
         ALIAS_ADDED=true
@@ -835,7 +844,7 @@ if [ -f "$BASHRC_FILE" ]; then
         log_info "csm 関数を追加しました（家老・足軽ウィンドウ — 自動掃除付き）"
         ALIAS_ADDED=true
     else
-        sed -i '/^csm()/d' "$BASHRC_FILE"
+        sed_inplace '/^csm()/d' "$BASHRC_FILE"
         echo "$CSM_FUNC" >> "$BASHRC_FILE"
         log_info "csm 関数を更新しました"
         ALIAS_ADDED=true
@@ -847,7 +856,7 @@ if [ -f "$BASHRC_FILE" ]; then
         log_info "dash 関数を追加しました（ダッシュボードビューア）"
         ALIAS_ADDED=true
     else
-        sed -i '/^dash()/d' "$BASHRC_FILE"
+        sed_inplace '/^dash()/d' "$BASHRC_FILE"
         echo "$DASH_FUNC" >> "$BASHRC_FILE"
         log_info "dash 関数を更新しました"
         ALIAS_ADDED=true
