@@ -28,7 +28,7 @@ description: dashboard.md のPR状態をGitHubと自動照合し、マージ済�
 ### Step 1: dashboard.md を読み込む
 
 ```bash
-Read /mnt/c/tools/multi-agent-shogun/dashboard.md
+Read /Users/hal/tools/multi-agent-shogun/dashboard.md
 ```
 
 ### Step 2: 「マージ承認待ち」セクションから PR 一覧を抽出

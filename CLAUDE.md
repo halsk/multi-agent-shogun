@@ -133,9 +133,9 @@ Agent-to-agent communication uses file-based mailbox:
 bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
 ```
 
-**CRITICAL — invocation cwd**: 上記の相対パス例は **project root (`/mnt/c/tools/multi-agent-shogun`) を cwd とする前提**。他リポへ `cd` した後で相対パスのまま呼ぶと exit 127 (`No such file or directory`) で失敗する。事故防止策:
-- 他リポを触った直後は `cd /mnt/c/tools/multi-agent-shogun && bash scripts/inbox_write.sh ...` のように project root へ戻してから呼ぶ
-- もしくは絶対パスで `bash /mnt/c/tools/multi-agent-shogun/scripts/inbox_write.sh ...` と呼ぶ（スクリプト内部は `SCRIPT_DIR` で project root を自動解決ゆえ動作する）
+**CRITICAL — invocation cwd**: 上記の相対パス例は **project root (`/Users/hal/tools/multi-agent-shogun`) を cwd とする前提**。他リポへ `cd` した後で相対パスのまま呼ぶと exit 127 (`No such file or directory`) で失敗する。事故防止策:
+- 他リポを触った直後は `cd /Users/hal/tools/multi-agent-shogun && bash scripts/inbox_write.sh ...` のように project root へ戻してから呼ぶ
+- もしくは絶対パスで `bash /Users/hal/tools/multi-agent-shogun/scripts/inbox_write.sh ...` と呼ぶ（スクリプト内部は `SCRIPT_DIR` で project root を自動解決ゆえ動作する）
 
 Examples:
 ```bash
