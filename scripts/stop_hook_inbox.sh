@@ -22,6 +22,37 @@ set -euo pipefail
 
 SCRIPT_DIR="${__STOP_HOOK_SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# ─── Cross-platform inbox watch (Linux inotifywait / macOS fswatch) ───
+# Args: timeout_sec, then one or more paths to watch.
+# Returns 0 in all cases; caller re-checks the file state afterward.
+wait_for_inbox_change() {
+    local timeout_sec="$1"; shift
+    local watch_targets=("$@")
+    if [ "$(uname -s)" = "Darwin" ]; then
+        command -v fswatch &>/dev/null || return 0
+        if command -v gtimeout &>/dev/null; then
+            gtimeout "$timeout_sec" fswatch -1 --event Updated --event Renamed --event MovedTo \
+                "${watch_targets[@]}" >/dev/null 2>&1 || true
+        else
+            fswatch -1 --event Updated --event Renamed --event MovedTo \
+                "${watch_targets[@]}" >/dev/null 2>&1 &
+            local fswatch_pid=$!
+            local waited=0
+            while [ "$waited" -lt "$timeout_sec" ] && kill -0 "$fswatch_pid" 2>/dev/null; do
+                sleep 2
+                waited=$((waited + 2))
+            done
+            kill "$fswatch_pid" 2>/dev/null || true
+            wait "$fswatch_pid" 2>/dev/null || true
+        fi
+    else
+        command -v inotifywait &>/dev/null || return 0
+        inotifywait -e close_write -e moved_to \
+            --timeout "$timeout_sec" \
+            "${watch_targets[@]}" 2>/dev/null || true
+    fi
+}
+
 # ─── Read stdin (hook input JSON) ───
 INPUT=$(cat)
 
@@ -75,11 +106,7 @@ if [ "$STOP_HOOK_ACTIVE" = "True" ]; then
     if [ "$AGENT_ID" = "shogun" ]; then
         WATCH_TARGETS_ACTIVE+=("$SCRIPT_DIR/dashboard.md")
     fi
-    if command -v inotifywait &>/dev/null; then
-        inotifywait -e close_write -e moved_to \
-            --timeout 55 \
-            "${WATCH_TARGETS_ACTIVE[@]}" 2>/dev/null || true
-    fi
+    wait_for_inbox_change 55 "${WATCH_TARGETS_ACTIVE[@]}"
     UNREAD_COUNT=$(grep -c 'read: false' "$INBOX" 2>/dev/null || true)
     if [ "${UNREAD_COUNT:-0}" -eq 0 ]; then
         exit 0
@@ -128,20 +155,13 @@ UNREAD_COUNT=$(grep -c 'read: false' "$INBOX" 2>/dev/null || true)
 FLAG="${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}"
 if [ "${UNREAD_COUNT:-0}" -eq 0 ]; then
     touch "$FLAG"
-    # inotifywait で inbox 変更を最大55秒待機
+    # cross-platform watcher で inbox 変更を最大55秒待機
     # dashboard.md も監視（shogunの場合のみ）
     WATCH_TARGETS=("$INBOX")
     if [ "$AGENT_ID" = "shogun" ]; then
         WATCH_TARGETS+=("$SCRIPT_DIR/dashboard.md")
     fi
-    if command -v inotifywait &>/dev/null; then
-        inotifywait -e close_write -e moved_to \
-            --timeout 55 \
-            "${WATCH_TARGETS[@]}" 2>/dev/null || true
-    else
-        # inotifywait not available: fall through to exit 0
-        :
-    fi
+    wait_for_inbox_change 55 "${WATCH_TARGETS[@]}"
     # 待機後に再チェック
     UNREAD_COUNT=$(grep -c 'read: false' "$INBOX" 2>/dev/null || true)
     if [ "${UNREAD_COUNT:-0}" -eq 0 ]; then
