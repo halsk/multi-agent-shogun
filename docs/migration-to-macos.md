@@ -442,6 +442,10 @@ ls -d raw/meetings/2026-* 2>/dev/null | head -5  # 月毎フォルダ確認
 
 ## Phase 6: 外部サービス再構築 (n8n / Dify)
 
+> **n8n の詳細移行手順は別仕様書**: [`docs/migration-n8n.md`](migration-n8n.md)
+> postgres DB dump + restore（方式 A）+ Soft cutover（並行稼働）で credentials 完全保全。
+> 本 Phase 6 はサマリのみ、実作業は migration-n8n.md を参照すること。
+
 ### 6.1 n8n (ai-worker)
 
 ```bash
