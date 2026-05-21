@@ -104,7 +104,7 @@ echo ""
 echo "=== Hook 3: cd 外部リポ対応（GIT_TARGET_DIR） ==="
 # Find a directory that is NOT on main (any worktree or external repo)
 EXTERNAL_REPO=""
-for wt in /home/hal/workspace/geonicdb-demo-app-wt18 /home/hal/workspace/geonicdb-demo-app /home/hal/workspace/geonicdb-console; do
+for wt in /Users/hal/workspace/geonicdb-demo-app-wt18 /Users/hal/workspace/geonicdb-demo-app /Users/hal/workspace/geonicdb-console; do
   if [[ -d "$wt/.git" || -f "$wt/.git" ]]; then
     WT_BRANCH=$(git -C "$wt" branch --show-current 2>/dev/null || echo "")
     if [[ -n "$WT_BRANCH" && "$WT_BRANCH" != "main" && "$WT_BRANCH" != "master" ]]; then

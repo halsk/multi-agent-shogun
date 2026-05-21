@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /mnt/c/tools/multi-agent-shogun/scripts/session_start_hook.sh",
+            "command": "bash /Users/hal/tools/multi-agent-shogun/scripts/session_start_hook.sh",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash /mnt/c/tools/multi-agent-shogun/scripts/stop_hook_inbox.sh",
+            "command": "bash /Users/hal/tools/multi-agent-shogun/scripts/stop_hook_inbox.sh",
             "timeout": 60
           }
         ]
