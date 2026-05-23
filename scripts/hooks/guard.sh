@@ -193,8 +193,32 @@ if echo "$COMMAND" | grep -qE '\bgh\b'; then
 fi
 
 # ============================================================
+# Hook 6 helpers: docs-only skip
+# ============================================================
+is_docs_only_file() {
+  local f="$1"
+  case "$f" in
+    docs/*|*.md|.gitignore|.code-review-done|CHANGELOG.md|README*|LICENSE*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+determine_baseline() {
+  local marker_hash="$1"
+  if [[ -n "$marker_hash" ]] && git -C "$GIT_TARGET_DIR" rev-parse "$marker_hash" >/dev/null 2>&1; then
+    echo "$marker_hash"
+  else
+    local base
+    base=$(git -C "$GIT_TARGET_DIR" merge-base HEAD origin/main 2>/dev/null) || \
+    base=$(git -C "$GIT_TARGET_DIR" rev-parse HEAD~1 2>/dev/null) || base=""
+    echo "$base"
+  fi
+}
+
+# ============================================================
 # Hook 6: code-review-expert 実行強制（マーカーファイル方式）
 # Uses GIT_TARGET_DIR for HEAD hash and .code-review-done lookup
+# docs-only changes (docs/*, *.md, etc.) are auto-skipped
 # ============================================================
 if has_git_subcmd "$COMMAND" "push"; then
   HEAD_HASH=$(git -C "$GIT_TARGET_DIR" rev-parse HEAD 2>/dev/null || echo "")
@@ -206,8 +230,31 @@ if has_git_subcmd "$COMMAND" "push"; then
     fi
     REVIEW_HASH=$(tr -d '[:space:]' < "$REVIEW_DONE_FILE" 2>/dev/null || echo "")
     if [[ "$REVIEW_HASH" != "$HEAD_HASH" ]]; then
-      echo "❌ code-review-expert を実行してください。push 前にレビューが必要です。（コミット後に再レビューが必要です）" >&2
-      exit 2
+      BASELINE=$(determine_baseline "$REVIEW_HASH")
+      DOCS_ONLY_SKIP=0
+      if [[ -n "$BASELINE" ]]; then
+        CHANGED_FILES=$(git -C "$GIT_TARGET_DIR" diff --name-only "$BASELINE" HEAD 2>/dev/null || echo "")
+        if [[ -n "$CHANGED_FILES" ]]; then
+          ALL_DOCS=1
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            if ! is_docs_only_file "$file"; then
+              ALL_DOCS=0
+              break
+            fi
+          done <<< "$CHANGED_FILES"
+          if [[ $ALL_DOCS -eq 1 ]]; then
+            DOCS_ONLY_SKIP=1
+          fi
+        fi
+      fi
+      if [[ $DOCS_ONLY_SKIP -eq 1 ]]; then
+        echo "$HEAD_HASH" > "$REVIEW_DONE_FILE"
+        echo "ℹ️  guard.sh: docs-only change detected, code-review skipped + marker auto-updated" >&2
+      else
+        echo "❌ code-review-expert を実行してください。push 前にレビューが必要です。（コミット後に再レビューが必要です）" >&2
+        exit 2
+      fi
     fi
   fi
 fi

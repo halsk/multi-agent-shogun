@@ -167,6 +167,124 @@ else
 fi
 
 echo ""
+echo "=== Hook 6: docs-only skip ==="
+if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+  echo "  ℹ️  main ブランチのため Hook 6 docs-only テストをスキップ（Hook 3 が先にブロックするため）"
+else
+  # Helper: force-add test files, commit (with saved_head as marker), run guard, cleanup
+  # git add -f bypasses whitelist-based .gitignore in this repo
+  # Only does git reset --soft HEAD~1 if commit actually succeeded (avoids undoing real commits)
+  _h6_test() {
+    local desc="$1" expected="$2"
+    shift 2
+    local files=("$@")
+    git restore --staged . >/dev/null 2>&1 || true
+    local saved_head
+    saved_head=$(git rev-parse HEAD 2>/dev/null || echo "")
+    for f in "${files[@]}"; do
+      mkdir -p "$(dirname "$f")" 2>/dev/null || true
+      echo "h6-tmp" > "$f"
+      git add -f "$f" >/dev/null 2>&1 || true
+    done
+    local committed=0
+    if git commit -m "tmp: h6-docs-test" --no-verify >/dev/null 2>&1; then
+      committed=1
+    fi
+    if [[ $committed -eq 1 ]]; then
+      echo "$saved_head" > ".code-review-done"
+      local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push origin feat/docs-test\"}}"
+      echo "$json" | bash "$GUARD" >/dev/null 2>&1
+      local rc=$?
+      if [[ "$expected" == "allow" && $rc -eq 0 ]]; then
+        echo "  ✅ ALLOW (docs-only skip): $desc"
+        ((PASS++)) || true
+      elif [[ "$expected" == "block" && $rc -eq 2 ]]; then
+        echo "  ✅ BLOCK (non-docs detected): $desc"
+        ((PASS++)) || true
+      else
+        echo "  ❌ FAIL: $desc (expected=$expected, got exit=$rc)"
+        ((FAIL++)) || true
+      fi
+      git reset --soft HEAD~1 >/dev/null 2>&1 || true
+      git restore --staged "${files[@]}" >/dev/null 2>&1 || true
+    else
+      echo "  ❌ FAIL: $desc (git commit failed — check .gitignore or test setup)"
+      ((FAIL++)) || true
+    fi
+    rm -f "${files[@]}" ".code-review-done"
+  }
+
+  # case 1: docs/foo.md のみ変更 → skip 成功 (exit 0)
+  _h6_test "docs/foo.md only" allow "docs/tmp_h6c1.md"
+
+  # case 2: README_*.md + .gitignore 変更 → skip 成功
+  git restore --staged . >/dev/null 2>&1 || true
+  _h6c2_saved=$(git rev-parse HEAD 2>/dev/null || echo "")
+  printf '\n# h6c2-test\n' >> .gitignore
+  echo "h6c2-readme" > README_h6c2_tmp.md
+  git add -f .gitignore README_h6c2_tmp.md >/dev/null 2>&1 || true
+  _h6c2_committed=0
+  if git commit -m "tmp: h6c2 gitignore+readme test" --no-verify >/dev/null 2>&1; then
+    _h6c2_committed=1
+    echo "$_h6c2_saved" > ".code-review-done"
+    echo '{"tool_name":"Bash","tool_input":{"command":"git push origin feat/docs-test"}}' | bash "$GUARD" >/dev/null 2>&1
+    _h6c2_rc=$?
+    if [[ $_h6c2_rc -eq 0 ]]; then
+      echo "  ✅ ALLOW (docs-only skip): README_* + .gitignore"
+      ((PASS++)) || true
+    else
+      echo "  ❌ FAIL: README_* + .gitignore (expected=allow, got exit=$_h6c2_rc)"
+      ((FAIL++)) || true
+    fi
+    git reset --soft HEAD~1 >/dev/null 2>&1 || true
+    git restore --staged .gitignore README_h6c2_tmp.md >/dev/null 2>&1 || true
+  else
+    echo "  ❌ FAIL: README_* + .gitignore (git commit failed)"
+    ((FAIL++)) || true
+  fi
+  git checkout -- .gitignore >/dev/null 2>&1 || true
+  rm -f README_h6c2_tmp.md ".code-review-done"
+
+  # case 3: scripts/foo.sh + docs/bar.md 混在 → block (exit 2)
+  _h6_test "scripts/foo.sh + docs/bar.md mixed" block "scripts/tmp_h6c3.sh" "docs/tmp_h6c3.md"
+
+  # case 4: docs 配下のファイル削除のみ → skip 成功
+  # Two-commit approach: first add docs file, then delete — set baseline=after-add commit
+  git restore --staged . >/dev/null 2>&1 || true
+  echo "h6c4-setup" > docs/tmp_h6c4.md
+  git add -f docs/tmp_h6c4.md >/dev/null 2>&1 || true
+  _h6c4_ok=0
+  if git commit -m "tmp: h6c4 setup" --no-verify >/dev/null 2>&1; then
+    _h6c4_saved=$(git rev-parse HEAD 2>/dev/null || echo "")
+    git rm docs/tmp_h6c4.md >/dev/null 2>&1 || true
+    if git commit -m "tmp: h6c4 delete docs file" --no-verify >/dev/null 2>&1; then
+      _h6c4_ok=1
+    fi
+  fi
+  if [[ $_h6c4_ok -eq 1 ]]; then
+    echo "$_h6c4_saved" > ".code-review-done"
+    echo '{"tool_name":"Bash","tool_input":{"command":"git push origin feat/docs-test"}}' | bash "$GUARD" >/dev/null 2>&1
+    _h6c4_rc=$?
+    if [[ $_h6c4_rc -eq 0 ]]; then
+      echo "  ✅ ALLOW (docs-only skip): docs-only file deletion"
+      ((PASS++)) || true
+    else
+      echo "  ❌ FAIL: docs-only file deletion (expected=allow, got exit=$_h6c4_rc)"
+      ((FAIL++)) || true
+    fi
+    git reset --soft HEAD~2 >/dev/null 2>&1 || true
+    git restore --staged . >/dev/null 2>&1 || true
+  else
+    echo "  ❌ FAIL: docs-only file deletion (setup commits failed)"
+    ((FAIL++)) || true
+  fi
+  rm -f docs/tmp_h6c4.md ".code-review-done"
+
+  # case 5: CHANGELOG.md 追加 → skip 成功 (root-level .md matches *.md pattern)
+  _h6_test "CHANGELOG.md addition (root-level *.md)" allow "tmp_h6c5_changelog.md"
+fi
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
