@@ -16,6 +16,8 @@
 !CLAUDE.md
 !LICENSE
 !README.md
+!CONTEXT.md
+!CONTEXT-MAP.md
 !README_ja.md
 !CHANGELOG.md
 !CONTRIBUTING.md
@@ -24,6 +26,11 @@
 # Claude Code settings (spinner verbs only, no secrets)
 !.claude/
 !.claude/settings.json
+
+# grill-with-docs skill (upstream files, byte-identical to mattpocock/skills)
+!.claude/skills/
+!.claude/skills/grill-with-docs/
+!.claude/skills/grill-with-docs/*.md
 
 # Instructions (core OSS)
 !instructions/
@@ -119,6 +126,8 @@ logs/
 # Docs
 !docs/
 !docs/philosophy.md
+!docs/adr/
+!docs/adr/*.md
 !docs/vps_pr118_verification_plan.md
 !docs/migration-to-macos.md
 !docs/migration-n8n.md
