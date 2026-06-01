@@ -783,9 +783,9 @@ gunshi     claude  稼働中    subtask_042c_analysis                      assig
 ```
 Pane                           State      Agent ID
 ------------------------------ ---------- ----------
-multiagent:agents.0            IDLE       karo
-multiagent:agents.1            BUSY       ashigaru1
-multiagent:agents.8            BUSY       gunshi
+multiagent:agents.1            IDLE       karo
+multiagent:agents.2            BUSY       ashigaru1
+multiagent:agents.9            BUSY       gunshi
 ```
 
 判定は **Claude Code** と **Codex CLI** の両方に対応。各tmuxペインの末尾5行からCLI固有のプロンプト/スピナーパターンを検出。判定ロジックは `lib/agent_status.sh` に分離されており、自作スクリプトからも利用可能：
@@ -1525,7 +1525,7 @@ tmux attach-session -t shogun     # 接続してコマンドを出す
 
 # 特定のエージェントでClaude Codeを手動起動
 tmux send-keys -t shogun:0 'claude --dangerously-skip-permissions' Enter
-tmux send-keys -t multiagent:0.0 'claude --dangerously-skip-permissions' Enter
+tmux send-keys -t multiagent:agents.1 'claude --dangerously-skip-permissions' Enter
 ```
 
 **クラッシュ後の再起動：**
@@ -1753,7 +1753,7 @@ tmux attach-session -t multiagent
 claude --model opus --dangerously-skip-permissions
 
 # 方法2: 家老がrespawn-paneで強制再起動（ネストも解消される）
-tmux respawn-pane -t shogun:0.0 -k 'claude --model opus --dangerously-skip-permissions'
+tmux respawn-pane -t shogun:main -k 'claude --model opus --dangerously-skip-permissions'
 ```
 
 **誤ってtmuxをネストしてしまった場合：**

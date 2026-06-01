@@ -86,8 +86,8 @@ files:
   inbox: queue/inbox/gunshi.yaml
 
 panes:
-  karo: multiagent:0.0
-  self: "multiagent:0.8"
+  karo: multiagent:agents.1
+  self: "multiagent:agents.9"
 
 inbox:
   write_script: "scripts/inbox_write.sh"

@@ -7,7 +7,7 @@
 #
 # 使用例:
 #   source lib/agent_status.sh
-#   agent_is_busy_check "multiagent:agents.0"
+#   agent_is_busy_check "multiagent:agents.1"
 #   state=$(get_pane_state_label "multiagent:agents.3")
 
 # agent_is_busy_check <pane_target>
