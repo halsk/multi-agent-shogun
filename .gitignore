@@ -131,6 +131,7 @@ logs/
 !docs/vps_pr118_verification_plan.md
 !docs/migration-to-macos.md
 !docs/migration-n8n.md
+!docs/setup_venv.md
 
 # Screenshots (masked — no secrets)
 !images/

@@ -49,6 +49,9 @@ def get_timestamp():
 
 
 def get_queue_dir():
+    override = os.environ.get('SHOGUN_QUEUE_DIR')
+    if override:
+        return Path(override).resolve()
     return Path(__file__).resolve().parent.parent / 'queue'
 
 
@@ -204,7 +207,7 @@ def slim_inbox(agent_id, dry_run=False):
     if not data or 'messages' not in data:
         return True
 
-    messages = data.get('messages', [])
+    messages = data.get('messages') or []
     if not isinstance(messages, list):
         print("Error: messages is not a list", file=sys.stderr)
         return False
