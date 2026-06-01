@@ -778,9 +778,9 @@ gunshi     claude  稼働中    subtask_042c_analysis                      assig
 ```
 Pane                           State      Agent ID
 ------------------------------ ---------- ----------
-multiagent:agents.0            IDLE       karo
-multiagent:agents.1            BUSY       ashigaru1
-multiagent:agents.8            BUSY       gunshi
+multiagent:agents.1            IDLE       karo
+multiagent:agents.2            BUSY       ashigaru1
+multiagent:agents.9            BUSY       gunshi
 ```
 
 Detection works for both **Claude Code** and **Codex CLI** by checking CLI-specific prompt/spinner patterns in the bottom 5 lines of each tmux pane. The detection logic lives in `lib/agent_status.sh` — source it in your own scripts:
@@ -1581,7 +1581,7 @@ tmux attach-session -t shogun     # Connect and give commands
 
 # Manually launch Claude Code on specific agents
 tmux send-keys -t shogun:0 'claude --dangerously-skip-permissions' Enter
-tmux send-keys -t multiagent:0.0 'claude --dangerously-skip-permissions' Enter
+tmux send-keys -t multiagent:agents.1 'claude --dangerously-skip-permissions' Enter
 ```
 
 **Restart after crash:**
@@ -1799,7 +1799,7 @@ tmux attach-session -t multiagent
 claude --model opus --dangerously-skip-permissions
 
 # Method 2: Karo force-restarts via respawn-pane (also fixes nesting)
-tmux respawn-pane -t shogun:0.0 -k 'claude --model opus --dangerously-skip-permissions'
+tmux respawn-pane -t shogun:main -k 'claude --model opus --dangerously-skip-permissions'
 ```
 
 **If you accidentally nested tmux:**
