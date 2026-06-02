@@ -117,11 +117,17 @@ generate_agents_md() {
     fi
 
     # Normalize line endings to LF to keep tracked auto-load files stable across platforms.
-    # Protect CLAUDE.md references inside External Repo Context Rule from CLI-specific substitution.
+    # Protect candidate file names in External Repo Context Rule and Step 3.5 from CLI-specific substitution.
     perl -0777 -pe '
-        s/(# External Repo Context Rule.*?)(?=\n# |\z)/
-            (my $s = $1) =~ s!CLAUDE\.md!__CLAUDE_MD__!g; $s
-        /se
+        sub prot {
+            my $t = shift;
+            $t =~ s!CLAUDE\.md!__CLAUDE_MD__!g;
+            $t =~ s!AGENTS\.md!__AGENTS_MD__!g;
+            $t =~ s!\.github/copilot-instructions\.md!__COPILOT_INST__!g;
+            $t
+        }
+        s/(# External Repo Context Rule.*?)(?=\n# |\z)/prot($1)/se;
+        s/(Step 3\.5:[^\n]*\n(?:[ \t]+[^\n]*\n)*)/prot($1)/se;
     ' "$claude_md" | \
     sed \
         -e 's|CLAUDE\.md|AGENTS.md|g' \
@@ -144,7 +150,11 @@ generate_agents_md() {
         -e 's|escalation sends `/clear` (~4 min)|next nudge escalation or task reassignment|g' \
         -e 's|delivers `/clear` to the agent|delivers `/new` to the agent（/clear→/new自動変換）|g' \
         -e 's|`/clear` wipes old context|`/new` wipes old context|g' \
-        | perl -pe 's/__CLAUDE_MD__/CLAUDE.md/g' \
+        | perl -pe '
+            s/__CLAUDE_MD__/CLAUDE.md/g;
+            s/__AGENTS_MD__/AGENTS.md/g;
+            s/__COPILOT_INST__/.github\/copilot-instructions.md/g;
+        ' \
         | tr -d '\r' > "$output_path"
 
     echo "  ✅ Created: AGENTS.md"
@@ -170,11 +180,17 @@ generate_copilot_instructions() {
     mkdir -p "$github_dir"
 
     # Normalize line endings to LF to keep tracked auto-load files stable across platforms.
-    # Protect CLAUDE.md references inside External Repo Context Rule from CLI-specific substitution.
+    # Protect candidate file names in External Repo Context Rule and Step 3.5 from CLI-specific substitution.
     perl -0777 -pe '
-        s/(# External Repo Context Rule.*?)(?=\n# |\z)/
-            (my $s = $1) =~ s!CLAUDE\.md!__CLAUDE_MD__!g; $s
-        /se
+        sub prot {
+            my $t = shift;
+            $t =~ s!CLAUDE\.md!__CLAUDE_MD__!g;
+            $t =~ s!AGENTS\.md!__AGENTS_MD__!g;
+            $t =~ s!\.github/copilot-instructions\.md!__COPILOT_INST__!g;
+            $t
+        }
+        s/(# External Repo Context Rule.*?)(?=\n# |\z)/prot($1)/se;
+        s/(Step 3\.5:[^\n]*\n(?:[ \t]+[^\n]*\n)*)/prot($1)/se;
     ' "$claude_md" | \
     sed \
         -e 's|CLAUDE\.md|copilot-instructions.md|g' \
@@ -187,7 +203,11 @@ generate_copilot_instructions() {
         -e 's|\.claude\.json|.copilot/config.json|g' \
         -e 's|\.mcp\.json|.copilot/mcp-config.json|g' \
         -e 's|Claude Code|GitHub Copilot CLI|g' \
-        | perl -pe 's/__CLAUDE_MD__/CLAUDE.md/g' \
+        | perl -pe '
+            s/__CLAUDE_MD__/CLAUDE.md/g;
+            s/__AGENTS_MD__/AGENTS.md/g;
+            s/__COPILOT_INST__/.github\/copilot-instructions.md/g;
+        ' \
         | tr -d '\r' > "$output_path"
 
     echo "  ✅ Created: .github/copilot-instructions.md"
@@ -215,11 +235,17 @@ generate_kimi_instructions() {
 
     # Generate system.md (CLAUDE.md → Kimi版)
     # Normalize line endings to LF to keep tracked auto-load files stable across platforms.
-    # Protect CLAUDE.md references inside External Repo Context Rule from CLI-specific substitution.
+    # Protect candidate file names in External Repo Context Rule and Step 3.5 from CLI-specific substitution.
     perl -0777 -pe '
-        s/(# External Repo Context Rule.*?)(?=\n# |\z)/
-            (my $s = $1) =~ s!CLAUDE\.md!__CLAUDE_MD__!g; $s
-        /se
+        sub prot {
+            my $t = shift;
+            $t =~ s!CLAUDE\.md!__CLAUDE_MD__!g;
+            $t =~ s!AGENTS\.md!__AGENTS_MD__!g;
+            $t =~ s!\.github/copilot-instructions\.md!__COPILOT_INST__!g;
+            $t
+        }
+        s/(# External Repo Context Rule.*?)(?=\n# |\z)/prot($1)/se;
+        s/(Step 3\.5:[^\n]*\n(?:[ \t]+[^\n]*\n)*)/prot($1)/se;
     ' "$claude_md" | \
     sed \
         -e 's|CLAUDE\.md|agents/default/system.md|g' \
@@ -232,7 +258,11 @@ generate_kimi_instructions() {
         -e 's|\.claude\.json|.kimi/config.json|g' \
         -e 's|\.mcp\.json|.kimi/mcp.json|g' \
         -e 's|Claude Code|Kimi K2 CLI|g' \
-        | perl -pe 's/__CLAUDE_MD__/CLAUDE.md/g' \
+        | perl -pe '
+            s/__CLAUDE_MD__/CLAUDE.md/g;
+            s/__AGENTS_MD__/AGENTS.md/g;
+            s/__COPILOT_INST__/.github\/copilot-instructions.md/g;
+        ' \
         | tr -d '\r' > "$system_md_path"
 
     echo "  ✅ Created: agents/default/system.md"
