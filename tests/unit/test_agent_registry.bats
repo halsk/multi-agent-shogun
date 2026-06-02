@@ -83,7 +83,7 @@ join_lines() {
 
     load_registry_with "$settings"
 
-    [ "$(agent_registry_pane_for_agent shogun 1)" = "shogun:main.0" ]
+    [ "$(agent_registry_pane_for_agent shogun 1)" = "shogun:main" ]
     [ "$(agent_registry_multiagent_pane_for_agent karo 1)" = "multiagent:agents.1" ]
     [ "$(agent_registry_multiagent_pane_for_agent ashigaru4 1)" = "multiagent:agents.2" ]
     [ "$(agent_registry_multiagent_pane_for_agent gunshi2 1)" = "multiagent:agents.4" ]
@@ -108,7 +108,7 @@ join_lines() {
         bash "$PROJECT_ROOT/scripts/watcher_supervisor.sh" --print-watchers
 
     [ "$status" -eq 0 ]
-    [[ "$output" == *$'shogun\tshogun:main.0\tlogs/inbox_watcher_shogun.log'* ]]
+    [[ "$output" == *$'shogun\tshogun:main\tlogs/inbox_watcher_shogun.log'* ]]
     [[ "$output" == *$'karo\tmultiagent:agents.1\tlogs/inbox_watcher_karo.log'* ]]
     [[ "$output" == *$'ashigaru3\tmultiagent:agents.2\tlogs/inbox_watcher_ashigaru3.log'* ]]
     [[ "$output" == *$'gunshi\tmultiagent:agents.3\tlogs/inbox_watcher_gunshi.log'* ]]
