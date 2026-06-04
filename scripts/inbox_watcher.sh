@@ -2,7 +2,7 @@
 # ═══════════════════════════════════════════════════════════════
 # inbox_watcher.sh — メールボックス監視＆起動シグナル配信
 # Usage: bash scripts/inbox_watcher.sh <agent_id> <pane_target> [cli_type]
-# Example: bash scripts/inbox_watcher.sh karo multiagent:0.0 claude
+# Example: bash scripts/inbox_watcher.sh karo multiagent:agents.1 claude
 #
 # 設計思想:
 #   メッセージ本体はファイル（inbox YAML）に書く = 確実

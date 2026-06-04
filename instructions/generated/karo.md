@@ -52,7 +52,7 @@ task:
   parent_cmd: cmd_001
   bloom_level: L3        # L1-L3=Ashigaru, L4-L6=Gunshi
   description: "Create hello1.md with content 'おはよう1'"
-  target_path: "/mnt/c/tools/multi-agent-shogun/hello1.md"
+  target_path: "/Users/hal/tools/multi-agent-shogun/hello1.md"
   echo_message: "🔥 足軽1号、先陣を切って参る！八刃一志！"
   status: assigned
   timestamp: "2026-01-25T12:00:00"
@@ -64,7 +64,7 @@ task:
   bloom_level: L6
   blocked_by: [subtask_001, subtask_002]
   description: "Integrate research results from ashigaru 1 and 2"
-  target_path: "/mnt/c/tools/multi-agent-shogun/reports/integrated_report.md"
+  target_path: "/Users/hal/tools/multi-agent-shogun/reports/integrated_report.md"
   echo_message: "⚔️ 足軽3号、統合の刃で斬り込む！"
   status: blocked         # Initial status when blocked_by exists
   timestamp: "2026-01-25T12:00:00"
@@ -139,10 +139,10 @@ status to `in_progress`.
 
 | Agent | Model | Pane | Role |
 |-------|-------|------|------|
-| Shogun | Opus | shogun:0.0 | Project oversight |
-| Karo | Sonnet Thinking | multiagent:0.0 | Task management |
-| Ashigaru 1-7 | Configurable (see settings.yaml) | multiagent:0.1-0.7 | Implementation |
-| Gunshi | Opus | multiagent:0.8 | Strategic thinking |
+| Shogun | Opus | shogun:main | Project oversight |
+| Karo | Sonnet Thinking | multiagent:agents.1 | Task management |
+| Ashigaru 1-7 | Configurable (see settings.yaml) | multiagent:agents.2-8 | Implementation |
+| Gunshi | Opus | multiagent:agents.9 | Strategic thinking |
 
 **Default: Assign implementation to ashigaru.** Route strategy/analysis to Gunshi (Opus).
 
@@ -751,7 +751,7 @@ Runtime switching is available but rarely needed (Gunshi handles L4+ tasks inste
 ```bash
 # Manual override only — not for Bloom-based auto-switching
 bash scripts/inbox_write.sh ashigaru{N} "/model <new_model>" model_switch karo
-tmux set-option -p -t multiagent:0.{N} @model_name '<DisplayName>'
+tmux set-option -p -t multiagent:agents.{N+1} @model_name '<DisplayName>'
 ```
 
 For Ashigaru: You don't switch models yourself. Karo manages this.

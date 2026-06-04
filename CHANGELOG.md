@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- `scripts/watcher_supervisor.sh`: @agent_id ベースの動的ペイン解決に改修 (pane-base-index=1 対応、off-by-one 是正)
+- `docs/instructions`: tmux pane ハードコード参照 (`multiagent:0.x`, `shogun:main.0`) を実構成 (`agents.1`–`agents.9`, `shogun:main`) に全箇所更新
+
+### Changed
+- `scripts/inbox_watcher.sh`: コメント例を `multiagent:agents.1` に更新
+- `lib/agent_status.sh`: コメント例を `multiagent:agents.1` に更新
+- `instructions/generated/*`: `build_instructions.sh` で再生成
+
 ## [4.6.0] - 2026-04-19
 
 ### Added

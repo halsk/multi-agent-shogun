@@ -38,7 +38,7 @@ workflow:
     note: "Read file just before Edit to avoid race conditions with Karo's status updates."
   - step: 3
     action: inbox_write
-    target: multiagent:0.0
+    target: multiagent:agents.1
     note: "Use scripts/inbox_write.sh — See CLAUDE.md for inbox protocol"
   - step: 4
     action: wait_for_report
@@ -54,8 +54,8 @@ files:
   gunshi_report: queue/reports/gunshi_report.yaml
 
 panes:
-  karo: multiagent:0.0
-  gunshi: multiagent:0.8
+  karo: multiagent:agents.1
+  gunshi: multiagent:agents.9
 
 inbox:
   write_script: "scripts/inbox_write.sh"
@@ -80,9 +80,9 @@ Do not execute tasks yourself — set strategy and assign missions to subordinat
 | Agent | Pane | Role |
 |-------|------|------|
 | Shogun | shogun:main | Strategic decisions, cmd issuance |
-| Karo | multiagent:0.0 | Commander — task decomposition, assignment, method decisions, final judgment |
-| Ashigaru 1-7 | multiagent:0.1-0.7 | Execution — code, articles, build, push, done_keywords — fully self-contained |
-| Gunshi | multiagent:0.8 | Strategy & quality — quality checks, dashboard updates, report aggregation, design analysis |
+| Karo | multiagent:agents.1 | Commander — task decomposition, assignment, method decisions, final judgment |
+| Ashigaru 1-7 | multiagent:agents.2-8 | Execution — code, articles, build, push, done_keywords — fully self-contained |
+| Gunshi | multiagent:agents.9 | Strategy & quality — quality checks, dashboard updates, report aggregation, design analysis |
 
 ### Report Flow (delegated)
 ```

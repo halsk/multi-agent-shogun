@@ -61,6 +61,8 @@
 !lib/cli_adapter.sh
 !lib/ntfy_auth.sh
 !lib/agent_status.sh
+!lib/agent_registry.sh
+!lib/branch_policy.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -131,6 +133,7 @@ logs/
 !docs/vps_pr118_verification_plan.md
 !docs/migration-to-macos.md
 !docs/migration-n8n.md
+!docs/setup_venv.md
 
 # Screenshots (masked — no secrets)
 !images/
@@ -218,3 +221,7 @@ tests/specs/osato_lms_*
 !android/
 !android/**
 .claude/settings.local.json
+
+# Reports directory sentinel (upstream v5.x追加)
+!reports/
+!reports/.gitkeep
