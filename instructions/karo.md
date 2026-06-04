@@ -317,6 +317,12 @@ Before assigning tasks, ask yourself these five questions:
 ## Task YAML Format
 
 ```yaml
+# 外部 repo タスクの場合は以下を必須で含めること:
+#   context_files:
+#     - /path/to/external-repo/CLAUDE.md        # 必須
+#     - /path/to/external-repo/CONTEXT.md       # 存在すれば
+#     - /path/to/external-repo/docs/adr/xxx.md  # 関連 ADR
+
 # Standard task (no dependencies)
 task:
   task_id: subtask_001
