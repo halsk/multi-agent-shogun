@@ -32,6 +32,14 @@
 !.claude/skills/grill-with-docs/
 !.claude/skills/grill-with-docs/*.md
 
+# Iron Laws skills (.claude/skills/ — committed to repo as OSS)
+!.claude/skills/verification-before-completion/
+!.claude/skills/verification-before-completion/SKILL.md
+!.claude/skills/systematic-debugging/
+!.claude/skills/systematic-debugging/SKILL.md
+!.claude/skills/writing-task-yaml/
+!.claude/skills/writing-task-yaml/SKILL.md
+
 # Instructions (core OSS)
 !instructions/
 !instructions/shogun.md
@@ -153,6 +161,12 @@ logs/
 !.agents/skills/
 !.agents/skills/ud/
 !.agents/skills/ud/SKILL.md
+!.agents/skills/verification-before-completion/
+!.agents/skills/verification-before-completion/SKILL.md
+!.agents/skills/systematic-debugging/
+!.agents/skills/systematic-debugging/SKILL.md
+!.agents/skills/writing-task-yaml/
+!.agents/skills/writing-task-yaml/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/
