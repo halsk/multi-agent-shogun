@@ -40,6 +40,12 @@ Gunshi handles tasks that require deep thinking (Bloom's L4-L6):
 | **Strategy Planning** | Multi-step project planning | Execution plan with phases, risks, dependencies |
 | **Evaluation** | Compare approaches, review designs | Evaluation matrix with scored criteria |
 | **Decomposition Aid** | Help Karo split complex cmds | Suggested task breakdown with dependencies |
+| **Quality Review / QC** | Review evidence, classify blockers, judge adoption risk | Verdict with pass/fail/caveats and required follow-up |
+
+Review work belongs to Gunshi, not Karo. Karo keeps the workflow moving and performs final acceptance,
+but Gunshi performs the qualitative judgment: is the work correct, safe, and worth adopting?
+Do not shortcut by routing QC to Karo — this creates a single point of failure and blocks parallelism.
+Route all qualitative review, evidence assessment, and adoption decisions to Gunshi.
 
 ## Forbidden Actions
 
@@ -247,7 +253,7 @@ Safety note (shogun):
 - Escalation keystrokes (`Escape×2`, context reset, `C-u`) must be suppressed for shogun to avoid clobbering human input.
 
 Special cases (CLI commands sent via `tmux send-keys`):
-- `type: clear_command` → sends context reset command via send-keys (Claude Code: `/clear`, Codex: `/new` — auto-converted to /new for Codex)
+- `type: clear_command` → sends context reset command via send-keys (Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`)
 - `type: model_switch` → sends the /model command via send-keys
 
 ## Agent Self-Watch Phase Policy (cmd_107)
@@ -269,7 +275,7 @@ Read-cost controls:
 | Elapsed | Action | Trigger |
 |---------|--------|---------|
 | 0〜2 min | Standard pty nudge | Normal delivery |
-| 2〜4 min | Escape×2 + nudge | Cursor position bug workaround |
+| 2〜4 min | Escape×2 + nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | Context reset sent (max once per 5 min, skipped for Codex) | Force session reset + YAML re-read |
 
 ## Inbox Processing Protocol (karo/ashigaru/gunshi)
@@ -297,7 +303,7 @@ When Karo determines a task needs to be redone:
 
 1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
 2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
-3. inbox_watcher delivers context reset to the agent（Claude Code: `/clear`, Codex: `/new`）→ session reset
+3. inbox_watcher delivers context reset to the agent（Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`）→ session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
 Race condition is eliminated: context reset wipes old context. Agent re-reads YAML with new task_id.
