@@ -167,7 +167,7 @@ The nudge is minimal: `inboxN` (e.g. `inbox3` = 3 unread). That's it.
 **Agent reads the inbox file itself.** Message content never travels through tmux — only a short wake-up signal.
 
 Special cases (CLI commands sent via `tmux send-keys`):
-- `type: clear_command` → sends `/clear` + Enter via send-keys
+- `type: clear_command` → sends context reset command via send-keys (Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`)
 - `type: model_switch` → sends the /model command via send-keys
 
 **Escalation** (when nudge is not processed):
@@ -175,7 +175,7 @@ Special cases (CLI commands sent via `tmux send-keys`):
 | Elapsed | Action | Trigger |
 |---------|--------|---------|
 | 0〜2 min | Standard pty nudge | Normal delivery |
-| 2〜4 min | Escape×2 + nudge | Cursor position bug workaround |
+| 2〜4 min | Escape×2 + recovery nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | `/clear` sent (max once per 5 min) | Force session reset + YAML re-read |
 
 ## Inbox Processing Protocol (karo/ashigaru/gunshi)
@@ -195,7 +195,7 @@ When you receive `inboxN` (e.g. `inbox3`):
 3. Only then go idle
 
 This is NOT optional. If you skip this and a redo message is waiting,
-you will be stuck idle until the escalation sends `/clear` (~4 min).
+you will be stuck idle until the next escalation or task reassignment.
 
 ## Redo Protocol
 
@@ -203,10 +203,10 @@ When Karo determines a task needs to be redone:
 
 1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
 2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
-3. inbox_watcher delivers `/clear` to the agent → session reset
+3. inbox_watcher delivers the CLI-appropriate context reset command to the agent → session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
-Race condition is eliminated: `/clear` wipes old context. Agent re-reads YAML with new task_id.
+Race condition is eliminated: the context reset wipes old context. Agent re-reads YAML with new task_id.
 
 ## Report Flow (interrupt prevention)
 
@@ -268,8 +268,8 @@ are otherwise invisible to ashigaru executing worktree tasks.
 
 1. **SKIP = FAIL**: テスト報告でSKIP数が1以上なら「テスト未完了」扱い。「完了」と報告してはならない。
 2. **Preflight check**: テスト実行前に前提条件（依存ツール、エージェント稼働状態等）を確認。満たせないなら実行せず報告。
-3. **E2Eテストは家老が担当**: 全エージェント操作権限を持つ家老がE2Eを実行。足軽はユニットテストのみ。
-4. **テスト計画レビュー**: 家老はテスト計画を事前レビューし、前提条件の実現可能性を確認してから実行に移す。
+3. **家老は交通整理**: 家老はワークフローを回す管理職であり、実作業・品質レビュー・採否判断・RCAを抱え込まない。レビュー系は軍師、実行系は足軽へ委譲する。
+4. **E2Eテストは家老が統括**: 家老はE2Eの責任者として、実行計画レビュー・前提確認・最終判定を担当する。実行コマンドは原則として足軽へ委譲する。家老が直接実行してよいのは、全エージェント操作権限・秘密情報・VPS/本番接続・最終gateの一元管理が必要な場合に限る。その場合も理由をreport/dashboardに明記する。
 
 # Batch Processing Protocol (all agents)
 
