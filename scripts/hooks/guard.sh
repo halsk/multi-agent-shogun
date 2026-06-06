@@ -21,8 +21,10 @@ fi
 resolve_git_dir() {
   local cmd="$1"
   # Extract last cd target (handles: cd /path, cd "/path with spaces")
+  # NOTE: macOS/BSD grep has no -P (PCRE/\K). Use portable -oE + sed to drop the
+  # "cd " prefix so resolve_git_dir works on both GNU (Linux/WSL2) and BSD (macOS).
   local cd_target
-  cd_target=$(echo "$cmd" | grep -oP 'cd\s+\K("[^"]+"|[^\s&;|]+)' | tail -1 | tr -d '"')
+  cd_target=$(echo "$cmd" | grep -oE 'cd[[:space:]]+("[^"]+"|[^[:space:]&;|]+)' | sed -E 's/^cd[[:space:]]+//' | tail -1 | tr -d '"')
   if [[ -n "$cd_target" && -d "$cd_target" ]]; then
     echo "$cd_target"
   else
