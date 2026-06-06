@@ -285,6 +285,42 @@ else
 fi
 
 echo ""
+echo "=== マーカーファイル .guard-skip による hook 全 skip 確認 ==="
+# 一時 git リポを作って .guard-skip マーカーを置き、通常ならブロックされる
+# コマンド (main 直接 push 等) が allow されることを確認する。
+SKIP_TMP=$(mktemp -d)
+(
+  cd "$SKIP_TMP"
+  git init -q -b main
+  touch .guard-skip
+  git add .guard-skip
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    git commit -q -m init
+)
+# 通常ブロックされる main 直接 push が、.guard-skip により allow される
+check ".guard-skip: main push (auto-sync repo)" allow "cd $SKIP_TMP && git push origin main"
+# Co-Authored-By 付き commit も skip される (Hook 1 も bypass)
+check ".guard-skip: commit with Co-Authored-By" allow "cd $SKIP_TMP && git commit --allow-empty -m 'fix: ok\n\nCo-Authored-By: x <x@x>'"
+# rm -rf 重要パスは guard.sh の Hook 2 でブロックされる… が、.guard-skip 配下では skip
+# (注意: 実コマンドは実行されない、guard.sh は文字列パターン判定のみ)
+check ".guard-skip: bypasses all hooks in skip repo" allow "cd $SKIP_TMP && rm -rf /tmp/no-such-real-dir"
+# 一時リポ片付け
+rm -rf "$SKIP_TMP"
+
+# 一時 git リポを作って .guard-skip マーカーが無ければ通常通り block されることを確認
+NOSKIP_TMP=$(mktemp -d)
+(
+  cd "$NOSKIP_TMP"
+  git init -q -b main
+  touch README.md
+  git add README.md
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+    git commit -q -m init
+)
+check "no .guard-skip: main push still blocked" block "cd $NOSKIP_TMP && git push origin main"
+rm -rf "$NOSKIP_TMP"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
