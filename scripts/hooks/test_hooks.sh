@@ -337,6 +337,29 @@ check "no .guard-skip: main push still blocked" block "cd $NOSKIP_TMP && git pus
 rm -rf "$NOSKIP_TMP"
 
 echo ""
+echo "=== git -C <dir> 形式の検出（guard.sh 迂回防止） ==="
+# git -C はグローバルオプション。これで全 hook を素通りできてはならない。
+# (a) コマンド文字列判定の hook (D003/D004/Hook1) — repo 実在不要
+check "git -C: push --force (D003)" block "git -C /some/repo push origin main --force"
+check "git -C: reset --hard (D004)" block "git -C /some/repo reset --hard HEAD~1"
+# shellcheck disable=SC2016
+check "git -C: commit with Co-Authored-By (Hook1)" block 'git -C /some/repo commit -m "fix
+Co-Authored-By: x <x@x>"'
+# (b) Hook 3 (main 保護) — GIT_TARGET_DIR が -C の dir を指す必要 (resolve_git_dir 修正)
+# Hook 3 は branch を見るだけ（commit 不要）→ git init -b で branch を作るのみ。
+# init commit を作らないことで gpgsign/1Password 依存のノイズを避ける。
+GITC_TMP=$(mktemp -d)
+git -C "$GITC_TMP" init -q -b main
+check "git -C <main repo>: commit (Hook3 block)" block "git -C $GITC_TMP commit --allow-empty -m x"
+check "git -C <main repo>: push (Hook3 block)" block "git -C $GITC_TMP push origin main"
+rm -rf "$GITC_TMP"
+# (c) 非 main の -C commit は通す（過剰ブロック防止）
+GITC_FEAT=$(mktemp -d)
+git -C "$GITC_FEAT" init -q -b feature
+check "git -C <feature repo>: commit (allow, 過剰ブロック防止)" allow "git -C $GITC_FEAT commit --allow-empty -m x"
+rm -rf "$GITC_FEAT"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"

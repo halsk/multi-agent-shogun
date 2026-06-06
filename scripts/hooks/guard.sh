@@ -18,18 +18,22 @@ fi
 # Handles: "cd /path && git push", "cd /path; git commit"
 # Falls back to current directory if no cd found
 # ============================================================
+# Extract the path argument following <kw> in a command string.
+#   kw="cd"            → last `cd <path>`
+#   kw="git[[:space:]]+-C" → last `git -C <path>`
+# <kw> is an ERE fragment; the target is a quoted string or a non-ws/&/;/| run.
+# Portable across GNU (Linux/WSL2) and BSD (macOS) grep — no PCRE -P/\K.
+_arg_after() {
+  echo "$1" | grep -oE "$2[[:space:]]+(\"[^\"]+\"|[^[:space:]&;|]+)" | sed -E "s/^$2[[:space:]]+//" | tail -1 | tr -d '"'
+}
+
 resolve_git_dir() {
-  local cmd="$1"
-  # Extract last cd target (handles: cd /path, cd "/path with spaces")
-  # NOTE: macOS/BSD grep has no -P (PCRE/\K). Use portable -oE + sed to drop the
-  # "cd " prefix so resolve_git_dir works on both GNU (Linux/WSL2) and BSD (macOS).
-  local cd_target
-  cd_target=$(echo "$cmd" | grep -oE 'cd[[:space:]]+("[^"]+"|[^[:space:]&;|]+)' | sed -E 's/^cd[[:space:]]+//' | tail -1 | tr -d '"')
-  if [[ -n "$cd_target" && -d "$cd_target" ]]; then
-    echo "$cd_target"
-  else
-    echo "."
-  fi
+  local cmd="$1" target
+  # Prefer `git -C <dir>` (git operates there regardless of cwd), else last `cd <dir>`.
+  target=$(_arg_after "$cmd" 'git[[:space:]]+-C')
+  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; return; fi
+  target=$(_arg_after "$cmd" 'cd')
+  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; else echo "."; fi
 }
 
 GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
@@ -45,6 +49,8 @@ has_git_subcmd() {
   local subcmd="$2"
   # Direct: git push, git commit
   echo "$cmd" | grep -qE "git\s+$subcmd\b" && return 0
+  # git -C <dir> subcmd (the -C global option breaks the direct "git <subcmd>" adjacency)
+  echo "$cmd" | grep -qE "git\s+-C\s+(\"[^\"]+\"|[^[:space:]&;|]+)\s+$subcmd\b" && return 0
   # Full path: /usr/bin/git push
   echo "$cmd" | grep -qE "/git\s+$subcmd\b" && return 0
   # command/env wrapper: command git push, env git push
