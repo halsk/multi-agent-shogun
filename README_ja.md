@@ -10,7 +10,7 @@
 
 [![GitHub Stars](https://img.shields.io/github/stars/yohey-w/multi-agent-shogun?style=social)](https://github.com/yohey-w/multi-agent-shogun)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![v3.5 Dynamic Model Routing](https://img.shields.io/badge/v3.5-Dynamic_Model_Routing-ff6600?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHRleHQgeD0iMCIgeT0iMTIiIGZvbnQtc2l6ZT0iMTIiPuKalTwvdGV4dD48L3N2Zz4=)](https://github.com/yohey-w/multi-agent-shogun)
+[![v5.1.0 Karo Traffic Control](https://img.shields.io/badge/v5.1.0-Karo%20Traffic%20Control-ff6600?style=flat-square&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiI+PHRleHQgeD0iMCIgeT0iMTIiIGZvbnQtc2l6ZT0iMTIiPuKalTwvdGV4dD48L3N2Zz4=)](https://github.com/yohey-w/multi-agent-shogun/releases/tag/v5.1.0)
 [![Shell](https://img.shields.io/badge/Shell%2FBash-100%25-green)]()
 
 [English](README.md) | [日本語](README_ja.md)
@@ -95,7 +95,7 @@ bash shutsujin_departure.sh                # 全エージェント起動
 | **アーキテクチャ** | 1プロセス内のサブエージェント | リード+チームメイト（JSONメールボックス） | グラフベースの状態機械 | ロールベースエージェント | tmux経由の階層構造 |
 | **並列性** | 逐次実行（1つずつ） | 複数の独立セッション | 並列ノード（v0.2+） | 限定的 | **8体の独立エージェント** |
 | **連携コスト** | TaskごとにAPIコール | 高い（各チームメイト=別コンテキスト） | API + インフラ（Postgres/Redis） | API + CrewAIプラットフォーム | **ゼロ**（YAML + tmux） |
-| **Multi-CLI** | Claude Codeのみ | Claude Codeのみ | 任意のLLM API | 任意のLLM API | **4 CLI**（Claude/Codex/Copilot/Kimi） |
+| **Multi-CLI** | Claude Codeのみ | Claude Codeのみ | 任意のLLM API | 任意のLLM API | **5 CLI**（Claude/Codex/Copilot/Kimi/OpenCode） |
 | **可観測性** | Claudeのログのみ | tmux分割ペインまたはインプロセス | LangSmith連携 | OpenTelemetry | **ライブtmuxペイン** + ダッシュボード |
 | **スキル発見** | なし | なし | なし | なし | **ボトムアップ自動提案** |
 | **セットアップ** | Claude Code内蔵 | 内蔵（実験的） | 重い（インフラ必要） | pip install | シェルスクリプト |
@@ -125,7 +125,7 @@ bash shutsujin_departure.sh                # 全エージェント起動
 
 ### Multi-CLI対応
 
-将軍システムは特定ベンダーに依存しない。4つのCLIツールに対応し、それぞれの強みを活かす：
+将軍システムは特定ベンダーに依存しない。5つのCLIツールに対応し、それぞれの強みを活かす：
 
 | CLI | 特徴 | デフォルトモデル |
 |-----|------|-----------------|
@@ -133,6 +133,7 @@ bash shutsujin_departure.sh                # 全エージェント起動
 | **OpenAI Codex** | サンドボックス実行、JSONL構造化出力、`codex exec` ヘッドレスモード | gpt-5.3-codex |
 | **GitHub Copilot** | GitHub MCP組込、4種の特化エージェント（Explore/Task/Plan/Code-review）、`/delegate` | Claude Sonnet 4.6 |
 | **Kimi Code** | 無料プランあり、多言語サポート | Kimi k2 |
+| **OpenCode** | 共有`AGENTS.md`指示書、`--agent`でエージェント固有定義、`/new`コンテキストリセット、TUI起動、プロバイダー付きモデルルーティング | provider/model |
 
 統一ビルドシステムが共有テンプレートからCLI固有の指示書を自動生成：
 
@@ -456,7 +457,7 @@ wsl --install
 
 ### `shutsujin_departure.sh` が行うこと：
 - ✅ tmuxセッションを作成（shogun + multiagent）
-- ✅ 全エージェントでClaude Codeを起動
+- ✅ `config/settings.yaml` で設定したCLIを各エージェントで起動（Claude/Codex/Copilot/Kimi/OpenCode）
 - ✅ 各エージェントに指示書を自動読み込み
 - ✅ キューファイルをリセットして新しい状態に
 - ✅ ntfyリスナーを起動してスマホ通知を有効化（設定済みの場合）
@@ -479,6 +480,10 @@ wsl --install
 | tmux | `sudo apt install tmux` | ターミナルマルチプレクサ |
 | Node.js v20+ | `nvm install 20` | MCPサーバーに必要 |
 | Claude Code CLI | `curl -fsSL https://claude.ai/install.sh \| bash` | Anthropic公式CLI（ネイティブ版を推奨。npm版は非推奨） |
+| OpenAI Codex CLI | OpenAI Codex公式ディストリビューションからインストール | `type: codex`のエージェントのみ必要 |
+| GitHub Copilot CLI | GitHub Copilot CLIをインストールして認証 | `type: copilot`のエージェントのみ必要 |
+| Kimi Code CLI | Kimi Codeをインストールして認証 | `type: kimi`のエージェントのみ必要 |
+| OpenCode CLI | `npm install -g opencode-ai` | `type: opencode`のエージェントのみ必要。プロバイダーAPIキーが必要 |
 
 </details>
 
@@ -582,10 +587,10 @@ notes: |
 陣営構成（誰にどのCLIを使わせるか）は `config/settings.yaml`：
 
 ```yaml
-agents:
-  cli_assignments:
+cli:
+  agents:
     ashigaru1:
-      type: codex          # codex / claude / copilot / kimi
+      type: codex          # codex / claude / copilot / kimi / opencode
       model: gpt-5.5
     ashigaru2:
       type: claude
@@ -749,8 +754,8 @@ asw_phase: 2   # Claude Code環境では推奨
 | フェーズ | タイミング | アクション |
 |---------|----------|-----------|
 | Phase 1 | 0-2分 | 標準nudge（`inbox3` テキスト + Enter） — *ASW Phase 2以上ではbusyエージェントはスキップ* |
-| Phase 2 | 2-4分 | Escape×2 + C-c でカーソルリセット、その後nudge |
-| Phase 3 | 4分以上 | `/clear` 送信でセッション強制リセット（5分間に最大1回） |
+| Phase 2 | 2-4分 | Copilot/Kimi: Escape×2 + Ctrl-C + nudge。Claude/Codex/OpenCode: plain nudge フォールバック |
+| Phase 3 | 4分以上 | CLI固有コンテキストリセット: Claude/Copilot/Kimiは`/clear`、Codex/OpenCodeは`/new`（5分間に最大1回） |
 
 **設計のポイント:**
 - **メッセージ内容はtmuxを経由しない** — 送るのは短い「メールが届いたよ」の通知だけ。中身はエージェントが自分でファイルを読む。これにより文字化けや配信ハングを根絶。
@@ -1581,8 +1586,8 @@ multi-agent-shogun/
 │       └── copilot_tools.md  # GitHub Copilot CLI ツール・機能
 │
 ├── lib/
-│   ├── agent_status.sh       # 共有 稼働/待機 判定（Claude Code + Codex）
-│   ├── cli_adapter.sh        # Multi-CLIアダプタ（Claude/Codex/Copilot/Kimi）
+│   ├── agent_status.sh       # 共有 稼働/待機 判定（Claude Code + Codex + OpenCode）
+│   ├── cli_adapter.sh        # Multi-CLIアダプタ（Claude/Codex/Copilot/Kimi/OpenCode）
 │   └── ntfy_auth.sh          # ntfy認証ヘルパー
 │
 ├── scripts/                  # ユーティリティスクリプト
