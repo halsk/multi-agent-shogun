@@ -57,6 +57,21 @@ has_git_subcmd() {
 }
 
 # ============================================================
+# Skip: Marker file `.guard-skip` present
+# ----------------------------------------------------------------
+# リポルートに .guard-skip ファイルがあれば全 hook をスキップ。
+# Obsidian Vault のように auto-sync で main 直接 commit/push が運用前提の
+# リポで、各環境 (WSL2 / Mac mini) のパスに依存せず明示マーカーで除外する。
+# 殿の指示 (2026-06-06): Vault 削除事故 + push 阻害が起きたため恒久対策。
+# Obsidian Vault には別途 .guard-skip を置くこと (リポ毎に明示)。
+# ============================================================
+SKIP_CWD=$(resolve_git_dir "$COMMAND")
+SKIP_GIT_ROOT=$(git -C "$SKIP_CWD" rev-parse --show-toplevel 2>/dev/null || true)
+if [ -n "$SKIP_GIT_ROOT" ] && [ -f "$SKIP_GIT_ROOT/.guard-skip" ]; then
+  exit 0
+fi
+
+# ============================================================
 # Hook 1: Co-Authored-By 禁止
 # ============================================================
 if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
