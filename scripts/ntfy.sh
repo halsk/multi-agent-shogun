@@ -21,5 +21,19 @@ while IFS= read -r line; do
     [ -n "$line" ] && AUTH_ARGS+=("$line")
 done < <(ntfy_get_auth_args "$SCRIPT_DIR/config/ntfy_auth.env")
 
+# ホスト識別タグ — どの環境から送信されたか通知タイトルに表示
+# tmux.conf の色分けと揃えた絵文字を使用 (Mac mini = 🍎、WSL2 = 🪟)
+if [[ "$(uname)" == "Darwin" ]]; then
+  HOST_TAG="🍎 Mac mini"
+elif [[ -n "${WSL_DISTRO_NAME:-}" ]] || [[ "$(uname -r)" == *microsoft* ]]; then
+  HOST_TAG="🪟 WSL2"
+else
+  HOST_TAG="$(hostname)"
+fi
+
 # shellcheck disable=SC2086
-curl -s "${AUTH_ARGS[@]}" -H "Tags: outbound" -d "$1" "https://ntfy.sh/$TOPIC" > /dev/null
+curl -s "${AUTH_ARGS[@]}" \
+  -H "Tags: outbound" \
+  -H "Title: $HOST_TAG" \
+  -d "$1" \
+  "https://ntfy.sh/$TOPIC" > /dev/null
