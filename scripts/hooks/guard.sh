@@ -198,7 +198,7 @@ fi
 is_docs_only_file() {
   local f="$1"
   case "$f" in
-    docs/*|*.md|.gitignore|.code-review-done|CHANGELOG.md|README*|LICENSE*) return 0 ;;
+    *.md|docs/*|.gitignore|.code-review-done|README*|LICENSE*) return 0 ;;
     *) return 1 ;;
   esac
 }
