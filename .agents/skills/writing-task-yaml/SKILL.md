@@ -48,6 +48,7 @@ instructions:
   # PR
   - "PR 作成 (Issue First: PR body に Closes #N or Part of #N 必須)"
   - "CR Actionable 0、CI PASS まで自律対応 (CodeRabbit Actionable は Minor も対応必須、修正後コメント返信して re-review トリガー)"
+  - "【CR 完了確認必須】statusCheckRollup=SUCCESS は CodeRabbit 完了の証拠にならない。完了報告前に必ず以下を実行して reviewThreads(unresolved=0) を実証すること: gh api graphql -f query='{ repository(owner:\"<owner>\",name:\"<repo>\") { pullRequest(number:<PR_NUMBER>) { reviewThreads(first:50) { nodes { isResolved } } } } }' | python3 -c \"import json,sys; d=json.load(sys.stdin); threads=d['data']['repository']['pullRequest']['reviewThreads']['nodes']; unresolved=sum(1 for t in threads if not t['isResolved']); print(f'Unresolved: {unresolved}'); assert unresolved==0,'FAIL'\""
 
   # 完了報告
   - "完了報告 YAML を queue/reports/ashigaru<N>_report.yaml に出力"
@@ -58,7 +59,7 @@ acceptance_criteria:
   - "<検証可能な条件 2>"
   - "テスト全 PASS (SKIP テスト導入禁止)"
   - "/code-review-expert --auto P0/P1: 0"
-  - "PR の CR Actionable 0 (GraphQL reviewThreads unresolved=0 で実証)"
+  - "PR の CR Actionable 0 — gh api graphql で reviewThreads(unresolved=0) を実証済み (statusCheckRollup のみでは不可)"
   - "CI PASS"
 
 forbidden:
@@ -140,6 +141,7 @@ changelog:
 | 1 cmd を 1 巨大 subtask にする | テスト・レビューしづらい、殿は「小さい PR」を好む |
 | target_path を main ワークツリーにする | 他作業とコンフリクト、worktree ルール違反 |
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
+| statusCheckRollup=SUCCESS を CR 完了と誤認する | 2度連続違反事例あり (subtask_497a + 497a3)。必ず reviewThreads を gh api graphql で実証せよ |
 
 ## 関連
 
