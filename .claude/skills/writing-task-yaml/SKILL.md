@@ -126,7 +126,27 @@ changelog:
 ### マージ前チェック義務（家老の責務）
 
 - 足軽報告の「P0/P1: 0」のみを信用せず、CodeRabbit Actionable/Minor も必ず確認
-- 確認は `gh api graphql` で `reviewThreads(unresolved)` 件数を実証
+- **commit push だけでは reviewThreads が unresolved のまま残るケースあり。修正 push + CR re-review 後に必ず以下を実行し unresolved=0 を実証すること:**
+  ```bash
+  GH_TOKEN= gh api graphql -f query='
+  {
+    repository(owner:"OWNER", name:"REPO") {
+      pullRequest(number: PR_NUM) {
+        reviewThreads(first:50) {
+          nodes { isResolved isOutdated path }
+        }
+      }
+    }
+  }' | python3 -c "
+  import sys,json; d=json.load(sys.stdin)
+  threads=d['data']['repository']['pullRequest']['reviewThreads']['nodes']
+  unresolved=[t for t in threads if not t['isResolved']]
+  print(f'total={len(threads)} unresolved={len(unresolved)}')
+  for t in unresolved: print(' -', t['path'], 'outdated=', t['isOutdated'])
+  "
+  ```
+- unresolved が残る場合は 1 件ずつ対応: (a) CR 期待通り修正 または (b) `「Resolved as Designed: <理由>」` reply + 手動 Resolve conversation
+- 証拠を報告に含める: `total=N unresolved=0`
 - 加えて latestReviews body の "Outside diff range comments" セクションも確認すること（reviewThreads=0 でも残置される場合あり — cmd_499 subtask_499a で Critical 見落とし発覚）
   ```bash
   gh api graphql -f query='{repository(owner:"OWNER",name:"REPO"){pullRequest(number:N){latestReviews(first:10){nodes{author{login},state,body}}}}}' | python3 -c "
