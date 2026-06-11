@@ -24,7 +24,7 @@
 
 Mac mini 上で以下が動作する状態を実現する:
 
-- `tmux list-panes -t multiagent -F '#{pane_index} #{@agent_id}'` で 9 pane に shogun / karo / ashigaru1-7 / gunshi が割当済
+- `tmux list-panes -t multiagent -F '#{pane_index} #{@agent_id}'` で 10 pane に shogun / karo / ashigaru1-7 / gunshi / gunshi2 が割当済
 - `bash scripts/inbox_write.sh karo "test" cmd_new shogun` がエラーなく実行、karo pane が反応する
 - 全 inbox_watcher (10 個) プロセス稼働
 - Claude Code が `~/tools/multi-agent-shogun/CLAUDE.md` を auto-load し、memory（`~/.claude/projects/-Users-hal-tools-multi-agent-shogun/memory/`）を読込可能
@@ -504,22 +504,35 @@ cd ~/tools/multi-agent-shogun
 bash shutsujin_departure.sh
 ```
 
-**期待**: tmux session `multiagent` 内に 9 pane 作成（karo + ashigaru1-7 + gunshi）、shogun session も別途。
+**期待**: tmux session `multiagent` 内に 10 pane 作成（karo + ashigaru1-7 + gunshi + gunshi2）、shogun session も別途。
+
+**gunshi2 手動追加手順** (shutsujin_departure.sh が 9 pane 起動のままの場合):
+```bash
+# agents window に 10 番目のペインを追加
+tmux new-window -t multiagent:agents -a  # 不要、split-pane を使う
+# または split-pane で追加
+tmux split-window -t multiagent:agents -h
+# @agent_id を設定
+tmux set-option -p -t multiagent:agents.9 @agent_id gunshi2
+tmux set-option -p -t multiagent:agents.9 @agent_cli claude
+# claude CLI 起動 (Fable 5)
+tmux send-keys -t multiagent:agents.9 "claude --model claude-fable-5 --dangerously-skip-permissions" Enter
+```
 
 ### 7.2 確認
 
 ```bash
 # tmux pane mapping
 tmux list-panes -t multiagent -F '#{pane_index} #{@agent_id}'
-# 期待: 9 行、ashigaru1-7 + karo + gunshi 全揃い
+# 期待: 10 行、ashigaru1-7 + karo + gunshi + gunshi2 全揃い
 
 # inbox_watcher プロセス
 ps aux | grep inbox_watcher | grep -v grep | wc -l
-# 期待: 10 個（shogun + karo + ashigaru1-7 + gunshi）
+# 期待: 11 個（shogun + karo + ashigaru1-7 + gunshi + gunshi2）
 
 # fswatch プロセス（macOS なら）
 ps aux | grep fswatch | grep -v grep | wc -l
-# 期待: 10 個前後（各 watcher が fswatch を spawn）
+# 期待: 11 個前後（各 watcher が fswatch を spawn）
 ```
 
 ### 7.3 inbox エンドツーエンド test

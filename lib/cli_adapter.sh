@@ -185,6 +185,7 @@ get_instruction_file() {
         shogun)    role="shogun" ;;
         karo)      role="karo" ;;
         gunshi)    role="gunshi" ;;
+        gunshi2)   role="gunshi2" ;;
         ashigaru*) role="ashigaru" ;;
         *)
             echo "" >&2
@@ -310,6 +311,7 @@ get_model_display_name() {
         *opus*)                 short="Opus" ;;
         *sonnet*)               short="Sonnet" ;;
         *haiku*)                short="Haiku" ;;
+        *fable*)                short="Fable" ;;
         *k2.5*|*kimi*)          short="Kimi" ;;
         *)
             # CLI種別から推測

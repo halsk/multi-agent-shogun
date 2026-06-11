@@ -45,6 +45,7 @@ _ashigaru_ids_str=$(get_ashigaru_ids 2>/dev/null || echo "ashigaru1 ashigaru2 as
 ALL_AGENTS=("shogun" "karo")
 for _aid in $_ashigaru_ids_str; do ALL_AGENTS+=("$_aid"); done
 ALL_AGENTS+=("gunshi")
+ALL_AGENTS+=("gunshi2")
 
 # ═══════════════════════════════════════════════════════
 # Phase 1: Scan all tmux panes for metadata

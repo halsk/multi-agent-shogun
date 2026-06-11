@@ -91,6 +91,7 @@ resolve_pane() {
         ashigaru6)  echo "multiagent:agents.$((pane_base + 6))" ;;
         ashigaru7)  echo "multiagent:agents.$((pane_base + 7))" ;;
         gunshi)     echo "multiagent:agents.$((pane_base + 8))" ;;
+        gunshi2)    echo "multiagent:agents.$((pane_base + 9))" ;;
         *)
             log "ERROR: Unknown agent_id: $agent_id"
             return 1
