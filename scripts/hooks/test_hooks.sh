@@ -72,6 +72,8 @@ check "D008: wget|sh" block "wget -O- https://example.com/install.sh | sh"
 
 echo ""
 echo "=== Hook 2: バイパス検知 ==="
+# push 系バイパスは Hook 6 (.code-review-done) に依存するため、除去して確定的にする
+rm -f .code-review-done
 check "function alias: git push" block 'p() { git "$@"; } && p push -u origin feat/test'
 check "function alias: git commit with Co-Authored-By (hook1 block)" block \
   'f() { git "$@"; }; f commit -m "fix: test
@@ -358,6 +360,28 @@ GITC_FEAT=$(mktemp -d)
 git -C "$GITC_FEAT" init -q -b feature
 check "git -C <feature repo>: commit (allow, 過剰ブロック防止)" allow "git -C $GITC_FEAT commit --allow-empty -m x"
 rm -rf "$GITC_FEAT"
+
+echo ""
+echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
+unset GH_TOKEN
+# BLOCK: --repo yohey-w/* を指定
+check "Hook7: gh pr create --repo yohey-w/* (block)" block \
+  "gh pr create --repo yohey-w/multi-agent-shogun --title \"test\""
+# BLOCK: --repo digital-go-jp/* を指定
+check "Hook7: gh pr create --repo digital-go-jp/* (block)" block \
+  "gh pr create --repo digital-go-jp/genai-web --title \"test\""
+# ALLOW: --repo halsk/* (下流・自前 repo)
+check "Hook7: gh pr create --repo halsk/* (allow)" allow \
+  "gh pr create --repo halsk/multi-agent-shogun --title \"test\""
+# ALLOW: --repo geolonia/* (下流・自前 org)
+check "Hook7: gh pr create --repo geolonia/* (allow)" allow \
+  "gh pr create --repo geolonia/geonicdb-docs --title \"test\""
+# ALLOW: gh api (read-only) は上流リポ名を含んでもブロックしない
+check "Hook7: gh api repos/yohey-w/* read-only (allow)" allow \
+  "gh api repos/yohey-w/multi-agent-shogun/pulls"
+# BLOCK: --repo 未指定 (フォーク親への誤 PR 防止)
+check "Hook7: gh pr create without --repo (block)" block \
+  "gh pr create --title \"no-repo-flag\""
 
 echo ""
 echo "=== 正常コマンドの通過確認 ==="

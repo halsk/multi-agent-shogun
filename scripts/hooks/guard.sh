@@ -216,6 +216,36 @@ if echo "$COMMAND" | grep -qE '\bgh\b'; then
 fi
 
 # ============================================================
+# Hook 7: 上流 repo への gh pr create をブロック
+# gh pr create --repo yohey-w/* または --repo digital-go-jp/* を検知して拒否。
+# cwd の git remote origin が上流を指している場合も同様にブロック。
+# read-only 操作 (gh api / gh pr list 等) はブロックしない。
+# V002 CRITICAL 恒久対策 (足軽1が yohey-w/multi-agent-shogun に2度誤 PR した事例)。
+# ============================================================
+if echo "$COMMAND" | grep -qE 'gh\s+(pr|pull-request)\s+create'; then
+  # --repo / -R フラグで上流 repo を直接指定している場合
+  if echo "$COMMAND" | grep -qE '(-R|--repo)[[:space:]=]+(yohey-w/|digital-go-jp/)'; then
+    echo "🚫 BLOCKED: 上流 repo への gh pr create は禁止 (yohey-w/* / digital-go-jp/*)" >&2
+    echo "   正しい repo: halsk/* または geolonia/* を --repo に指定せよ" >&2
+    exit 2
+  fi
+  # --repo フラグ未指定: gh はフォーク親 (upstream) に PR を送るため必ず明示が必要。
+  # halsk/multi-agent-shogun は yohey-w のフォーク → --repo 省略で yohey-w に誤 PR が届く事例あり。
+  if ! echo "$COMMAND" | grep -qE '(-R|--repo)\b'; then
+    echo "🚫 BLOCKED: gh pr create には --repo <org/repo> を明示せよ" >&2
+    echo "   フォーク repo で --repo を省略すると上流 (yohey-w/* 等) に誤 PR が発生する" >&2
+    exit 2
+  fi
+  # cwd の git remote origin が上流を指している場合
+  UPSTREAM_REMOTE=$(git -C "$GIT_TARGET_DIR" remote get-url origin 2>/dev/null || echo "")
+  if echo "$UPSTREAM_REMOTE" | grep -qE '(yohey-w/|digital-go-jp/)'; then
+    echo "🚫 BLOCKED: cwd の git remote origin が上流 repo を指しています (yohey-w/* / digital-go-jp/*)" >&2
+    echo "   正しい repo: halsk/* または geolonia/* の worktree で作業せよ" >&2
+    exit 2
+  fi
+fi
+
+# ============================================================
 # Hook 6 helpers: docs-only skip
 # ============================================================
 is_docs_only_file() {
