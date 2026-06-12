@@ -773,22 +773,30 @@ tmux list-panes -t multiagent:agents -F '#{pane_index}' -f '#{==:#{@agent_id},as
 
 **When to use**: After 2 consecutive delivery failures. Normally use `multiagent:agents.{N+1}` (ashigaru N → agents.N+1).
 
-## Task Routing: Ashigaru vs. Gunshi
+## Task Routing: Ashigaru vs. Gunshi vs. Gunshi2
 
-### When to Use Gunshi
+### When to Use Gunshi vs. Gunshi2
 
-Gunshi (軍師) runs on Opus Thinking and handles strategic work that needs deep reasoning.
-**Do NOT use Gunshi for implementation.** Gunshi thinks, ashigaru do.
+**Two advisors are available. Route by task domain — NEVER send cyber tasks to gunshi2.**
 
 | Task Nature | Route To | Example |
 |-------------|----------|---------|
 | Implementation (L1-L3) | Ashigaru | Write code, create files, run builds |
 | Templated work (L3) | Ashigaru | SEO articles, config changes, test writing |
-| **Architecture design (L4-L6)** | **Gunshi** | System design, API design, schema design |
-| **Root cause analysis (L4)** | **Gunshi** | Complex bug investigation, performance analysis |
-| **Strategy planning (L5-L6)** | **Gunshi** | Project planning, resource allocation, risk assessment |
-| **Design evaluation (L5)** | **Gunshi** | Compare approaches, review architecture |
-| **Complex decomposition** | **Gunshi** | When Karo itself struggles to decompose a cmd |
+| **Architecture design (L4-L6)** | **Gunshi (Opus)** | System design, API design, schema design |
+| **Root cause analysis (L4)** | **Gunshi (Opus)** | Complex bug investigation, performance analysis |
+| **Strategy planning (L5-L6)** | **Gunshi (Opus)** | Project planning, resource allocation, risk assessment |
+| **Design evaluation (L5)** | **Gunshi (Opus)** | Compare approaches, review architecture |
+| **Complex decomposition** | **Gunshi (Opus)** | When Karo itself struggles to decompose a cmd |
+| **Cyber/security/QC** | **Gunshi (Opus)** | Vulnerability review, security audit, penetration testing |
+| **Naming / brand copy** | **Gunshi2 (Fable)** | Feature names, product names, brand slogans |
+| **Writing / documentation** | **Gunshi2 (Fable)** | README, user-facing copy, release notes, specs |
+| **Design brainstorming** | **Gunshi2 (Fable)** | UI/UX concepts, information architecture proposals |
+| **Research summary** | **Gunshi2 (Fable)** | Synthesize findings, compare approaches, summarize docs |
+| **Knowledge work** | **Gunshi2 (Fable)** | Domain modeling, glossary, specification writing |
+
+**⚠️ CRITICAL: Fable (gunshi2) rejects cybersecurity tasks by Usage Policy.**
+**NEVER dispatch cyber/security/vulnerability/QC tasks to gunshi2. Always use gunshi (Opus).**
 
 ### Gunshi Dispatch Procedure
 
@@ -805,19 +813,49 @@ STEP 5: Continue dispatching other ashigaru tasks in parallel
   → Gunshi works independently. Process its report when it arrives.
 ```
 
-### Gunshi Report Processing
+### Gunshi Dispatch Procedure (Opus — cyber/security/QC/strategy)
 
-When Gunshi completes:
-1. Read `queue/reports/gunshi_report.yaml`
-2. Use Gunshi's analysis to create/refine ashigaru task YAMLs
-3. Update dashboard.md with Gunshi's findings (if significant)
-4. Reset pane label: `tmux set-option -p -t multiagent:agents.9 @current_task ""`
+```
+STEP 1: Identify need for strategic thinking (L4+, no template, multiple approaches)
+STEP 2: Write task YAML to queue/tasks/gunshi.yaml
+  - type: strategy | analysis | design | evaluation | decomposition | quality_check
+  - Include all context_files the Gunshi will need
+STEP 3: Set pane task label
+  tmux set-option -p -t multiagent:agents.9 @current_task "戦略立案"
+STEP 4: Send inbox
+  bash scripts/inbox_write.sh gunshi "タスクYAMLを読んで分析開始せよ。" task_assigned karo
+STEP 5: Continue dispatching other ashigaru tasks in parallel
+  → Gunshi works independently. Process its report when it arrives.
+```
 
-### Gunshi Limitations
+### Gunshi2 Dispatch Procedure (Fable — creative/knowledge only)
 
-- **1 task at a time** (same as ashigaru). Check if Gunshi is busy before assigning.
-- **No direct implementation**. If Gunshi says "do X", assign an ashigaru to actually do X.
-- **No dashboard access**. Gunshi's insights reach the Lord only through Karo's dashboard updates.
+```
+STEP 1: Identify creative/knowledge task (naming, writing, design, research, documentation)
+        ⚠️ NEVER dispatch cyber/security/QC tasks to gunshi2
+STEP 2: Write task YAML to queue/tasks/gunshi2.yaml
+  - type: naming | writing | design | research | knowledge
+  - Include all context_files
+STEP 3: Set pane task label
+  tmux set-option -p -t <gunshi2_pane> @current_task "創造立案"
+STEP 4: Send inbox
+  bash scripts/inbox_write.sh gunshi2 "タスクYAMLを読んで分析開始せよ。" task_assigned karo
+STEP 5: Continue dispatching other tasks in parallel
+```
+
+### Gunshi / Gunshi2 Report Processing
+
+When Gunshi or Gunshi2 completes:
+1. Read `queue/reports/gunshi_report.yaml` or `queue/reports/gunshi2_report.yaml`
+2. Use the analysis to create/refine ashigaru task YAMLs
+3. Update dashboard.md with findings (if significant)
+4. Reset pane label
+
+### Advisor Limitations
+
+- **1 task at a time** (same as ashigaru). Check if advisor is busy before assigning.
+- **No direct implementation**. If advisor says "do X", assign an ashigaru to actually do X.
+- **No dashboard access**. Insights reach the Lord only through Karo's dashboard updates.
 
 ### Quality Control (QC) Routing
 
