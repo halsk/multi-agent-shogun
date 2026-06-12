@@ -120,6 +120,8 @@
 !scripts/hooks/guard.sh
 !scripts/hooks/test_hooks.sh
 !scripts/dashboard-viewer.py
+!scripts/get-secret.sh
+!scripts/sync-secrets-to-keychain.sh
 
 
 # SayTask (sample template only, not actual data)
