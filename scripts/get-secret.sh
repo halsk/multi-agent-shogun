@@ -64,6 +64,50 @@ _ks_get_platform() {
   fi
 }
 
+# Look up op-item/vault/field from ~/.config/keychain-sync/secrets.conf for a service name.
+# Config format per line: <keychain-service-name>  <op-item-name>  [op-vault]  [op-field]
+# Prints "<op-item>\t<op-vault>\t<op-field>" on match and returns 0; returns 1 if not found.
+_ks_lookup_config() {
+  set +x  # C3
+  local name="$1"
+  local config_file="${KEYCHAIN_SYNC_CONFIG:-$HOME/.config/keychain-sync/secrets.conf}"
+  [[ ! -f "$config_file" ]] && return 1
+
+  local line kc_name op_item op_vault op_field
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line//[[:space:]]/}" ]] && continue
+    kc_name="" op_item="" op_vault="" op_field=""
+    read -r kc_name op_item op_vault op_field <<< "$line" || true
+    if [[ "$kc_name" == "$name" && -n "$op_item" ]]; then
+      printf '%s\t%s\t%s' "$op_item" "${op_vault:-}" "${op_field:-password}"
+      return 0
+    fi
+  done < "$config_file"
+  return 1
+}
+
+# Fetch a secret from 1Password, using config-file lookup for op-item/vault/field.
+# Falls back to: op item get <name> --field password when no config entry exists.
+# C3: prints secret to stdout only; no logging of secret values.
+_ks_op_get() {
+  set +x  # C3
+  local name="$1"
+  local val config_entry op_item op_vault op_field
+  if config_entry=$(_ks_lookup_config "$name"); then
+    IFS=$'\t' read -r op_item op_vault op_field <<< "$config_entry"
+    if [[ -n "$op_vault" ]]; then
+      val=$(op item get "$op_item" --vault "$op_vault" --field "label=$op_field" --reveal 2>/dev/null)
+    else
+      val=$(op item get "$op_item" --field "label=$op_field" --reveal 2>/dev/null)
+    fi
+  else
+    val=$(op item get "$name" --field password 2>/dev/null)
+  fi
+  printf '%s' "$val"
+  unset val config_entry op_item op_vault op_field
+}
+
 # Main entry point: print secret to stdout or exit 1 on failure.
 # Supports --refresh flag (Layer 2): forces re-fetch from 1Password and updates Keychain.
 get_secret() {
@@ -94,9 +138,9 @@ get_secret() {
         return 0
       fi
 
-      # C4b: Keychain miss → op fallback
+      # C4b: Keychain miss → op fallback (config-file lookup for op-item/vault/field)
       if command -v op &>/dev/null; then
-        val=$(op item get "$name" --field password 2>/dev/null)
+        val=$(_ks_op_get "$name")
         if [[ -n "$val" ]]; then
           printf '%s' "$val"
           return 0
@@ -114,7 +158,7 @@ get_secret() {
         return 1
       fi
       local val
-      val=$(op item get "$name" --field password 2>/dev/null)
+      val=$(_ks_op_get "$name")
       if [[ -z "$val" ]]; then
         echo "ERROR: Secret '$name' not found in 1Password (--refresh)" >&2
         return 1
@@ -138,7 +182,7 @@ get_secret() {
       return 1
     fi
     local val
-    val=$(op item get "$name" --field password 2>/dev/null)
+    val=$(_ks_op_get "$name")
     if [[ -n "$val" ]]; then
       printf '%s' "$val"
       return 0
