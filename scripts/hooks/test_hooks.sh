@@ -360,6 +360,25 @@ check "git -C <feature repo>: commit (allow, 過剰ブロック防止)" allow "g
 rm -rf "$GITC_FEAT"
 
 echo ""
+echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
+unset GH_TOKEN
+# BLOCK: --repo yohey-w/* を指定
+check "Hook7: gh pr create --repo yohey-w/* (block)" block \
+  "gh pr create --repo yohey-w/multi-agent-shogun --title \"test\""
+# BLOCK: --repo digital-go-jp/* を指定
+check "Hook7: gh pr create --repo digital-go-jp/* (block)" block \
+  "gh pr create --repo digital-go-jp/genai-web --title \"test\""
+# ALLOW: --repo halsk/* (下流・自前 repo)
+check "Hook7: gh pr create --repo halsk/* (allow)" allow \
+  "gh pr create --repo halsk/multi-agent-shogun --title \"test\""
+# ALLOW: --repo geolonia/* (下流・自前 org)
+check "Hook7: gh pr create --repo geolonia/* (allow)" allow \
+  "gh pr create --repo geolonia/geonicdb-docs --title \"test\""
+# ALLOW: gh api (read-only) は上流リポ名を含んでもブロックしない
+check "Hook7: gh api repos/yohey-w/* read-only (allow)" allow \
+  "gh api repos/yohey-w/multi-agent-shogun/pulls"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
