@@ -21,6 +21,17 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash /Users/hal/tools/multi-agent-shogun/scripts/hooks/guard.sh",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   },
   "permissions": {
