@@ -123,6 +123,8 @@
 !scripts/dashboard-viewer.py
 !scripts/get-secret.sh
 !scripts/sync-secrets-to-keychain.sh
+!scripts/migrate-secrets-to-op.sh
+!scripts/keychain-sync-secrets.conf.example
 
 
 # SayTask (sample template only, not actual data)
