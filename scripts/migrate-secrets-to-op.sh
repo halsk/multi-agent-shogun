@@ -51,7 +51,16 @@ if [[ -z "$PG_PASS" ]]; then
     echo "GENERATE: ai-worker-POSTGRES_PASSWORD (新規生成)"
 fi
 upsert_op_item "POSTGRES_PASSWORD" "${PG_PASS}"
-unset PG_PASS
+
+# DB_POSTGRESDB_PASSWORD: n8n が postgres に接続する際の DB パスワード。
+# .env の値 or POSTGRES_PASSWORD と同値 (compose では同一ハードコード値)。
+DB_PG_PASS=$(get_env_value "DB_POSTGRESDB_PASSWORD")
+if [[ -z "$DB_PG_PASS" ]]; then
+    DB_PG_PASS="$PG_PASS"
+    echo "FALLBACK: ai-worker-DB_POSTGRESDB_PASSWORD ← POSTGRES_PASSWORD と同値"
+fi
+upsert_op_item "DB_POSTGRESDB_PASSWORD" "${DB_PG_PASS}"
+unset PG_PASS DB_PG_PASS
 
 # ★ N8N_ENCRYPTION_KEY (温存確定 — rotate 禁止): .env から読む。未設定なら対話入力。
 # 事前確認コマンド:
@@ -69,5 +78,5 @@ upsert_op_item "N8N_ENCRYPTION_KEY" "${ENC_KEY}"
 unset ENC_KEY
 
 echo ""
-echo "Done. 1Password ai-worker vault への 12 secrets 投入が完了しました。"
-echo "op item list --vault ai-worker で確認ください (12 items が表示されること)。"
+echo "Done. 1Password ai-worker vault への 13 secrets 投入が完了しました。"
+echo "op item list --vault ai-worker で確認ください (13 items が表示されること)。"
