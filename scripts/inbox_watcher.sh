@@ -152,6 +152,132 @@ ASW_NO_IDLE_FULL_READ=${ASW_NO_IDLE_FULL_READ:-1}
 ASW_DISABLE_ESCALATION=${ASW_DISABLE_ESCALATION:-0}
 ASW_PROCESS_TIMEOUT=${ASW_PROCESS_TIMEOUT:-1}
 
+# ─── cmd_558 Feature flags ───
+# ASW_MODAL_DISMISS=0 to disable session feedback modal auto-dismiss
+# ASW_IDLE_NUDGE=0 to disable idle nudge for agents with assigned tasks
+ASW_MODAL_DISMISS=${ASW_MODAL_DISMISS:-1}
+ASW_IDLE_NUDGE=${ASW_IDLE_NUDGE:-1}
+
+# ─── cmd_558 State ───
+LAST_MODAL_DISMISS=${LAST_MODAL_DISMISS:-0}
+LAST_IDLE_NUDGE_TS=${LAST_IDLE_NUDGE_TS:-0}
+
+# ─── cmd_558 Pure functions (testable without tmux) ───
+
+# detect_session_modal — pure function: returns 0 if pane_text looks like the session feedback modal.
+# Two-anchor match to prevent false positives from normal log output.
+# ANCHOR-1: "How is Claude doing this session?" (invariant title)
+# ANCHOR-2: "dismiss" case-insensitive (catches all modal variants including lowercase/uppercase)
+detect_session_modal() {
+    local pane_text="$1"
+    echo "$pane_text" | grep -qF 'How is Claude doing this session?' || return 1
+    echo "$pane_text" | grep -qiE 'dismiss' || return 1  # case-insensitive に緩和
+    return 0
+}
+
+# should_nudge_idle — pure function: returns 0 if an idle nudge should be sent.
+# Args: task_status is_idle idle_age last_nudge_age
+#   task_status:    YAML status field (assigned/work/in_progress → nudge; others → no nudge)
+#   is_idle:        1 = agent is idle, 0 = agent is busy
+#   idle_age:       seconds since agent became idle
+#   last_nudge_age: seconds since last idle nudge was sent
+should_nudge_idle() {
+    local task_status="$1" is_idle="$2" idle_age="$3" last_nudge_age="$4"
+    case "$task_status" in
+        assigned|work|in_progress) ;;
+        *) return 1 ;;
+    esac
+    [ "$is_idle" = "1" ] || return 1
+    [ "$idle_age" -ge "${ASW_IDLE_NUDGE_AGE:-180}" ] || return 1
+    [ "$last_nudge_age" -ge "${ASW_IDLE_NUDGE_COOLDOWN:-300}" ] || return 1
+    return 0
+}
+
+# get_task_status — reads status field from queue/tasks/${AGENT_ID}.yaml.
+# Returns the status string, or "unknown" on error.
+get_task_status() {
+    local task_yaml="${SCRIPT_DIR}/queue/tasks/${AGENT_ID}.yaml"
+    [ -f "$task_yaml" ] || { echo "unknown"; return 0; }
+    local status
+    status=$(grep -m1 '^\s*status:' "$task_yaml" 2>/dev/null | sed "s/.*status:[[:space:]]*//" | tr -d "'\"[:space:]")
+    echo "${status:-unknown}"
+}
+
+# maybe_dismiss_modal — checks pane for session feedback modal and dismisses if found.
+# Uses detect_session_modal() for pure detection. Skips if kill-switch off or within cooldown.
+maybe_dismiss_modal() {
+    [ "${ASW_MODAL_DISMISS:-1}" = "1" ] || return 0
+
+    local now
+    now=$(date +%s)
+    local cooldown=15
+    if [ "$((now - LAST_MODAL_DISMISS))" -lt "$cooldown" ]; then
+        return 0
+    fi
+
+    local pane_text
+    pane_text=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | tail -25 || true)
+    detect_session_modal "$pane_text" || return 0
+
+    echo "[$(date)] [MODAL] Session feedback modal detected for $AGENT_ID — dismissing" >&2
+    LAST_MODAL_DISMISS=$now
+
+    timeout 5 tmux send-keys -t "$PANE_TARGET" "0" 2>/dev/null || true
+    sleep 0.5
+
+    local pane_after
+    pane_after=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | tail -25 || true)
+    if detect_session_modal "$pane_after"; then
+        echo "[$(date)] [MODAL] Modal still visible — sending Escape fallback for $AGENT_ID" >&2
+        timeout 5 tmux send-keys -t "$PANE_TARGET" Escape 2>/dev/null || true
+        sleep 0.3
+    else
+        echo "[$(date)] [MODAL] Modal dismissed for $AGENT_ID — sending continuation nudge" >&2
+        send_wakeup 0 2>/dev/null || true
+    fi
+}
+
+# maybe_nudge_idle — sends an idle nudge if the agent has an assigned task but went silent.
+# Integrates with get_task_status() and agent_is_busy() (idle flag).
+maybe_nudge_idle() {
+    [ "${ASW_IDLE_NUDGE:-1}" = "1" ] || return 0
+
+    local now
+    now=$(date +%s)
+
+    local is_idle=0
+    if [ ! -f "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" ]; then
+        is_idle=0  # busy (no idle flag = working)
+    else
+        is_idle=1
+    fi
+
+    local idle_age=0
+    if [ -f "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" ]; then
+        local flag_mtime
+        flag_mtime=$(stat -f %m "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || \
+                     stat -c %Y "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || echo "$now")
+        idle_age=$((now - flag_mtime))
+    fi
+
+    local last_nudge_age=$((now - LAST_IDLE_NUDGE_TS))
+    local task_status
+    task_status=$(get_task_status)
+
+    should_nudge_idle "$task_status" "$is_idle" "$idle_age" "$last_nudge_age" || return 0
+
+    echo "[$(date)] [IDLE-NUDGE] Agent $AGENT_ID idle for ${idle_age}s with task $task_status — sending nudge" >&2
+    LAST_IDLE_NUDGE_TS=$now
+
+    local nudge_msg
+    nudge_msg="queue/tasks/${AGENT_ID}.yaml を再読し、assigned タスクを即時再開せよ。(idle-nudge from watcher)"
+    timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+    sleep 0.3
+    timeout 5 tmux send-keys -l -t "$PANE_TARGET" "$nudge_msg" 2>/dev/null || true
+    sleep 0.3
+    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+}
+
 # ─── Metrics hooks (FR-006 / NFR-003) ───
 # unread_latency_sec / read_count / estimated_tokens are intentionally explicit
 READ_COUNT=${READ_COUNT:-0}
@@ -920,6 +1046,10 @@ send_wakeup_with_escape() {
 process_unread() {
     local trigger="${1:-event}"
 
+    # cmd_558 I2: session feedback modal check runs on every tick, independent of unread state.
+    # Must fire before unread logic so modal + unread compound case is handled correctly.
+    maybe_dismiss_modal 2>/dev/null || true
+
     # summary-first: unread_count fast-path (Phase 2/3 optimization)
     # unread_count fast-path lets us skip expensive full reads when idle.
     local fast_info
@@ -1152,6 +1282,12 @@ for s in data.get('specials', []):
             else
                 timeout 2 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
             fi
+        fi
+
+        # cmd_558: idle nudge — recover agents that have assigned tasks but went silent
+        # Only fires on timeout tick (not event) to avoid spurious nudges on rapid events.
+        if [ "$trigger" = "timeout" ]; then
+            maybe_nudge_idle 2>/dev/null || true
         fi
     fi
 }
