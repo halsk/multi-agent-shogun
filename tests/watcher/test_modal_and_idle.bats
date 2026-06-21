@@ -7,6 +7,9 @@
 #   T-MODAL-003: detect_session_modal — empty string -> return 1
 #   T-MODAL-004: detect_session_modal — normal work log -> return 1 (no false positive)
 #   T-MODAL-005: detect_session_modal — second anchor only -> return 1 (no false positive)
+#   T-MODAL-006: detect_session_modal — second anchor lowercase 'dismiss' -> return 0 (I1 case-insensitive)
+#   T-MODAL-007: detect_session_modal — second anchor uppercase 'DISMISS' -> return 0 (I1 case-insensitive)
+#   T-MODAL-008: maybe_dismiss_modal — modal present -> send-keys "0" called (I2 compound case)
 #   T-IDLE-001: should_nudge_idle — assigned+idle+age_ok+cooldown_ok -> return 0 (nudge)
 #   T-IDLE-002: should_nudge_idle — done -> return 1
 #   T-IDLE-003: should_nudge_idle — cancelled -> return 1
@@ -92,9 +95,7 @@ teardown() {
 # --- T-MODAL-001: both anchors present -> detected ---
 
 @test "T-MODAL-001: detect_session_modal both anchors -> return 0 detected" {
-    # NOTE: Second anchor is based on Claude Code's feedback modal format.
-    # If real modal text differs, capture with: tmux capture-pane -t <pane> -p | tail -30
-    # and update this fixture + the second anchor in detect_session_modal().
+    # Second anchor: case-insensitive 'dismiss' (I1 緩和後). Any capitalisation matches.
     local modal_fixture="$TEST_TMPDIR/modal.txt"
     cat > "$modal_fixture" << 'EOF'
 How is Claude doing this session?
@@ -154,6 +155,79 @@ detect_session_modal \"\$log_text\"
     local text="(0) Dismiss this conversation about the implementation plan."
     run bash -c "source '$TEST_HARNESS' && detect_session_modal '$text'"
     [ "$status" -eq 1 ]
+}
+
+# --- T-MODAL-006: I1 — lowercase 'dismiss' variant -> return 0 (case-insensitive) ---
+
+@test "T-MODAL-006: detect_session_modal lowercase dismiss -> return 0" {
+    local modal_fixture="$TEST_TMPDIR/modal_lower.txt"
+    cat > "$modal_fixture" << 'EOF'
+How is Claude doing this session?
+  > (1) Terrible
+    (2) Bad
+    (3) Okay
+    (4) Good
+    (5) Great
+    (0) dismiss
+EOF
+
+    run bash -c "
+source '$TEST_HARNESS'
+modal_text=\$(cat '$modal_fixture')
+detect_session_modal \"\$modal_text\"
+"
+    [ "$status" -eq 0 ]
+}
+
+# --- T-MODAL-007: I1 — uppercase 'DISMISS' variant -> return 0 (case-insensitive) ---
+
+@test "T-MODAL-007: detect_session_modal uppercase DISMISS -> return 0" {
+    local modal_fixture="$TEST_TMPDIR/modal_upper.txt"
+    cat > "$modal_fixture" << 'EOF'
+How is Claude doing this session?
+  > (1) Terrible
+    (2) Bad
+    (3) Okay
+    (4) Good
+    (5) Great
+    (0) DISMISS
+EOF
+
+    run bash -c "
+source '$TEST_HARNESS'
+modal_text=\$(cat '$modal_fixture')
+detect_session_modal \"\$modal_text\"
+"
+    [ "$status" -eq 0 ]
+}
+
+# --- T-MODAL-008: I2 compound — maybe_dismiss_modal fires and sends dismiss key when modal present ---
+# Verifies that maybe_dismiss_modal (now called at top of process_unread, independent of unread state)
+# correctly dismisses the modal when it is visible, regardless of whether unread messages exist.
+
+@test "T-MODAL-008: maybe_dismiss_modal with modal present sends dismiss key" {
+    local modal_fixture="$TEST_TMPDIR/modal_compound.txt"
+    cat > "$modal_fixture" << 'EOF'
+How is Claude doing this session?
+  > (1) Terrible
+    (2) Bad
+    (3) Okay
+    (4) Good
+    (5) Great
+    (0) dismiss
+EOF
+
+    run bash -c "
+export MOCK_CAPTURE_PANE=\$(cat '$modal_fixture')
+export LAST_MODAL_DISMISS=0
+source '$TEST_HARNESS'
+ASW_MODAL_DISMISS=1
+LAST_MODAL_DISMISS=0
+maybe_dismiss_modal
+"
+    [ "$status" -eq 0 ]
+    grep -q 'send-keys' "$MOCK_LOG"
+    grep -q '"0"' "$MOCK_LOG" || grep -q " 0$" "$MOCK_LOG" || grep -q " 0 " "$MOCK_LOG"
 }
 
 # --- T-IDLE-001: assigned+idle+age_ok+cooldown_ok -> nudge ---

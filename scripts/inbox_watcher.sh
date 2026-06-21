@@ -167,14 +167,11 @@ LAST_IDLE_NUDGE_TS=${LAST_IDLE_NUDGE_TS:-0}
 # detect_session_modal — pure function: returns 0 if pane_text looks like the session feedback modal.
 # Two-anchor match to prevent false positives from normal log output.
 # ANCHOR-1: "How is Claude doing this session?" (invariant title)
-# ANCHOR-2: "(0) Dismiss" (options row — confirms it is the interactive modal)
-# TODO: If the actual modal text differs from the fixture below, capture the real modal with:
-#       tmux capture-pane -t <pane> -p | tail -30
-#       then update ANCHOR-2 here and the fixture in tests/watcher/test_modal_and_idle.bats.
+# ANCHOR-2: "dismiss" case-insensitive (catches all modal variants including lowercase/uppercase)
 detect_session_modal() {
     local pane_text="$1"
     echo "$pane_text" | grep -qF 'How is Claude doing this session?' || return 1
-    echo "$pane_text" | grep -qF '(0) Dismiss' || return 1
+    echo "$pane_text" | grep -qiE 'dismiss' || return 1  # case-insensitive に緩和
     return 0
 }
 
@@ -1049,6 +1046,10 @@ send_wakeup_with_escape() {
 process_unread() {
     local trigger="${1:-event}"
 
+    # cmd_558 I2: session feedback modal check runs on every tick, independent of unread state.
+    # Must fire before unread logic so modal + unread compound case is handled correctly.
+    maybe_dismiss_modal 2>/dev/null || true
+
     # summary-first: unread_count fast-path (Phase 2/3 optimization)
     # unread_count fast-path lets us skip expensive full reads when idle.
     local fast_info
@@ -1282,9 +1283,6 @@ for s in data.get('specials', []):
                 timeout 2 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
             fi
         fi
-
-        # cmd_558: session feedback modal auto-dismiss (30s tick hook point)
-        maybe_dismiss_modal 2>/dev/null || true
 
         # cmd_558: idle nudge — recover agents that have assigned tasks but went silent
         # Only fires on timeout tick (not event) to avoid spurious nudges on rapid events.
