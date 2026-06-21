@@ -213,6 +213,8 @@ tests/specs/osato_lms_*
 !tests/fixtures/*.yaml
 !tests/unit/
 !tests/unit/*.bats
+!tests/watcher/
+!tests/watcher/*.bats
 !tests/integration/
 !tests/integration/*.bats
 !tests/e2e/
