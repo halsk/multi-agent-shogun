@@ -488,6 +488,8 @@ Push notifications to the lord's phone via ntfy. Karo manages streaks and notifi
 2. Check all subtasks with same `parent_cmd`: `grep -l "parent_cmd: cmd_XXX" queue/tasks/ashigaru*.yaml | xargs grep "status:"`
 3. Not all done → skip notification
 4. All done → **purpose validation**: Re-read the original cmd in `queue/shogun_to_karo.yaml`. Compare the cmd's stated purpose against the combined deliverables. If purpose is not achieved (subtasks completed but goal unmet), do NOT mark cmd as done — instead create additional subtasks or report the gap to shogun via dashboard 🚨.
+4.5. **shogun_to_karo.yaml の status 書戻し（cmd_548 L2 恒久対策 2026-06-20）**: purpose 検証で目的達成を確認したら、`queue/shogun_to_karo.yaml` の当該 cmd の `status:` を `done` に更新せよ（`in_progress` または `pending` → `done`）。これをしないと slim_yaml の archive 対象が生成されず YAML が肥大し続ける（L2 運用ギャップの根本原因）。
+
 5. Purpose validated → update `saytask/streaks.yaml`:
    - `today.completed` += 1 (**per cmd**, not per subtask)
    - Streak logic: last_date=today → keep current; last_date=yesterday → current+1; else → reset to 1
@@ -678,6 +680,38 @@ STEP 5以降は不要（watcherが一括処理）
 | Short consecutive tasks (< 5 min each) | Reset cost > benefit |
 | Same project/files as previous task | Previous context is useful |
 | Light context (est. < 30K tokens) | /clear effect minimal |
+
+### /clear 規律標準化 (cmd_548 L5 — 2026-06-20 確定)
+
+**目的**: /clear を「感覚」ではなく「規則」で実行。コンテキスト肥大を機械的に防ぐ。
+
+#### 必ず /clear するタイミング
+
+| 状況 | 判断基準 |
+|------|---------|
+| bloom L4+ タスク完了後 | 設計・コード・複合タスクは context が重い |
+| タスク切替でプロジェクトが変わる | 前タスクの context は次に不要 |
+| 3タスク連続（Bloom L3以下でも） | 累積 context が 30K を超える可能性 |
+| redo 発生 | 誤ったアプローチが context に残る |
+
+#### /clear を送る前の必須チェック
+
+```
+□ 次タスクの YAML を書いた（YAML-first 原則）
+□ 報告は dashboard に反映済み
+□ karo inbox の未読 read:false が 0件（途中で /clear すると inbox 処理が途絶える）
+```
+
+#### 足軽タスク境界での標準運用
+
+```
+足軽{N} 完了報告受信
+  → dashboard 更新
+  → 次タスク YAML 書く
+  → /clear 要否を上記テーブルで判定
+  → 要: clear_command 送信 → (inbox_watcher が /clear + 指示を自動実行)
+  → 不要: task_assigned 直送
+```
 
 ### Shogun Never /clear
 
@@ -887,6 +921,25 @@ These checks supplement Gunshi's QC. They do **not** replace the Ashigaru → Gu
 #### No QC for Ashigaru
 
 **Never assign QC tasks to ashigaru.** Ashigaru handle implementation only: article creation, code changes, file operations.
+
+#### QC Selection Policy (cmd_548 C=c1 — 2026-06-20 確定)
+
+軍師QC を選択的に適用する。機械タスクへの軍師投入を省いてコンテキスト燃費を改善。
+
+| Bloom Level | タスク種別 | QC 方針 |
+|-------------|-----------|---------|
+| L1-L2 | ファイル移動・status更新・単純置換・glob/grep | 軍師QC不要。家老の fast mechanical check のみ |
+| L3 | 検索・集計・定型変換（外部API/本番データなし） | 軍師QC推奨（skip 可 — 家老判断） |
+| L4-L5 | 設計・コード実装・複合タスク | 軍師QC必須 |
+| risk-flag 付き | 下記条件に該当 | Bloom level に関係なく軍師QC必須 |
+
+**risk-flag 条件**（いずれか1件でも該当すれば軍師QC必須）:
+- 外部API呼び出し / 本番データ変更
+- セキュリティ関連（認証・権限・暗号・トークン）
+- 失敗時に手動復旧が必要な操作（DB migration・config変更・git push）
+- 複数足軽の成果物を統合するタスク
+
+**ショートカット**: `bash scripts/slim_yaml.sh karo` 自身の実行は L1 扱い。家老自己実行 + サイズ計測で完結。
 
 ## Model Configuration
 
