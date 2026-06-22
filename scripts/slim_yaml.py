@@ -251,7 +251,7 @@ def slim_inbox(agent_id, dry_run=False):
     return True
 
 
-def slim_shugun_to_karo():
+def slim_shugun_to_karo(dry_run=False):
     """Archive done/cancelled commands from shogun_to_karo.yaml."""
     queue_dir = get_queue_dir()
     archive_dir = queue_dir / 'archive'
@@ -285,6 +285,11 @@ def slim_shugun_to_karo():
 
     # If nothing to archive, return success without writing
     if not archived:
+        return True
+
+    if dry_run:
+        print(f"[DRY-RUN] would archive {len(archived)} commands from shogun_to_karo.yaml",
+              file=sys.stderr)
         return True
 
     # Write archived commands to timestamped file
@@ -371,7 +376,7 @@ def main():
 
     # Process shogun_to_karo if this is Karo
     if agent_id == 'karo':
-        if not slim_shugun_to_karo():
+        if not slim_shugun_to_karo(dry_run):
             sys.exit(1)
         migration(dry_run)
         if not slim_tasks(dry_run):
