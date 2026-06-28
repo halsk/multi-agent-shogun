@@ -4,6 +4,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/stall_detect.sh"
+# stall_watchdog.sh を source — source ガードにより flock とメインループはスキップされる
+source "$SCRIPT_DIR/scripts/stall_watchdog.sh"
 
 PASS=0
 FAIL=0
@@ -99,90 +101,98 @@ fixture_mixed="Previous task output
 ✻ Now processing next step..."
 assert_eq "1i: spinner優先 → busy" "busy" "$(classify_pane "$fixture_mixed")"
 
-# ── Section 2: エスカレーション state machine 単体テスト ────────────────────
+# ── Section 2: エスカレーション state machine 単体テスト (実 escalate() 使用) ─
 
 echo ""
-echo "=== Section 2: エスカレーション state machine 単体テスト ==="
+echo "=== Section 2: エスカレーション state machine 単体テスト (実 escalate()) ==="
 echo ""
-
-# stall_watchdog.sh のヘルパー関数を単体テスト可能な形でテスト
-# state machine の期待動作を escalate() 関数を通じて検証
 
 TMPDIR_TEST=$(mktemp -d)
-STATE_DIR_TEST="$TMPDIR_TEST/stall_watchdog"
-mkdir -p "$STATE_DIR_TEST"
-LOG_FILE_TEST="$TMPDIR_TEST/stall_watchdog.log"
+# STATE_DIR・LOG_FILE をテスト用一時ディレクトリに上書き
+STATE_DIR="$TMPDIR_TEST/stall_watchdog"
+mkdir -p "$STATE_DIR"
+LOG_FILE="$TMPDIR_TEST/stall_watchdog.log"
 INBOX_LOG="$TMPDIR_TEST/inbox_calls.log"
+DRY_RUN=false   # スタブが呼ばれるように false に設定
 
-# モック inbox_write と ntfy
-inbox_write_mock() {
+# send_inbox / send_ntfy / notify_dashboard を stub に差し替え (実ファイルを触らない)
+send_inbox() {
     echo "INBOX: agent=$1 type=$3" >> "$INBOX_LOG"
 }
-ntfy_mock() {
-    echo "NTFY: $1" >> "$INBOX_LOG"
+send_ntfy() {
+    echo "NTFY: agent=$1 sig=$2" >> "$INBOX_LOG"
+}
+notify_dashboard() {
+    echo "DASHBOARD: agent=$1 sig=$2" >> "$INBOX_LOG"
 }
 
-# 独立した escalation state machine テスト
-test_escalation_state_machine() {
-    local phase="$1"
-    local elapsed="$2"
-    local since_last="${3:-99999}"
-    local agent="test_agent"
-
-    # 状態ファイルを準備
-    printf 'agent_id: %s\nescalation_phase: %s\nlast_action_ts: 0\n' \
-        "$agent" "$phase" > "$STATE_DIR_TEST/${agent}.yaml"
-
-    # phase=0, elapsed<20min → no action
-    if [[ "$phase" == "0" && "$elapsed" -lt $((20 * 60)) ]]; then
-        echo "no_action"
-        return
-    fi
-
-    # phase=0, elapsed≥20min → P1 nudge
-    if [[ "$phase" == "0" && "$elapsed" -ge $((20 * 60)) ]]; then
-        echo "nudge"
-        return
-    fi
-
-    # phase=1, elapsed≥30min → P2 clear (observation時は clear_skipped)
-    if [[ "$phase" == "1" && "$elapsed" -ge $((30 * 60)) ]]; then
-        echo "clear_or_skip"
-        return
-    fi
-
-    # phase=2, elapsed≥40min → P3 notify
-    if [[ "$phase" == "2" && "$elapsed" -ge $((40 * 60)) ]]; then
-        echo "notify"
-        return
-    fi
-
-    echo "no_action"
+# 状態ファイルをセットアップするヘルパー
+setup_state_for_test() {
+    local agent="$1" phase="$2"
+    printf 'agent_id: %s\nescalation_phase: %s\nlast_action_ts: 0\nlast_action: none\n' \
+        "$agent" "$phase" > "$STATE_DIR/${agent}.yaml"
 }
 
-# 2a. phase=0, elapsed=15min → no action
-result=$(test_escalation_state_machine "0" $((15 * 60)))
-assert_eq "2a: phase=0 elapsed=15min → no_action" "no_action" "$result"
+# 2a. phase=0, elapsed=15min → no action (P1 grace 未到達)
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "0"
+escalate "test_agent" $((15 * 60)) "idle"
+inbox_count=0
+inbox_count=$(grep -c 'INBOX:\|NTFY:\|DASHBOARD:' "$INBOX_LOG" 2>/dev/null) || true
+assert_eq "2a: phase=0 elapsed=15min → no_action" "0" "$inbox_count"
 
-# 2b. phase=0, elapsed=21min → nudge
-result=$(test_escalation_state_machine "0" $((21 * 60)))
-assert_eq "2b: phase=0 elapsed=21min → nudge" "nudge" "$result"
+# 2b. phase=0, elapsed=21min → P1 nudge (non-shogun agent)
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "0"
+escalate "test_agent" $((21 * 60)) "idle"
+if grep -q 'INBOX: agent=test_agent type=report_received' "$INBOX_LOG" 2>/dev/null; then
+    assert_eq "2b: phase=0 elapsed=21min → P1 nudge sent" "found" "found"
+else
+    assert_eq "2b: phase=0 elapsed=21min → P1 nudge sent" "INBOX:report_received" "NOT FOUND: $(cat "$INBOX_LOG" 2>/dev/null || true)"
+fi
 
-# 2c. phase=1, elapsed=31min → P2
-result=$(test_escalation_state_machine "1" $((31 * 60)))
-assert_eq "2c: phase=1 elapsed=31min → clear_or_skip" "clear_or_skip" "$result"
+# 2c. phase=1, elapsed=31min → P2 (observation_only=true なのでフェーズ=2 に進む)
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "1"
+OBSERVATION_ONLY=true
+escalate "test_agent" $((31 * 60)) "idle"
+phase_val=$(grep 'escalation_phase:' "$STATE_DIR/test_agent.yaml" 2>/dev/null | sed 's/.*: //' || echo "")
+assert_eq "2c: phase=1 elapsed=31min → escalation_phase=2" "2" "$phase_val"
 
 # 2d. phase=2, elapsed=41min → P3 notify
-result=$(test_escalation_state_machine "2" $((41 * 60)))
-assert_eq "2d: phase=2 elapsed=41min → notify" "notify" "$result"
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "2"
+escalate "test_agent" $((41 * 60)) "idle"
+if grep -q 'NTFY:\|DASHBOARD:' "$INBOX_LOG" 2>/dev/null; then
+    assert_eq "2d: phase=2 elapsed=41min → P3 notify" "found" "found"
+else
+    assert_eq "2d: phase=2 elapsed=41min → P3 notify" "NTFY or DASHBOARD" "NOT FOUND: $(cat "$INBOX_LOG" 2>/dev/null || true)"
+fi
 
 # 2e. phase=1, elapsed=25min → no action (P2 grace 未到達)
-result=$(test_escalation_state_machine "1" $((25 * 60)))
-assert_eq "2e: phase=1 elapsed=25min → no_action (P2未到達)" "no_action" "$result"
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "1"
+escalate "test_agent" $((25 * 60)) "idle"
+phase_val=$(grep 'escalation_phase:' "$STATE_DIR/test_agent.yaml" 2>/dev/null | sed 's/.*: //' || echo "")
+assert_eq "2e: phase=1 elapsed=25min → no phase change (P2未到達)" "1" "$phase_val"
 
 # 2f. phase=2, elapsed=35min → no action (P3 grace 未到達)
-result=$(test_escalation_state_machine "2" $((35 * 60)))
-assert_eq "2f: phase=2 elapsed=35min → no_action (P3未到達)" "no_action" "$result"
+: > "$INBOX_LOG"
+setup_state_for_test "test_agent" "2"
+escalate "test_agent" $((35 * 60)) "idle"
+ntfy_count=0
+ntfy_count=$(grep -c 'NTFY:\|DASHBOARD:' "$INBOX_LOG" 2>/dev/null) || true
+assert_eq "2f: phase=2 elapsed=35min → no P3 (P3未到達)" "0" "$ntfy_count"
+
+# 2g (P1a 回帰): shogun に P1 nudge は絶対送らない (E5)
+: > "$INBOX_LOG"
+setup_state_for_test "shogun" "0"
+escalate "shogun" $((21 * 60)) "idle"
+if grep -q 'INBOX: agent=shogun' "$INBOX_LOG" 2>/dev/null; then
+    assert_eq "2g: shogun P1 nudge NOT sent (E5)" "no_inbox_shogun" "INBOX SENT: $(cat "$INBOX_LOG")"
+else
+    assert_eq "2g: shogun P1 nudge NOT sent (E5)" "no_inbox_shogun" "no_inbox_shogun"
+fi
 
 rm -rf "$TMPDIR_TEST"
 
@@ -285,6 +295,34 @@ if grep -q 'DRY_RUN\|dry.run' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
     assert_eq "5c: --dry-run フラグがコードに存在" "found" "found"
 else
     assert_eq "5c: --dry-run フラグがコードに存在" "found" "not found"
+fi
+
+# ── Section 6: P0 回帰テスト — agent_is_busy_check idle で exit しない ────────
+
+echo ""
+echo "=== Section 6: P0 回帰テスト — set -e 下で idle rc=1 でも escalation に到達する ==="
+echo ""
+
+# agent_is_busy_check が rc=1 (idle) を返す fixture で
+# メインループの後続処理 (escalation) まで到達することを確認する。
+# stall_watchdog.sh の set -e 抑止修正 (busy_rc=0; func || busy_rc=$?) の回帰テスト。
+
+# 6a: set -e 環境で || busy_rc=$? パターンが正しく rc=1 を取得できることを確認
+result_6a=$(
+    set -euo pipefail
+    func_returns_1() { return 1; }
+    busy_rc=0
+    func_returns_1 || busy_rc=$?
+    echo "rc=$busy_rc"
+)
+assert_eq "6a: idle rc=1 で exit せず busy_rc=1 を取得できる" "rc=1" "$result_6a"
+
+# 6b: stall_watchdog.sh に set -e 抑止パターンが実装されているかコードで確認
+if grep -q 'busy_rc=0' "$SCRIPT_DIR/scripts/stall_watchdog.sh" \
+    && grep -q 'agent_is_busy_check.*||.*busy_rc' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "6b: set -e 抑止パターン (busy_rc=0; func || busy_rc=\$?) がコードに存在" "found" "found"
+else
+    assert_eq "6b: set -e 抑止パターン (busy_rc=0; func || busy_rc=\$?) がコードに存在" "found" "not found"
 fi
 
 # ── サマリー ──────────────────────────────────────────────────────────────────

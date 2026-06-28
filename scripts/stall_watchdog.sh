@@ -21,14 +21,6 @@ source "$SCRIPT_DIR/lib/agent_status.sh"
 # shellcheck source=../lib/stall_detect.sh
 source "$SCRIPT_DIR/lib/stall_detect.sh"
 
-# ── flock 単一起動 ────────────────────────────────────────────────────────────
-LOCK_FILE="/tmp/stall_watchdog.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo "[stall_watchdog] already running (lock held). exiting." >&2
-    exit 0
-fi
-
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
 OBSERVATION_ONLY=true   # デフォルト有効
@@ -223,10 +215,16 @@ escalate() {
     # P1: 20分経過かつ phase=0
     if [[ "$elapsed" -ge "$GRACE_P1" && "$phase" == "0" ]]; then
         if [[ "$since_last" -ge "$COOLDOWN_P1" ]] || [[ "$last_action_ts" == "0" ]]; then
-            log "[P1] $agent: stall=$sig elapsed=${elapsed}s → sending nudge"
-            send_inbox "$agent" "watchdog: タスク実行中に見えるが無音。status を確認し再開/報告せよ" "report_received"
+            # E5: shogun へは P1 nudge も /clear も送らない (P3 のみ)
+            if [[ "$agent" == "shogun" ]]; then
+                log "[P1-SKIP-E5] $agent: shogun への inbox nudge は絶対送らない (P3のみ)"
+                state_set "$agent" "last_action" "p1_skipped_shogun"
+            else
+                log "[P1] $agent: stall=$sig elapsed=${elapsed}s → sending nudge"
+                send_inbox "$agent" "watchdog: タスク実行中に見えるが無音。status を確認し再開/報告せよ" "report_received"
+                state_set "$agent" "last_action" "nudge_sent"
+            fi
             state_set "$agent" "escalation_phase" "1"
-            state_set "$agent" "last_action" "nudge_sent"
             state_set "$agent" "last_action_ts" "$(now_iso)"
         fi
         return
@@ -274,6 +272,18 @@ escalate() {
     log "[WATCH] $agent: stall=$sig elapsed=${elapsed}s phase=$phase (no action yet)"
 }
 
+# ── テスト用 source ガード ────────────────────────────────────────────────────
+# source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
+[[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
+
+# ── flock 単一起動 ────────────────────────────────────────────────────────────
+LOCK_FILE="/tmp/stall_watchdog.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo "[stall_watchdog] already running (lock held). exiting." >&2
+    exit 0
+fi
+
 # ── メインループ ──────────────────────────────────────────────────────────────
 
 log "[START] stall_watchdog dry_run=$DRY_RUN observation_only=$OBSERVATION_ONLY"
@@ -294,9 +304,10 @@ for agent in "${ALL_AGENTS[@]}"; do
         continue
     fi
 
-    # E1/E2: agent_is_busy_check → 0=稼働中
-    agent_is_busy_check "$pane"
-    busy_rc=$?
+    # E1/E2: agent_is_busy_check → 0=稼働中/1=idle/2=不在
+    # set -e 下では rc≠0 で即 exit するため || busy_rc=$? で抑止する
+    busy_rc=0
+    agent_is_busy_check "$pane" || busy_rc=$?
     if [[ "$busy_rc" -eq 0 ]]; then
         reset_state "$agent"
         continue
