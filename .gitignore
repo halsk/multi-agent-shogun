@@ -72,6 +72,7 @@
 !lib/agent_status.sh
 !lib/agent_registry.sh
 !lib/branch_policy.sh
+!lib/stall_detect.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -125,7 +126,12 @@
 !scripts/sync-secrets-to-keychain.sh
 !scripts/migrate-secrets-to-op.sh
 !scripts/keychain-sync-secrets.conf.example
+!scripts/stall_watchdog.sh
+!scripts/com.swarm.stall-watchdog.plist
 
+# Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
+!queue/stall_watchdog/
+!queue/stall_watchdog/.gitignore
 
 # SayTask (sample template only, not actual data)
 !saytask/
@@ -246,3 +252,4 @@ tests/specs/osato_lms_*
 # Reports directory sentinel (upstream v5.x追加)
 !reports/
 !reports/.gitkeep
+queue/inbox/relay/

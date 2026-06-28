@@ -2,13 +2,15 @@
 # lib/agent_status.sh — エージェント稼働状態検出の共有ライブラリ
 #
 # 提供関数:
-#   agent_is_busy_check <pane_target>   → 0=busy, 1=idle, 2=pane不在
-#   get_pane_state_label <pane_target>  → "稼働中" / "待機中" / "不在"
+#   agent_is_busy_check <pane_target>    → 0=busy, 1=idle, 2=pane不在
+#   get_pane_state_label <pane_target>   → "稼働中" / "待機中" / "不在"
+#   resolve_pane_by_agent_id <agent_id>  → pane address (例: multiagent:agents.3)
 #
 # 使用例:
 #   source lib/agent_status.sh
 #   agent_is_busy_check "multiagent:agents.1"
 #   state=$(get_pane_state_label "multiagent:agents.3")
+#   pane=$(resolve_pane_by_agent_id "ashigaru3")
 
 # agent_is_busy_check <pane_target>
 # tmux paneの末尾5行からCLI固有のidle/busyパターンを検出する。
@@ -87,6 +89,19 @@ agent_is_busy_check() {
     fi
 
     return 1  # idle (default)
+}
+
+# resolve_pane_by_agent_id <agent_id>
+# @agent_id tmux メタデータからペインアドレスを解決する。pane-base-index に依存しない。
+# shogun は専用セッション shogun:main を返す。
+resolve_pane_by_agent_id() {
+    local agent_id="$1"
+    if [[ "$agent_id" == "shogun" ]]; then
+        echo "shogun:main"
+        return 0
+    fi
+    tmux list-panes -a -F '#{session_name}:#{window_name}.#{pane_index} #{@agent_id}' 2>/dev/null \
+        | awk -v id="$agent_id" '$2 == id { print $1; exit }'
 }
 
 # get_pane_state_label <pane_target>
