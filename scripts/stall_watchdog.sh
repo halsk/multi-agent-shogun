@@ -368,3 +368,8 @@ for agent in "${ALL_AGENTS[@]}"; do
 done
 
 log "[DONE] stall_watchdog scan complete"
+
+# Healthchecks.io ping — scan tick 完了 (HC_PING_URL_STALL_WATCHDOG 未設定時は no-op)
+if [[ -n "${HC_PING_URL_STALL_WATCHDOG:-}" ]] && ! $DRY_RUN; then
+    curl -fsS -m 5 --retry 2 "${HC_PING_URL_STALL_WATCHDOG}" >/dev/null 2>&1 || true
+fi

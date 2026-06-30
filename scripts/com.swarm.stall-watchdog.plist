@@ -21,6 +21,10 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- Healthchecks.io ping: add after creating a check at your Healthchecks instance.
+         <key>HC_PING_URL_STALL_WATCHDOG</key>
+         <string>http://hc.geolonia.com/ping/YOUR-UUID-HERE</string>
+    -->
   </dict>
 </dict>
 </plist>
