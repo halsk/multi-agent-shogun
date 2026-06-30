@@ -75,8 +75,13 @@ now_iso() {
 }
 
 md5_short() {
-    echo "$1" | md5 2>/dev/null | cut -c1-8 \
-        || echo "$1" | md5sum | cut -c1-8
+    # macOS: md5 is /sbin/md5 (not in launchd PATH); md5sum is GNU-only.
+    # shasum is /usr/bin/shasum on macOS and is in launchd PATH (/usr/bin).
+    if command -v md5sum >/dev/null 2>&1; then
+        echo "$1" | md5sum | cut -c1-8
+    else
+        echo "$1" | shasum | cut -c1-8
+    fi
 }
 
 # タスク YAML の status を取得
@@ -143,9 +148,9 @@ reset_state() {
 # pane に人間が attach 中かつアクティブか (E4)
 pane_has_human_client() {
     local pane="$1"
-    # session_many_clients が 1 以上かつ pane_active ならば抑制
+    # session_attached が 1 以上かつ pane_active ならば抑制
     local clients
-    clients=$(tmux display-message -t "$pane" -p '#{session_many_clients}' 2>/dev/null || echo "0")
+    clients=$(tmux display-message -t "$pane" -p '#{session_attached}' 2>/dev/null || echo "0")
     local active
     active=$(tmux display-message -t "$pane" -p '#{pane_active}' 2>/dev/null || echo "0")
     [[ "$clients" -ge 1 && "$active" == "1" ]]

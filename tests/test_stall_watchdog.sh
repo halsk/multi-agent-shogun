@@ -325,6 +325,42 @@ else
     assert_eq "6b: set -e 抑止パターン (busy_rc=0; func || busy_rc=\$?) がコードに存在" "found" "not found"
 fi
 
+# ── Section 7: macOS hash 互換テスト ─────────────────────────────────────────
+
+echo ""
+echo "=== Section 7: md5_short macOS 互換テスト ==="
+echo ""
+
+# 7a: md5_short が 8文字のhex文字列を返す
+result_7a=$(md5_short "hello world")
+if [[ ${#result_7a} -eq 8 ]] && echo "$result_7a" | grep -qE '^[0-9a-f]{8}$'; then
+    assert_eq "7a: md5_short が 8文字 hex を返す" "ok" "ok"
+else
+    assert_eq "7a: md5_short が 8文字 hex を返す (got: '$result_7a')" "ok" "fail"
+fi
+
+# 7b: md5_short が同じ入力で同じ値を返す (決定論的)
+hash1=$(md5_short "test string 123")
+hash2=$(md5_short "test string 123")
+assert_eq "7b: md5_short が決定論的 (同じ入力→同じ出力)" "$hash1" "$hash2"
+
+# 7c: md5_short が異なる入力で異なる値を返す
+hashA=$(md5_short "string_alpha")
+hashB=$(md5_short "string_beta")
+if [[ "$hashA" != "$hashB" ]]; then
+    assert_eq "7c: md5_short が入力差異を検出" "ok" "ok"
+else
+    assert_eq "7c: md5_short が入力差異を検出" "ok" "fail"
+fi
+
+# 7d: md5_short 実装が shasum か md5sum を使っている (md5sum が無い環境でも動く)
+if grep -q 'command -v md5sum' "$SCRIPT_DIR/scripts/stall_watchdog.sh" \
+    && grep -q 'shasum' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "7d: md5_short が md5sum/shasum フォールバック実装を持つ" "found" "found"
+else
+    assert_eq "7d: md5_short が md5sum/shasum フォールバック実装を持つ" "found" "not found"
+fi
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""
