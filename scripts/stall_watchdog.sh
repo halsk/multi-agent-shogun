@@ -148,9 +148,9 @@ reset_state() {
 # pane に人間が attach 中かつアクティブか (E4)
 pane_has_human_client() {
     local pane="$1"
-    # session_many_clients が 1 以上かつ pane_active ならば抑制
+    # session_attached が 1 以上かつ pane_active ならば抑制
     local clients
-    clients=$(tmux display-message -t "$pane" -p '#{session_many_clients}' 2>/dev/null || echo "0")
+    clients=$(tmux display-message -t "$pane" -p '#{session_attached}' 2>/dev/null || echo "0")
     local active
     active=$(tmux display-message -t "$pane" -p '#{pane_active}' 2>/dev/null || echo "0")
     [[ "$clients" -ge 1 && "$active" == "1" ]]
