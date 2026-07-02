@@ -160,6 +160,48 @@ _ks_add_entry() {
   echo "OK: '$name' synced to Keychain" >&2
 }
 
+# _ks_wait_for_auth — block until 1Password session is authenticated.
+#
+# Auth probe: 'op account get' is used instead of 'op whoami' because:
+#   - 'op whoami' has known cases where it exits non-zero ("not signed in")
+#     even when item retrieval succeeds (CLI session state inconsistency).
+#   - 'op account get' tests the local session auth state and returns non-zero
+#     when the session is locked / Touch ID has not yet been approved.
+#   - It is lightweight: reads local session storage, no vault network call.
+#
+# Env knobs:
+#   OP_AUTH_TIMEOUT_SEC  (default: 90) — max seconds to wait for auth
+#   OP_AUTH_POLL_SEC     (default: 2)  — poll interval in seconds
+_ks_wait_for_auth() {
+  local timeout_sec="${OP_AUTH_TIMEOUT_SEC:-90}"
+  local poll_interval="${OP_AUTH_POLL_SEC:-2}"
+  local elapsed=0
+
+  # Fast path: already authenticated — zero-overhead pass-through.
+  if op account get &>/dev/null; then
+    return 0
+  fi
+
+  echo "INFO: 1Password not yet authenticated. Waiting up to ${timeout_sec}s..." >&2
+  echo "INFO: Please approve 1Password Touch ID to continue." >&2
+
+  while true; do
+    sleep "$poll_interval"
+    elapsed=$(( elapsed + poll_interval ))
+
+    if op account get &>/dev/null; then
+      echo "INFO: 1Password authenticated after ${elapsed}s." >&2
+      return 0
+    fi
+
+    if [[ "$elapsed" -ge "$timeout_sec" ]]; then
+      echo "ERROR: 1Password authentication timed out after ${timeout_sec}s." >&2
+      echo "ERROR: Run 'op account get' to verify session status." >&2
+      exit 1
+    fi
+  done
+}
+
 _ks_sync_from_config() {
   if [[ ! -f "$CONFIG_FILE" ]]; then
     echo "ERROR: Config file not found: $CONFIG_FILE" >&2
@@ -281,6 +323,8 @@ main() {
 
   echo "INFO: Starting Keychain sync (macOS)" >&2
   echo "INFO: 1Password Touch ID may be requested once for the session." >&2
+
+  _ks_wait_for_auth
 
   _ks_sync_from_config
 
