@@ -108,12 +108,19 @@ _ks_store_hash() {
   set +x  # C3
   local name="$1"
   local hash_val="$2"
-  security add-generic-password \
-    -s "${name}-hash" \
-    -a "$KS_ACCOUNT" \
-    -U \
-    -w "$hash_val" \
-    2>/dev/null
+  local sec_err
+  if ! sec_err=$(security add-generic-password \
+      -s "${name}-hash" \
+      -a "$KS_ACCOUNT" \
+      -U \
+      -w "$hash_val" \
+      2>&1); then
+    echo "WARN: hash write failed for '${name}-hash' — will retry on next sync." >&2
+    [[ -n "$sec_err" ]] && echo "WARN: security: ${sec_err}" >&2
+    unset hash_val sec_err
+    return 1
+  fi
+  unset sec_err
   if ! security set-generic-password-partition-list \
       -s "${name}-hash" \
       -a "$KS_ACCOUNT" \
@@ -134,12 +141,23 @@ _ks_add_entry() {
 
   # -U: update-if-exists (idempotent; safe for rotation)
   # No -A or -T <path>: ACL will be set via partition-list below (C1)
-  security add-generic-password \
-    -s "$name" \
-    -a "$KS_ACCOUNT" \
-    -U \
-    -w "$val" \
-    2>/dev/null
+  # Guard: capture stderr; on failure WARN and return 1 so the caller can skip
+  # hash-save and continue to the next secret without aborting the sync loop.
+  # Common failure: exit 36 "User interaction is not allowed" when Keychain is locked.
+  local sec_err
+  if ! sec_err=$(security add-generic-password \
+      -s "$name" \
+      -a "$KS_ACCOUNT" \
+      -U \
+      -w "$val" \
+      2>&1); then
+    echo "WARN: '$name' Keychain write failed — skipping (hash not saved, will retry on next sync)." >&2
+    [[ -n "$sec_err" ]] && echo "WARN: security: ${sec_err}" >&2
+    echo "WARN: If Keychain is locked, run: security unlock-keychain ~/Library/Keychains/login.keychain-db" >&2
+    unset val sec_err
+    return 1
+  fi
+  unset sec_err
 
   # C1: Set partition-list so apple-tool: (security CLI) can read without prompting.
   # 'apple-tool:' = code-signing identity for /usr/bin/security
@@ -280,8 +298,9 @@ _ks_sync_from_config() {
       echo "INFO: '$kc_name' changed — updating Keychain." >&2
     fi
 
-    _ks_add_entry "$kc_name" "$val"
-    _ks_store_hash "$kc_name" "$current_hash"
+    if _ks_add_entry "$kc_name" "$val"; then
+      _ks_store_hash "$kc_name" "$current_hash" || true
+    fi
     unset val current_hash cached_hash
   done < "$CONFIG_FILE"
 }
