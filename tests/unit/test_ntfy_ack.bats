@@ -219,3 +219,40 @@ JSON
     [ -s "$INBOX_LOG" ]
     grep -q "shogun" "$INBOX_LOG"
 }
+
+# ═══════════════════════════════════════════════════════════════
+# T-LOOPBACK-001: outbound → ntfy_inbox.yaml に書き込まれない
+# ═══════════════════════════════════════════════════════════════
+
+@test "T-LOOPBACK-001: outbound message does NOT write to ntfy_inbox" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"lb1","time":1234567890,"message":"loop back","tags":["outbound"]}
+JSON
+    run_listener
+    ! grep -q "lb1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
+}
+
+# ═══════════════════════════════════════════════════════════════
+# T-LOOPBACK-002: outbound → inbox_write (将軍起こし) が呼ばれない
+# ═══════════════════════════════════════════════════════════════
+
+@test "T-LOOPBACK-002: outbound message does NOT call inbox_write (no shogun wake)" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"lb1","time":1234567890,"message":"loop back","tags":["outbound"]}
+JSON
+    run_listener
+    [ ! -s "$INBOX_LOG" ]
+}
+
+# ═══════════════════════════════════════════════════════════════
+# T-LOOPBACK-003: 無タグ通常メッセージ → ntfy_inbox 書込 + inbox_write 呼出
+# ═══════════════════════════════════════════════════════════════
+
+@test "T-LOOPBACK-003: normal (no-tag) message writes to ntfy_inbox and wakes shogun" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"n1","time":1234567890,"message":"real command","tags":[]}
+JSON
+    run_listener
+    grep -q "n1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
+    grep -q "shogun" "$INBOX_LOG"
+}
