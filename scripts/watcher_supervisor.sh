@@ -53,11 +53,27 @@ start_watcher_if_missing() {
     nohup bash scripts/inbox_watcher.sh "$agent" "$pane" "$cli" >> "$log_file" 2>&1 &
 }
 
+launch_ntfy_listener() {
+    local log_file="$1"
+    nohup bash scripts/ntfy_listener.sh >> "$log_file" 2>&1 &
+}
+
+start_ntfy_listener_if_missing() {
+    local log_file="logs/ntfy_listener.log"
+    if pgrep -f "bash scripts/ntfy_listener.sh" >/dev/null 2>&1; then
+        return 0
+    fi
+    launch_ntfy_listener "$log_file"
+}
+
 ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2)
 
-while true; do
-    for agent in "${ALL_AGENTS[@]}"; do
-        start_watcher_if_missing "$agent" "logs/inbox_watcher_${agent}.log"
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    while true; do
+        for agent in "${ALL_AGENTS[@]}"; do
+            start_watcher_if_missing "$agent" "logs/inbox_watcher_${agent}.log"
+        done
+        start_ntfy_listener_if_missing
+        sleep 5
     done
-    sleep 5
-done
+fi
