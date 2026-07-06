@@ -202,6 +202,19 @@ Karo makes final OK/NG decision and unblocks next tasks
 - If task has build → build must complete successfully
 - Scope matches original task YAML description
 
+**HARD gate for Code Change PRs (コード変更を含む PR — 例外なし):**
+
+以下の4項目が1件でも欠ければ NO-GO。ドキュメントのみの PR (コード変更なし) は対象外。
+
+| # | Gate | 判定 |
+|---|------|------|
+| 1 | 変更をカバーするテストが存在する | テストファイルの存在を確認 |
+| 2 | テストが全件 PASS | 実行ログで 0 failures を確認 |
+| 3 | SKIP=0 (SKIP は FAIL と同等) | Iron Law #3 — 1件でも SKIP があれば NO-GO |
+| 4 | CI (test+lint+build) が緑 | GitHub Actions 全 job green を確認 |
+
+テスト不在は「未完」扱い。テストなしで GO を出してはならない。
+
 **Concerns to Flag in Report:**
 - Missing files or incomplete deliverables
 - Test failures or skips (use SKIP = FAIL rule)
