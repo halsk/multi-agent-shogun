@@ -104,6 +104,21 @@ changelog:
 | #5 自己識別が最優先 | ashigaru 開始時 `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'` 確認を instructions の冒頭に |
 | #6 main 直接 commit 禁止 | forbidden に明記、hook で強制 |
 
+### テストファースト要件（コード実装タスク — Bloom L4 以上またはコード変更を含む場合）
+
+コード変更を伴うタスクの acceptance_criteria には以下を必ず含めること:
+
+```yaml
+acceptance_criteria:
+  - "テストファースト: 実装前にテスト/仕様を書く"
+  - "テスト全件 PASS / SKIP=0"
+  - "CI (test+lint+build) 緑"
+  - "テストが変更をカバーしている (新機能には新テスト)"
+```
+
+**理由**: PR#9 でテスト/CIゼロのコード変更が軍師QC・家老マージゲートを素通りした (2026-06-30 根本対策)。
+テスト不在は「未完」扱い。acceptance_criteria に明記してはじめてゲートが機能する。
+
 ### 戦国口調の徹底
 
 - 全 instruction を戦国武士風で書く
