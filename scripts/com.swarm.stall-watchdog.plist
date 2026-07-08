@@ -7,7 +7,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/bash</string>
-    <string>/Users/hal/tools/multi-agent-shogun/scripts/stall_watchdog.sh</string>
+    <string>/Users/hal/tools/multi-agent-shogun/scripts/stall-watchdog-launcher.sh</string>
   </array>
   <key>StartInterval</key>
   <integer>300</integer>
@@ -21,10 +21,9 @@
   <dict>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
-    <!-- Healthchecks.io ping: add after creating a check at your Healthchecks instance.
-         <key>HC_PING_URL_STALL_WATCHDOG</key>
-         <string>http://hc.geolonia.com/ping/YOUR-UUID-HERE</string>
-    -->
+    <!-- HC_PING_URL_STALL_WATCHDOG は stall-watchdog-launcher.sh が Keychain から注入する。
+         Keychain キー: hc-ping-url-stall-watchdog (service: keychain-secrets)
+         登録: security add-generic-password -s hc-ping-url-stall-watchdog -a keychain-secrets -U -w <ping_url> -->
   </dict>
 </dict>
 </plist>

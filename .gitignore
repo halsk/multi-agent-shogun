@@ -127,6 +127,7 @@
 !scripts/migrate-secrets-to-op.sh
 !scripts/keychain-sync-secrets.conf.example
 !scripts/stall_watchdog.sh
+!scripts/stall-watchdog-launcher.sh
 !scripts/com.swarm.stall-watchdog.plist
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
