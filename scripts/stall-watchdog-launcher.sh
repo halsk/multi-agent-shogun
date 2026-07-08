@@ -14,17 +14,19 @@
 set -euo pipefail
 set +x  # secret trace 禁止
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GET_SECRET="${SCRIPT_DIR}/get-secret.sh"
 
 # HC ping URL 確保 (launchd global env → Keychain)
 if [[ -z "${HC_PING_URL_STALL_WATCHDOG:-}" ]]; then
     if [[ -f "$GET_SECRET" ]]; then
         # shellcheck disable=SC1090
-        source "$GET_SECRET"
+        source "$GET_SECRET" || true
         HC_PING_URL_STALL_WATCHDOG="$(get_secret "hc-ping-url-stall-watchdog" 2>/dev/null)" || true
     fi
-    # Keychain ミス時は空のまま続行 (stall_watchdog.sh 側で no-op になる)
+    if [[ -z "${HC_PING_URL_STALL_WATCHDOG:-}" ]]; then
+        echo "[stall-watchdog-launcher] WARN: HC_PING_URL_STALL_WATCHDOG not found in env or Keychain — pings disabled" >&2
+    fi
     export HC_PING_URL_STALL_WATCHDOG
 fi
 
