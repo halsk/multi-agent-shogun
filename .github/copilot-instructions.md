@@ -371,3 +371,11 @@ When processing large datasets (30+ items requiring individual web search, API c
 設定場所: `~/.copilot/settings.json` の `hooks.PreToolUse`
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
 テスト: `scripts/hooks/test_hooks.sh`
+
+## guard.sh の Skip マーカー (.guard-skip)
+
+リポルートに **`.guard-skip`** ファイルを置けば、guard.sh の全 Hook (1〜6) がそのリポでは無効化される。Obsidian Vault のような **auto-sync で main 直接 commit/push が運用前提のリポ** で使用。
+
+- 検出条件: `git rev-parse --show-toplevel` で取れる git root に `.guard-skip` ファイルがあるか
+- WSL2 / Mac mini のパス差に依存せず、リポ毎に明示的に指定
+- 殿の指示 (2026-06-06): Vault 削除事故 + push 阻害を契機に恒久対策として実装
