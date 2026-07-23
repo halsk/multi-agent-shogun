@@ -39,6 +39,7 @@
 !.claude/skills/systematic-debugging/SKILL.md
 !.claude/skills/writing-task-yaml/
 !.claude/skills/writing-task-yaml/SKILL.md
+!.claude/skills/whole-vault-deadlink-scan
 
 # Instructions (core OSS)
 !instructions/
@@ -182,6 +183,8 @@ logs/
 !.agents/skills/systematic-debugging/SKILL.md
 !.agents/skills/writing-task-yaml/
 !.agents/skills/writing-task-yaml/SKILL.md
+!.agents/skills/whole-vault-deadlink-scan/
+!.agents/skills/whole-vault-deadlink-scan/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/
