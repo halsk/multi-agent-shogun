@@ -211,7 +211,20 @@ _in_allowed_zone() {
 RM_BLOCK_REASON=""
 _rm_target_verdict() {
   local raw="$1" p cwd_root
-  # guard.sh は文字列のみを見るためシェルの ~ 展開は起きない。明示的に展開する。
+  # guard.sh は文字列のみを見るためシェルの ~/$HOME 展開は起きない。明示的に
+  # 展開する。★$HOME 未展開のまま(cmd_711f 将軍指摘): `rm -r $HOME/../etc`
+  # は、文字列上「$HOME」という架空のリテラルディレクトリ名として扱われ、
+  # 直後の `..` と字面上で相殺されて cwd_root 配下に丸め込まれ誤 ALLOW に
+  # なる(実 bash 実行時は $HOME が実パスへ展開され、全く別の場所——多くは
+  # プロジェクト外——を削除する)。static 解析側でも展開して整合させる。
+  # ★${HOME}(中括弧付き)は "}" で self-terminating なので部分一致の
+  # 心配はないが、素の $HOME は $HOMEBASE/$HOMEDIR 等の別変数名の接頭辞と
+  # 衝突しうる。sed で「直後が識別子文字でない」場合のみ展開する(境界一致)。
+  raw="${raw//\$\{HOME\}/$HOME}"
+  if [[ "$raw" == *'$HOME'* ]]; then
+    local _home_esc="${HOME//&/\\&}"
+    raw="$(printf '%s' "$raw" | sed -E "s#\\\$HOME([^A-Za-z0-9_]|\$)#${_home_esc}\\1#g")"
+  fi
   case "$raw" in
     "~") raw="$HOME" ;;
     "~/"*) raw="$HOME/${raw#\~/}" ;;

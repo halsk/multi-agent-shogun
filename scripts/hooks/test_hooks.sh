@@ -5,6 +5,19 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUARD="$SCRIPT_DIR/guard.sh"
 
+# ★環境非依存性 (cmd_711f): guard.sh は相対パス (../sibling-repo 等) を
+# 「このプロセスの実際の cwd」基準で解決する。本スクリプトの個々の check() は
+# cd を挟まず素通しで guard.sh を呼ぶため、オペレータが `bash
+# scripts/hooks/test_hooks.sh` をどの cwd から叩くかに結果が左右されてしまう
+# (実例: cwd が自分の scratchpad ツリー配下だと ../sibling-repo が
+# scratchpad allow-zone 内に丸め込まれて誤 ALLOW になる — 将軍の実測再現)。
+# また Hook3/6 系のテストは素の `git commit`/`git push`/`git rev-parse` で
+# 実プロセス cwd 依存のため、cwd がこのリポでなければ大量に FAIL する。
+# よってテスト対象リポの toplevel へ確定的に cd し、以後どこから起動しても
+# 結果が変わらないようにする。
+PROJ_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/../..")"
+cd "$PROJ_ROOT" || { echo "❌ PROJ_ROOT ($PROJ_ROOT) へ cd 失敗。テスト中止。" >&2; exit 1; }
+
 PASS=0
 FAIL=0
 
@@ -55,8 +68,7 @@ check "D001: rm -rf ~" block "rm -rf ~"
 
 echo ""
 echo "=== D001/D002 拡張: 再帰rmフラグ全形+ツリー外パス (cmd_711) ==="
-# <PROJ> = このテストを実行しているリポのルート (worktree)
-PROJ_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/../..")"
+# <PROJ> = このテストを実行しているリポのルート (worktree・PROJ_ROOT は冒頭で確定済み)
 # <SCRATCH> = セッションscratchpadパターンに合致する合成パス(実在不要・文字列判定のみ)
 SCRATCH_PATH="/private/tmp/claude-999/fake-session/scratchpad/tmpdir"
 # <ISO> = 隔離検証用の指定置き場(cmd_711新設・実在不要)
@@ -77,9 +89,47 @@ check "D002: rm -rf /tmp/somewhere-else (ツリー外)" block "rm -rf /tmp/somew
 check "D002: rm -r /Users/hal/Downloads/x (ツリー外)" block "rm -r /Users/hal/Downloads/x"
 check "D002: rm -r 別repo (ツリー外)" block "rm -r /Users/hal/tools/other-repo/x"
 check "D002: ../回避 (realpathでツリー外/重要パスへ解決)" block "rm -r $PROJ_ROOT/../../../../../../../../etc"
-check "D002: rm -r ../../../etc (相対../脱出)" block "rm -r ../../../etc"
-check "D002: rm -rf ../../../../../../etc (深い../脱出)" block "rm -rf ../../../../../../etc"
-check "D002: rm -r ../sibling-repo (隣接repoへの相対脱出)" block "rm -r ../sibling-repo"
+
+# ★環境非依存性 (cmd_711f・将軍実測 PASS=103/FAIL=1 の再現原因):
+# 素の相対 ".." (cd を伴わない `rm -r ../sibling-repo` 等) は、guard.sh の
+# resolve_git_dir が GIT_TARGET_DIR="." にフォールバックし「このプロセスの
+# 実際の cwd」で解決される。つまり本テストの結果が、オペレータが
+# test_hooks.sh をどの cwd から起動したか／このリポ自体がどこに checkout
+# されているか (例: 自分の scratchpad ツリー配下に worktree を作った場合)
+# に左右されてしまう ——実際に scratchpad 配下で checkout すると
+# ../sibling-repo が scratchpad allow-zone 内に丸め込まれ誤 ALLOW になる
+# ことを確認済み(将軍の実測と一致)。
+# guard.sh の resolve_git_dir はコマンド文字列中の明示的な `cd <dir>` を
+# そのままパースして GIT_TARGET_DIR とする(実際に cd はしない・文字列判定
+# のみ)。よって専用の隔離 git repo を用意し、コマンド文字列に明示 `cd` を
+# 埋め込むことで、実行時の実 cwd や本リポ自身の配置場所と無関係に
+# 決定的な判定結果を得られる。
+ISO_ESCAPE_REPO=$(mktemp -d)
+git -C "$ISO_ESCAPE_REPO" init -q -b main
+check "D002: rm -r ../../../etc (相対../脱出・隔離repoから)" block \
+  "cd $ISO_ESCAPE_REPO && rm -r ../../../etc"
+check "D002: rm -rf ../../../../../../etc (深い../脱出・隔離repoから)" block \
+  "cd $ISO_ESCAPE_REPO && rm -rf ../../../../../../etc"
+check "D002: rm -r ../sibling-repo (隣接repoへの相対脱出・隔離repoから)" block \
+  "cd $ISO_ESCAPE_REPO && rm -r ../sibling-repo"
+
+# --- cd .. を挟む複合コマンド (将軍指摘・cmd_711f) ---
+# `cd <dir>/..` のように cd 引数自体に ".." を埋め込み、隔離repoに確定的に
+# 錨を張る(素の "cd .." だけだと resolve_git_dir が実プロセスcwd基準で
+# 解決してしまい、本テストの配置場所に結果が左右されてしまうため)。
+mkdir -p "$ISO_ESCAPE_REPO/nested"
+check "複合コマンド: cd .. && rm -r sibling-repo (project内へ戻る・過剰ブロック防止)" allow \
+  "cd $ISO_ESCAPE_REPO/nested/.. && rm -r sibling-repo"
+check "複合コマンド: cd .. && rm -r ../sibling-repo (project外へのcd複合脱出)" block \
+  "cd $ISO_ESCAPE_REPO/nested/.. && rm -r ../sibling-repo"
+rm -rf "$ISO_ESCAPE_REPO"
+
+# --- $HOME/${HOME} 変数展開を含む回避パターン (将軍指摘・cmd_711f) ---
+# static解析側でも $HOME を実パスへ展開せねば、リテラル「$HOME」という
+# 架空ディレクトリ名が直後の ".." と字面上相殺され、実際の脱出先とは異なる
+# (かつ誤って安全に見える)パスで判定してしまう(is-fix: guard.sh 側で修正済)。
+check "\$HOME 変数展開回避: rm -r \$HOME/../etc" block 'rm -r $HOME/../etc'
+check "\${HOME} 変数展開回避: rm -r \${HOME}/../etc" block 'rm -r ${HOME}/../etc'
 
 # --- block: symlink 経由の脱出 ---
 SYMLINK_TEST="/tmp/shogun-test-link-to-home-$$"
