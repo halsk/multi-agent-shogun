@@ -243,6 +243,14 @@ _rm_target_verdict() {
     elif [[ -n "$cwd_root" ]]; then
       raw="$cwd_root/$raw"
     fi
+    # finding_B是正 (cmd_711i): 上の分岐で解決できなかった相対パス
+    # (非gitディレクトリ、例: scratchpad一時dir)は、_realpath_m の
+    # $PWD フォールバック(=hookプロセス自身のcwd)ではなく GIT_TARGET_DIR
+    # (コマンド文字列から抽出した cd 先)を基準に絶対化する。旧実装は
+    # ここで raw を相対のまま _realpath_m へ渡していたため、
+    # 「cd <scratchpad> && rm -rf ./sub」のような呼び出しが hook 自身の
+    # cwd(通常はプロジェクトルート)基準で誤って絶対化され D002 誤爆していた。
+    [[ "$raw" != /* ]] && raw="$GIT_TARGET_DIR/$raw"
   fi
 
   p=$(_realpath_m "$raw")

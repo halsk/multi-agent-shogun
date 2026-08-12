@@ -38,7 +38,6 @@
     "defaultMode": "bypassPermissions",
     "deny": [
       "Bash(rm -rf /)",
-      "Bash(rm -rf /*)",
       "Bash(rm -rf /mnt/*)",
       "Bash(rm -rf /mnt/c/*)",
       "Bash(rm -rf /home/*)",

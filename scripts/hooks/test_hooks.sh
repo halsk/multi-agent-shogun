@@ -160,6 +160,25 @@ check "語末rm誤検知なし: alarm -r" allow "alarm -r"
 check "rm以外: rmdir emptydir" allow "rmdir emptydir"
 check "相対glob(cwd=プロジェクト内で許可): rm -rf *" allow "rm -rf *"
 
+# --- allow: finding_B是正 (cmd_711i) ---
+# 背景: 実地確認で「cd <scratchpad配下tempdir> && rm -rf ./sub」が誤って
+# D002 ブロックされる回帰が発覚(subtask_711h)。原因は _rm_target_verdict の
+# 相対パス絶対化が、コマンド文字列から抽出した GIT_TARGET_DIR (cd 先) では
+# なく guard.sh フックプロセス自身の $PWD を基準にしていたこと。scratchpad
+# は非gitディレクトリのため cwd_root (git toplevel) が空になり、
+# _realpath_m の $PWD フォールバックへ落ちて誤判定していた。
+# ★実際の scratchpad allow-zone パターン(/private/tmp/claude-*/*/scratchpad/*)
+# に一致する実ディレクトリを用意し、cd 先として文字列に埋め込むことで、
+# テスト実行時の実 cwd に左右されず決定的に再現する。
+FINDINGB_ROOT=$(mktemp -d /tmp/claude-711itest.XXXXXX)
+FINDINGB_SCRATCH="$FINDINGB_ROOT/session/scratchpad/workdir"
+mkdir -p "$FINDINGB_SCRATCH/sub"
+check "D002回帰是正: cd scratchpad && rm -rf ./sub (許可ゾーン内相対削除)" allow \
+  "cd $FINDINGB_SCRATCH && rm -rf ./sub"
+check "D002回帰是正: cd scratchpad && rm -rf sub (同上・./なし)" allow \
+  "cd $FINDINGB_SCRATCH && rm -rf sub"
+find "$FINDINGB_ROOT" -delete
+
 echo ""
 echo "=== Hook 2 続き ==="
 check "D003: git push --force" block "git push origin main --force"
