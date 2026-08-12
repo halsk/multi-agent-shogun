@@ -52,6 +52,63 @@ check "D001: rm -rf /" block "rm -rf /"
 check "D001: rm -rf /mnt/*" block "rm -rf /mnt/*"
 check "D001: rm -rf /home/*" block "rm -rf /home/*"
 check "D001: rm -rf ~" block "rm -rf ~"
+
+echo ""
+echo "=== D001/D002 拡張: 再帰rmフラグ全形+ツリー外パス (cmd_711) ==="
+# <PROJ> = このテストを実行しているリポのルート (worktree)
+PROJ_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/../..")"
+# <SCRATCH> = セッションscratchpadパターンに合致する合成パス(実在不要・文字列判定のみ)
+SCRATCH_PATH="/private/tmp/claude-999/fake-session/scratchpad/tmpdir"
+# <ISO> = 隔離検証用の指定置き場(cmd_711新設・実在不要)
+ISO_PATH="/tmp/shogun-isolated/cmd709c"
+
+# --- block: 再帰フラグ全形 × 重要パス ---
+check "D001: rm -r / (新捕捉・-rf以外)" block "rm -r /"
+check "D001: rm -fr /home/*" block "rm -fr /home/*"
+check "D001: rm -R ~" block "rm -R ~"
+check "D001: rm -rvf /mnt/*" block "rm -rvf /mnt/*"
+check "D001: rm -f -r / (分離フラグ)" block "rm -f -r /"
+check "D001: rm --recursive / (長形式)" block "rm --recursive /"
+check "D001: rm --force --recursive /home/x" block "rm --force --recursive /home/x"
+check "D001: rm -r --force ~ (順序違い)" block "rm -r --force ~"
+
+# --- block: D002 ツリー外パス ---
+check "D002: rm -rf /tmp/somewhere-else (ツリー外)" block "rm -rf /tmp/somewhere-else"
+check "D002: rm -r /Users/hal/Downloads/x (ツリー外)" block "rm -r /Users/hal/Downloads/x"
+check "D002: rm -r 別repo (ツリー外)" block "rm -r /Users/hal/tools/other-repo/x"
+check "D002: ../回避 (realpathでツリー外/重要パスへ解決)" block "rm -r $PROJ_ROOT/../../../../../../../../etc"
+
+# --- block: symlink 経由の脱出 ---
+SYMLINK_TEST="/tmp/shogun-test-link-to-home-$$"
+ln -sfn "$HOME" "$SYMLINK_TEST"
+check "symlink回避: rm -r $HOME への symlink" block "rm -r $SYMLINK_TEST"
+rm -f "$SYMLINK_TEST"
+
+# --- block: 複合コマンド(各rm起動を個別評価) ---
+check "複合コマンド: rm -f a && rm -r /x (2件目を見落とさぬ)" block "rm -f a.txt && rm -r /x"
+
+# --- block: 引用符付き絶対パス(word-splitで相対パス誤判定→バイパスの回帰防止) ---
+check '引用符バイパス防止: rm -rf "/etc"' block 'rm -rf "/etc"'
+check "引用符バイパス防止: rm -rf '/etc'" block "rm -rf '/etc'"
+check '引用符バイパス防止: rm -rf "/home/x"' block 'rm -rf "/home/x"'
+
+# --- allow: 過剰ブロック防止 ---
+check "非再帰: rm file.txt" allow "rm file.txt"
+check "非再帰force: rm -f file.txt" allow "rm -f file.txt"
+check "非再帰複数: rm a.txt b.txt" allow "rm a.txt b.txt"
+check "プロジェクト内: rm -rf <PROJ>/build" allow "rm -rf $PROJ_ROOT/build"
+check "プロジェクト内: rm -r <PROJ>/node_modules" allow "rm -r $PROJ_ROOT/node_modules"
+check "scratchpad: rm -rf <SCRATCH>" allow "rm -rf $SCRATCH_PATH"
+check "指定置き場: rm -r <ISO>" allow "rm -r $ISO_PATH"
+check "指定置き場: rm -rf <ISO>/copy" allow "rm -rf $ISO_PATH/copy"
+check '指定置き場(引用符付き): rm -rf "<ISO>/copy"' allow "rm -rf \"$ISO_PATH/copy\""
+check "語末rm誤検知なし: confirm --recursive" allow "confirm --recursive"
+check "語末rm誤検知なし: alarm -r" allow "alarm -r"
+check "rm以外: rmdir emptydir" allow "rmdir emptydir"
+check "相対glob(cwd=プロジェクト内で許可): rm -rf *" allow "rm -rf *"
+
+echo ""
+echo "=== Hook 2 続き ==="
 check "D003: git push --force" block "git push origin main --force"
 check "D003: git push -f" block "git push origin main -f"
 check "D004: git reset --hard" block "git reset --hard HEAD~1"
