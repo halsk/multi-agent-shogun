@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
-# guard.sh — Claude Code PreToolUse hook for Bash tool
+# guard.sh — Claude Code PreToolUse(Bash)hook。exit 0=許可 / exit 2=ブロック。
+#
+# ★適用範囲(正直に明記):
+#   これは Claude Code 経由の Bash コマンドのみを検査する多重防御の「一層」である。
+#   守れる: Claude Code の Bash ツールから発行されるコマンド。
+#   守れぬ: 他CLI(Codex/Copilot/Kimi/OpenCode)・agent以外・GUI・直接シェル・
+#           スクリプト内部からの再帰削除等は検査対象外。
+#   ★Claude Code ハーネス自体の許可層とは独立に動く。ハーネスの穴
+#     (-rf 文字列依存で rm -r を見落とす等)に依存せず、guard.sh 側で確実に捕捉する。
+#   よって「これで全経路が安全」ではない。あくまで agent 経由の破壊的 Bash を止める一層。
 # Reads JSON from stdin: {"tool_name": "Bash", "tool_input": {"command": "..."}}
 # exit 0 = allow, exit 2 = block (stderr shown as error message)
 
@@ -91,12 +100,186 @@ fi
 # Hook 2: 破壊的操作ガード (D001-D008)
 # ============================================================
 
-# D001: rm -rf on critical paths
-if echo "$COMMAND" | grep -qE 'rm\s+-rf\s+(/\*?$|/mnt/\*|/home/\*|~(/|$| ))' || \
-   echo "$COMMAND" | grep -qE 'rm\s+-rf\s+~$'; then
-  echo "❌ 破壊的操作が検出されました: rm -rf 重要パス。D001 違反です。" >&2
-  exit 2
-fi
+# ============================================================
+# D001/D002 ヘルパ (cmd_711): 再帰 rm の全フラグ形 + パスゾーン判定
+# ------------------------------------------------------------
+# 背景: 旧 D001 は `rm -rf` のリテラルにのみ反応し `rm -r`/`rm -fr`/
+# `rm -R`/`rm --recursive` 等が素通りしていた(軍師 subtask_709c_qc 発見)。
+# また D002 (プロジェクト作業ツリー外への再帰削除禁止) は rm について
+# 一切未実装だった。本ブロックで両穴を塞ぐ。
+# ★最重要方針: 過剰ブロックは穴と同じくらい有害。許可ゾーン(_in_allowed_zone)
+# を必ず維持し、足軽の正当な削除(build/node_modules/scratchpad/隔離コピー)
+# を止めぬこと。
+# ============================================================
+
+# realpath -m 相当をポータブルに得る。
+# GNU realpath (Linux/WSL2) は -m 対応。macOS 標準 /bin/realpath は -m 非対応
+# (illegal option で exit 1・stdout 無し)ゆえ grealpath → 純 bash 実装の順で
+# フォールバックする。
+_resolve_symlink_chain() {
+  local p="$1" link
+  local -i i=0
+  while [[ -L "$p" ]] && (( i < 40 )); do
+    link=$(readlink "$p" 2>/dev/null || true)
+    [[ -z "$link" ]] && break
+    if [[ "$link" != /* ]]; then
+      link="$(dirname "$p")/$link"
+    fi
+    p="$link"
+    i=$((i + 1))
+  done
+  echo "$p"
+}
+
+_lexical_normalize() {
+  local path="$1"
+  [[ "$path" != /* ]] && path="$PWD/$path"
+  local IFS='/'
+  local -a parts stack
+  read -ra parts <<< "$path"
+  local part
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ""|".") continue ;;
+      "..") [[ ${#stack[@]} -gt 0 ]] && unset 'stack[${#stack[@]}-1]' ;;
+      *) stack+=("$part") ;;
+    esac
+  done
+  local out="" seg
+  for seg in "${stack[@]}"; do
+    out+="/$seg"
+  done
+  [[ -z "$out" ]] && out="/"
+  echo "$out"
+}
+
+_realpath_m() {
+  local raw="$1" out
+  if out=$(realpath -m -- "$raw" 2>/dev/null); then
+    echo "$out"; return 0
+  fi
+  if command -v grealpath >/dev/null 2>&1 && out=$(grealpath -m -- "$raw" 2>/dev/null); then
+    echo "$out"; return 0
+  fi
+  _lexical_normalize "$(_resolve_symlink_chain "$raw")"
+}
+
+# 短縮束(-rf/-fr/-Rf/-rvf/-r/-R)または長形式(--recursive)を再帰フラグとして
+# 捕捉する。-f の有無は判定を変えぬ(通常ファイルへの再帰削除力は -r で十分
+# ——これが旧実装の穴の本質)。
+_has_recursive_flag() {
+  echo "$1" | grep -qE '(^|[[:space:]])(-[A-Za-z]*[rR][A-Za-z]*|--recursive)([[:space:]]|=|$)'
+}
+
+# rm 起動区間から非フラグ引数(=削除対象パス)を列挙する。
+# ★引用符除去: `rm -rf "/etc"` は素の word-split では先頭 `"` が付いた
+# トークンになり `[[ "$raw" != /* ]]` の相対パス分岐に誤って落ちて
+# バイパスされる(cmd_711 レビューで検出)。前後の一致しない引用符1つずつを
+# 剥がして絶対パス判定に戻す。スペースを含む引用パスの完全な再構成までは
+# しない(word-split の既知の限界だが、危険な先頭セグメント (/etc・/home/*等)
+# は引用符除去だけで正しく捕捉できる)。
+_extract_rm_targets() {
+  local seg="$1" tok
+  for tok in $seg; do
+    [[ "$tok" == "rm" ]] && continue
+    [[ "$tok" == -* ]] && continue
+    tok="${tok#[\"\']}"
+    tok="${tok%[\"\']}"
+    [[ -z "$tok" ]] && continue
+    echo "$tok"
+  done
+}
+
+# 許可ゾーン三点: (a) 対象repoのgit toplevel配下 (b) セッションscratchpad配下
+# (c) 隔離検証用の指定置き場 /tmp/shogun-isolated/ (cmd_711 新設)。
+# ここに該当すれば D002 の対象外として通す。
+_in_allowed_zone() {
+  local p="$1" root
+  root=$(git -C "$GIT_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+  if [[ -n "$root" ]]; then
+    case "$p/" in "$root"/*) return 0 ;; esac
+  fi
+  case "$p/" in /private/tmp/claude-*/*/scratchpad/*) return 0 ;; esac
+  case "$p/" in /tmp/claude-*/*/scratchpad/*) return 0 ;; esac
+  case "$p/" in /tmp/shogun-isolated/*) return 0 ;; esac
+  case "$p/" in /private/tmp/shogun-isolated/*) return 0 ;; esac
+  return 1
+}
+
+# rm 対象パス1件の可否を判定する。RM_BLOCK_REASON に D001/D002 を設定して
+# 戻り値 1 (block) を返す。0 = allow。
+RM_BLOCK_REASON=""
+_rm_target_verdict() {
+  local raw="$1" p cwd_root
+  # guard.sh は文字列のみを見るためシェルの ~/$HOME 展開は起きない。明示的に
+  # 展開する。★$HOME 未展開のまま(cmd_711f 将軍指摘): `rm -r $HOME/../etc`
+  # は、文字列上「$HOME」という架空のリテラルディレクトリ名として扱われ、
+  # 直後の `..` と字面上で相殺されて cwd_root 配下に丸め込まれ誤 ALLOW に
+  # なる(実 bash 実行時は $HOME が実パスへ展開され、全く別の場所——多くは
+  # プロジェクト外——を削除する)。static 解析側でも展開して整合させる。
+  # ★${HOME}(中括弧付き)は "}" で self-terminating なので部分一致の
+  # 心配はないが、素の $HOME は $HOMEBASE/$HOMEDIR 等の別変数名の接頭辞と
+  # 衝突しうる。sed で「直後が識別子文字でない」場合のみ展開する(境界一致)。
+  raw="${raw//\$\{HOME\}/$HOME}"
+  if [[ "$raw" == *'$HOME'* ]]; then
+    local _home_esc="${HOME//&/\\&}"
+    raw="$(printf '%s' "$raw" | sed -E "s#\\\$HOME([^A-Za-z0-9_]|\$)#${_home_esc}\\1#g")"
+  fi
+  case "$raw" in
+    "~") raw="$HOME" ;;
+    "~/"*) raw="$HOME/${raw#\~/}" ;;
+  esac
+  # 過剰ブロック防止: 相対パス/裸のglob(`rm -rf *` 等)は、cwd が対象repoの
+  # git toplevel配下に解決できる場合のみ許可する(シェル展開前の文字列しか
+  # guard は見えぬため、cwd が許可ゾーン内なら安全側とみなす)。
+  # ★軍師QC(subtask_711c_qc)指摘: これを`..`を含む相対パスにも無条件適用
+  # すると`rm -r ../../../etc`等のツリー外脱出が素通りする。`..`を含む
+  # 相対パスは cwd_root と結合し realpath 解決してから通常のゾーン判定へ
+  # 回す(下の p=$(_realpath_m "$raw") 以降のフロー)。
+  if [[ "$raw" != /* ]]; then
+    cwd_root=$(git -C "$GIT_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+    if [[ "$raw" != *..* ]]; then
+      [[ -n "$cwd_root" ]] && return 0
+    elif [[ -n "$cwd_root" ]]; then
+      raw="$cwd_root/$raw"
+    fi
+  fi
+
+  p=$(_realpath_m "$raw")
+
+  case "$p" in
+    /|/bin|/boot|/dev|/etc|/lib|/lib64|/proc|/root|/sbin|/srv|/sys|/usr|/var|/mnt|/mnt/*|/home|/home/*)
+      RM_BLOCK_REASON="D001"; return 1 ;;
+  esac
+  if [[ "$p" == "$HOME" ]]; then
+    RM_BLOCK_REASON="D001"; return 1
+  fi
+
+  _in_allowed_zone "$p" && return 0
+
+  RM_BLOCK_REASON="D002"
+  return 1
+}
+
+# D001/D002: rm 起動を個別に走査(複合コマンド `rm -f a && rm -r /x` で
+# 2件目を見落とさぬよう、区切りで1回だけ切るのでなく各 rm 起動をループで評価)。
+while IFS= read -r rm_invocation; do
+  [[ -z "$rm_invocation" ]] && continue
+  # 抽出時に混入し得る先頭の区切り文字(;&|(=)を1つだけ除去
+  rm_invocation="$(echo "$rm_invocation" | sed -E 's/^[;&|(=]//')"
+  _has_recursive_flag "$rm_invocation" || continue
+  while IFS= read -r target; do
+    [[ -z "$target" ]] && continue
+    if ! _rm_target_verdict "$target"; then
+      if [[ "$RM_BLOCK_REASON" == "D001" ]]; then
+        echo "❌ 破壊的操作が検出されました: rm 再帰削除が重要パスを対象 ($target)。D001 違反です。" >&2
+      else
+        echo "❌ 破壊的操作が検出されました: rm 再帰削除がプロジェクト作業ツリー外を対象 ($target)。D002 違反です。" >&2
+      fi
+      exit 2
+    fi
+  done < <(_extract_rm_targets "$rm_invocation")
+done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
 
 # D003: git push --force / -f (without --force-with-lease)
 if has_git_subcmd "$COMMAND" "push" && echo "$COMMAND" | grep -qE '\-\-force\b' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
