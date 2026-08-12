@@ -77,6 +77,9 @@ check "D002: rm -rf /tmp/somewhere-else (ツリー外)" block "rm -rf /tmp/somew
 check "D002: rm -r /Users/hal/Downloads/x (ツリー外)" block "rm -r /Users/hal/Downloads/x"
 check "D002: rm -r 別repo (ツリー外)" block "rm -r /Users/hal/tools/other-repo/x"
 check "D002: ../回避 (realpathでツリー外/重要パスへ解決)" block "rm -r $PROJ_ROOT/../../../../../../../../etc"
+check "D002: rm -r ../../../etc (相対../脱出)" block "rm -r ../../../etc"
+check "D002: rm -rf ../../../../../../etc (深い../脱出)" block "rm -rf ../../../../../../etc"
+check "D002: rm -r ../sibling-repo (隣接repoへの相対脱出)" block "rm -r ../sibling-repo"
 
 # --- block: symlink 経由の脱出 ---
 SYMLINK_TEST="/tmp/shogun-test-link-to-home-$$"

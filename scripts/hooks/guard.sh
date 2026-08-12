@@ -219,9 +219,17 @@ _rm_target_verdict() {
   # 過剰ブロック防止: 相対パス/裸のglob(`rm -rf *` 等)は、cwd が対象repoの
   # git toplevel配下に解決できる場合のみ許可する(シェル展開前の文字列しか
   # guard は見えぬため、cwd が許可ゾーン内なら安全側とみなす)。
+  # ★軍師QC(subtask_711c_qc)指摘: これを`..`を含む相対パスにも無条件適用
+  # すると`rm -r ../../../etc`等のツリー外脱出が素通りする。`..`を含む
+  # 相対パスは cwd_root と結合し realpath 解決してから通常のゾーン判定へ
+  # 回す(下の p=$(_realpath_m "$raw") 以降のフロー)。
   if [[ "$raw" != /* ]]; then
     cwd_root=$(git -C "$GIT_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || true)
-    [[ -n "$cwd_root" ]] && return 0
+    if [[ "$raw" != *..* ]]; then
+      [[ -n "$cwd_root" ]] && return 0
+    elif [[ -n "$cwd_root" ]]; then
+      raw="$cwd_root/$raw"
+    fi
   fi
 
   p=$(_realpath_m "$raw")
