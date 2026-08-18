@@ -119,7 +119,7 @@ console_pr_epoch() {
     [[ -n "$repo_slug" ]] || { echo 0; return; }
     command -v gh >/dev/null 2>&1 || { echo 0; return; }
     local updated_iso
-    updated_iso=$(GH_TOKEN= gh pr list -R "$repo_slug" --state open --json updatedAt \
+    updated_iso=$(GH_TOKEN='' gh pr list -R "$repo_slug" --state open --json updatedAt \
         --jq 'map(.updatedAt) | sort | last' 2>/dev/null || echo "")
     [[ -n "$updated_iso" && "$updated_iso" != "null" ]] || { echo 0; return; }
     iso_to_epoch "$updated_iso"
