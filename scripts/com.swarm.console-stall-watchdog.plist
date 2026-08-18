@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.swarm.console-stall-watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/hal/tools/multi-agent-shogun/scripts/console-stall-watchdog-launcher.sh</string>
+  </array>
+  <!-- 30分毎: 停滞閾値4hに対し十分な検知粒度でありつつ gh api 呼び出し回数を抑える
+       (既存stall-watchdogの5分毎はエージェント無音固着という秒単位の事象を追う別目的ゆえ、
+       ここでは踏襲しない。理由は subtask_725a 報告に明記)。 -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/console_stall_watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/console_stall_watchdog.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

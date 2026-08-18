@@ -74,6 +74,7 @@
 !lib/agent_registry.sh
 !lib/branch_policy.sh
 !lib/stall_detect.sh
+!lib/console_stall_detect.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -130,10 +131,17 @@
 !scripts/stall_watchdog.sh
 !scripts/stall-watchdog-launcher.sh
 !scripts/com.swarm.stall-watchdog.plist
+!scripts/console_stall_watchdog.sh
+!scripts/console-stall-watchdog-launcher.sh
+!scripts/com.swarm.console-stall-watchdog.plist
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/
 !queue/stall_watchdog/.gitignore
+
+# Console Stall Watchdog state dir (cmd_725第三段・独立ジョブ — *.yaml は実行時状態)
+!queue/console_stall_watchdog/
+!queue/console_stall_watchdog/.gitignore
 
 # SayTask (sample template only, not actual data)
 !saytask/
