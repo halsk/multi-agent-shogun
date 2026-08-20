@@ -61,6 +61,9 @@ acceptance_criteria:
   - "/code-review-expert --auto P0/P1: 0"
   - "PR の CR Actionable 0 — gh api graphql で reviewThreads(unresolved=0) を実証済み (statusCheckRollup のみでは不可)"
   - "CI PASS"
+  # ★deploy を伴う task は必ず最終条件として以下を追加せよ(殿確定 2026-08-13・cmd_717。
+  #   JS の grep・HTTP ヘッダ・workflow success はいずれも中間確認であり完了条件にしてはならない)
+  - "実ブラウザで<意図した要素>が画面に現れることを確認し、スクリーンショットを証跡として残している"
 
 forbidden:
   - main 直接 commit / push 禁止 (hook で強制)
@@ -139,7 +142,56 @@ acceptance_criteria:
 - task YAML に Issue URL を含める
 - PR body の `Closes #N` は **Issue 番号** を指す（cmd 番号と混同禁止）
 
-### マージ前チェック義務（家老の責務）
+### console e2e/検証タスクの規律（テナントアドミン必須・殿確定 2026-07-11）
+
+- **geonicdb-console の e2e/検証系タスクは必ずテナントアドミンでログイン + テナント選択**すること。
+  super admin(superuser)は**厳禁**。
+- 理由: super admin は単一テナントにスコープされないため `currentTenant` が空になり、
+  NGSI-LD entities 等のリクエストが 403 を返す**偽陰性**が発生する(cmd_656・cmd_661 で2度再発)。
+  これは real bug でも当該アプリの回帰でもなく、検証手順の誤りによる誤検知。
+- task YAML の instructions/context に以下を必須明記すること:
+  ```
+  ★e2e規律: 必ずテナントアドミンでログイン+テナント選択して検証せよ。super admin(superuser)は
+  厳禁(=単一テナント非スコープでcurrentTenant空→403偽陰性の常習原因。cmd_656/cmd_661参照)。
+  ```
+- 参照: memory `feedback_console_e2e_tenant_admin_required`
+
+### 認証を要する作業と要さぬ作業を同一 subtask に束ねるな（殿確定 2026-08-13・cmd_716）
+
+- 1Password / AWS / Touch ID 等の認証を要する工程と、要さぬ工程を **同一 subtask に束ねてはならない**。
+  束ねると、認証側が失効・失敗した瞬間に認証不要な工程まで巻き込まれて全体が止まる
+  (本セッションで五度繰り返した失敗の構造的原因。cmd_703/712a/712c/712d/716c)。
+- **設計原則**: 認証を要さぬものを先に片付ける subtask に切り出し、認証を要るものだけを
+  別 subtask にして殿の認証窓(Touch ID 等)に合わせて dispatch する。
+- **1Password 関連の技術知見**(必ず踏まえよ):
+  - `op signin` は空振りする(デスクトップアプリ連携ゆえ不要)。**目的の op コマンド
+    (`op read` / `op item get` / `op vault list`)自体が認証をトリガーする**。
+  - **資格情報先取り方式**: ブラウザ操作等の本作業に入る**前に** `op read` で資格情報を
+    取得しメモリに保持してから本作業へ進む。セッション途中失効の影響を受けにくい
+    (cmd_712d でこの順序変更のみで四度の失敗を越えた)。
+  - `op://` 参照は外部へ出す文書(Issue コメント等)に書くな——値そのものでなくとも
+    「どの vault のどの item に資格情報があるか」を外部に残す必要はない。
+
+### deploy 完了確認の階層(殿確定 2026-08-13・cmd_717)
+
+- UI 変更を伴う cmd は acceptance に原則ブラウザ確認を入れよ(2026-07-09 殿確定 standing
+  rule)。★deploy の完了確認にも同じ精神を適用し、以下の階層を取り違えるな:
+  1. (a) workflow が success ——「処理が終わった」だけ
+  2. (b) HTTP ヘッダが変わった ——stack(CloudFront 設定等)の反映を示すのみで、
+     **S3 等に置かれる成果物の反映を示さない**
+  3. (c) 成果物(assets/\*.js 等)に新しい実装が含まれる ——ここまでで「配られた」
+  4. (d) ★**実ブラウザで画面を開き、意図した要素が現れている** ——**ここで初めて
+     「反映された」と言える**
+- **(a)(b)(c) のいずれで止まっても「deploy 済」と述べるな。(d) を確かめてから述べよ。**
+  curl でのヘッダ確認や JS の grep だけで完了宣言することを禁ずる(cmd_717 で将軍が
+  CSP ヘッダだけを見て「deploy 済」と誤断し、実際は deploy 失敗で JS が古いままだった
+  実例あり)。
+- 実ブラウザ確認は Playwright 等で agent でも実行可能。スクリーンショットを証跡に残せ。
+  ★このブラウザ確認自体はログイン等の認証を要しない場合が多い(画面に要素が現れることを
+  見るだけ)——認証が要るのは多くの場合その先の「ログインしてデータを読む」工程のみであり、
+  上記の「認証を要する/要さぬ作業の分離」原則に従い前者は先に片付けよ。
+
+### マージ前チェック義務(家老の責務)
 
 - 足軽報告の「P0/P1: 0」のみを信用せず、CodeRabbit Actionable/Minor も必ず確認
 - **commit push だけでは reviewThreads が unresolved のまま残るケースあり。修正 push + CR re-review 後に必ず以下を実行し unresolved=0 を実証すること:**
@@ -177,6 +229,7 @@ acceptance_criteria:
 | target_path を main ワークツリーにする | 他作業とコンフリクト、worktree ルール違反 |
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
 | statusCheckRollup=SUCCESS を CR 完了と誤認する | 2度連続違反事例あり (subtask_497a + 497a3)。必ず reviewThreads を gh api graphql で実証せよ |
+| console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
 
 ## 関連
 
