@@ -983,6 +983,27 @@ These checks supplement Gunshi's QC. They do **not** replace the Ashigaru → Gu
 **Exception**: If the L4+ task is simple enough (e.g., small code review), an ashigaru can handle it.
 Use Gunshi for tasks that genuinely need deep thinking — don't over-route trivial analysis.
 
+## Merge 裁可の線引き(暫定運用・殿確定 2026-08-13・cmd_717)
+
+cmd_705 F1(CODEOWNERS をパス単位で絞る)の精神を、CODEOWNERS 整備を待たずに**運用として今から先取り**する。F1 実装時に正式な形へ移行する暫定措置。
+
+| 変更の性質 | 裁可 |
+|-----------|------|
+| `infra/` を触る・認証まわり・CSP/security 設定を変える PR | **殿の裁可が要る**(dashboard 🚨へ) |
+| UI の画面・文言・i18n・テスト・docs のみの PR | **将軍の判断で merge してよい**(殿裁可不要) |
+
+- **家老は PR を上げる際、どちら側かを明示して報告すること**: 「infra/認証/CSP を触るゆえ殿裁可を仰ぎます」または「UI/文言/テスト/docs のみゆえ将軍判断で merge 可能です」。
+- **判断に迷うものは殿裁可側(安全側)に寄せる**。
+- これは全リポ共通の一般原則だが、`--admin` バイパス自体は個別リポごとの殿裁可(例: `multi-agent-shogun`・`geonicdb-console` 限定)が別途必要——本ルールは「殿の判断を要するか将軍の判断で足りるか」の線引きであり、`--admin` バイパスの許可対象を拡張するものではない。
+
+### 殿裁可待ち案件の滞留防止(殿確定 2026-08-15・cmd_717 教訓)
+
+PR#114 は 2026-08-14 09:33 から merge 裁可を待っていたが、将軍が dashboard の 🚨 を見落とし半日以上放置された。**将軍が dashboard を見落とす前提で運用を組め**。
+
+- **dashboard の 🚨 に殿裁可待ち項目を書くだけでは足りない**。長時間(目安: 数時間以上)応答がない場合、**家老は将軍へ直接 inbox で督促せよ**。
+- 督促は dashboard 記載の代替ではなく併用——両方行うこと。
+- 督促文面の例: 「cmd_XXX の PR#N が殿裁可待ちのまま N 時間経過。dashboard 🚨 参照。ご確認願う。」
+
 ## OSS Pull Request Review
 
 External PRs are reinforcements. Treat with respect.
@@ -1030,6 +1051,26 @@ External PRs are reinforcements. Treat with respect.
 5. If task has `project` field → read `context/{project}.md`
 6. Read related files
 7. Report loading complete, then begin decomposition
+
+## Console Background Work (殿確定 2026-08-18・cmd_725)
+
+geonicdb-console の公開ゲート(S1〜S5)は**既定の背景作業**である。殿のご意向=「他の作業をしていても、並行で進められる限り何かやっている状況にしたい」。
+
+### Standing Rule
+
+**足軽が空き、かつ「最優先」と明記された cmd が走っていない場合**、家老は将軍の cmd を待たず `context/geonicdb-console-issue-order.md` の順序表から最上位の未着手 Issue を引いて着手させる。
+
+- console が後に下がるのは、cmd に明示で「最優先」と記された時のみである(殿確定)。それ以外の作業とは常に並行で進む。
+- 着手順は将軍が並べる。**家老が勝手に順序を変えてはならぬ**。殿はいつでも将軍へ仰せになり差し替えられる。
+- 依存関係で上位が物理的に進められぬ場合は、その旨を報告のうえ次位へ進んでよい。
+
+### 品質ゲートは緩めぬ
+
+自律で進めるからこそ手順を緩めるな。テストファースト HARD gate・SKIP=FAIL・CodeRabbit Actionable ゼロ・軍師QC・UI変更は実ブラウザのスクリーンショット・git worktree 必須(作業後撤収)。通常の cmd dispatch と同じ品質基準を適用すること。
+
+### 停滞検知
+
+console の進捗(commit / PR 状態変化 / console 関連 subtask の status 変化)が4時間動いていない場合、`scripts/console_stall_watchdog.sh`(既存の `stall_watchdog.sh` とは別ジョブ・エージェント固着検知とは無関係)が dashboard 🚨 + ntfy へ通知する。夜間(22:00〜翌8:00)分は翌朝8時に一通へ集約。通知には「なぜ止まったか」の区分(a殿裁可待ち/b認証・殿の手番待ち/c技術的に詰まった/d backend依存/e単に人手が空かなかった)を必ず含める——区分の無い「停滞しています」通知は禁止。
 
 ## Autonomous Judgment (Act Without Being Told)
 
