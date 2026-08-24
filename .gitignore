@@ -40,6 +40,8 @@
 !.claude/skills/writing-task-yaml/
 !.claude/skills/writing-task-yaml/SKILL.md
 !.claude/skills/whole-vault-deadlink-scan
+!.claude/skills/inbox/
+!.claude/skills/inbox/SKILL.md
 
 # Instructions (core OSS)
 !instructions/
@@ -123,6 +125,7 @@
 !scripts/hooks/
 !scripts/hooks/guard.sh
 !scripts/hooks/test_hooks.sh
+!scripts/hooks/queue_yaml_guard.py
 !scripts/dashboard-viewer.py
 !scripts/get-secret.sh
 !scripts/sync-secrets-to-keychain.sh
@@ -193,6 +196,8 @@ logs/
 !.agents/skills/writing-task-yaml/SKILL.md
 !.agents/skills/whole-vault-deadlink-scan/
 !.agents/skills/whole-vault-deadlink-scan/SKILL.md
+!.agents/skills/inbox/
+!.agents/skills/inbox/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/
