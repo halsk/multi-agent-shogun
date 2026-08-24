@@ -249,8 +249,11 @@ def main(argv=None):
     if a.json == "-":
         print(payload)
     else:
-        with open(a.json, "w", encoding="utf-8") as f:
-            f.write(payload + "\n")
+        try:
+            with open(a.json, "w", encoding="utf-8") as f:
+                f.write(payload + "\n")
+        except OSError as e:
+            print(f"JSONを書き込めません({e})。要約のみ表示します。", file=sys.stderr)
     print(render(agg, r, warns, a.json))
     return 0
 
