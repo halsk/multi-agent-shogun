@@ -638,6 +638,53 @@ else
 fi
 rm -rf "$root_outside"
 
+# ★境界ケース(自己レビューで追加): パス文字列に "/queue/" を含むが、
+# CLAUDE_PROJECT_DIR 配下の queue/ ではない別プロジェクトのファイルは
+# 対象外とする(過度に広いスコープ判定=誤検知の回避)。
+root_other_proj=$(mktemp -d)
+mkdir -p "$root_other_proj/some-other-repo/queue"
+printf '%s' "$BROKEN_SYNTAX" > "$root_other_proj/some-other-repo/queue/test.yaml"
+root_this_proj=$(mktemp -d)
+other_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$root_other_proj/some-other-repo/queue/test.yaml\"},\"tool_response\":{\"success\":true}}"
+CLAUDE_PROJECT_DIR="$root_this_proj" bash -c "echo '$other_json' | python3 '$QYG'" >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+  echo "  ✅ SILENT(exit0): パス文字列に/queue/を含むが別プロジェクトはスコープ外(過剰検知防止)"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: 別プロジェクトのqueue/がスコープ外のはずが非0終了"
+  ((FAIL++)) || true
+fi
+rm -rf "$root_other_proj" "$root_this_proj"
+
+# 並行書込の競合防止(fcntl.flock): 同一ファイルへの状態更新を10並列で
+# 発火させても JSON が壊れず、全プロセスが exit 0 で完走することを確認する。
+# (自己レビューで追加: ロック無しだと read-modify-write の競合で片方の
+# 更新が消える/JSONが壊れうる)
+CONC_ROOT=$(mktemp -d)
+mkdir -p "$CONC_ROOT/queue"
+CONC_PIDS=()
+for i in $(seq 1 10); do
+  (
+    printf '%s' "$VALID_YAML_2" > "$CONC_ROOT/queue/test_$i.yaml"
+    conc_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CONC_ROOT/queue/test_$i.yaml\"},\"tool_response\":{\"success\":true}}"
+    CLAUDE_PROJECT_DIR="$CONC_ROOT" bash -c "echo '$conc_json' | python3 '$QYG'"
+  ) &
+  CONC_PIDS+=($!)
+done
+CONC_FAIL=0
+for pid in "${CONC_PIDS[@]}"; do
+  wait "$pid" || CONC_FAIL=1
+done
+CONC_STATE="$CONC_ROOT/.claude/hook_state/queue_yaml_guard_state.json"
+if [[ $CONC_FAIL -eq 0 ]] && python3 -c "import json,sys; d=json.load(open('$CONC_STATE')); sys.exit(0 if len(d)==10 else 1)" 2>/dev/null; then
+  echo "  ✅ 並行10プロセス書込: state JSON破損なし・全10エントリ保存(flock有効)"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: 並行書込でstate JSONが壊れた、またはエントリ欠落"
+  ((FAIL++)) || true
+fi
+rm -rf "$CONC_ROOT"
+
 # 実ファイル(queue/shogun_to_karo.yaml)を1.32MBのまま実測し、timeout(10s)に対し
 # 十分な余裕があることを確認(デッドロック回避の実行時間要件)。
 if [[ -f "$PROJ_ROOT/queue/shogun_to_karo.yaml" ]]; then

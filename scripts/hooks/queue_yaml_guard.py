@@ -42,6 +42,11 @@ import sys
 import traceback
 
 try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows等 fcntl 非対応環境では無施錠にフォールバック(fail-open)
+
+try:
     import yaml
 except ImportError:
     # PyYAML が無い環境では判定不能。fail-open で通す。
@@ -84,35 +89,53 @@ def _validate(text):
         return False, f"yaml-syntax: {e}"
 
 
-def _state_path():
-    # project root: CLAUDE_PROJECT_DIR (公式ドキュメント記載の hook 用環境変数) を
-    # 最優先。無ければ hook 自身のリポジトリルートへフォールバック。
+def _project_root():
+    # CLAUDE_PROJECT_DIR (公式ドキュメント記載の hook 用環境変数) を最優先。
+    # 無ければ hook 自身のリポジトリルートへフォールバック。
     root = os.environ.get("CLAUDE_PROJECT_DIR")
     if not root:
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    state_dir = os.path.join(root, ".claude", "hook_state")
+    return root
+
+
+def _state_path():
+    state_dir = os.path.join(_project_root(), ".claude", "hook_state")
     return os.path.join(state_dir, "queue_yaml_guard_state.json")
 
 
-def _load_state():
-    path = _state_path()
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+def _update_state(file_path, new_entry):
+    """state ファイルを排他ロック下で読取→更新→書込する(read-modify-write)。
 
-
-def _save_state(state):
+    複数の Edit/Write が短時間に連続発火した場合、ロック無しでは
+    「A読込→B読込→A書込→B書込」の順でAの更新が消える競合がありうる
+    (swarm はまさに並列tool呼び出しが日常的に起こる環境)。fcntl.flock で
+    直列化し、この読み損ないを防ぐ。戻り値は更新前の prev エントリ。
+    """
     path = _state_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f)
-        os.replace(tmp, path)
-    except OSError:
-        pass  # 状態保存の失敗は致命ではない。次回 baseline 無しとして再スタートする。
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # 追記可能な既存ファイルを開く(初回は空ファイルを作成)。ロック取得後に
+    # 中身を読むことで、他プロセスの書込完了後の最新状態を確実に見る。
+    with open(path, "a+", encoding="utf-8") as f:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.seek(0)
+            raw = f.read()
+            try:
+                state = json.loads(raw) if raw else {}
+            except ValueError:
+                state = {}
+            prev = state.get(file_path)
+            state[file_path] = new_entry
+            f.seek(0)
+            f.truncate()
+            f.write(json.dumps(state))
+            f.flush()
+            os.fsync(f.fileno())
+            return prev
+        finally:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def _is_target_file(file_path):
@@ -120,8 +143,10 @@ def _is_target_file(file_path):
         return False
     if not (file_path.endswith(".yaml") or file_path.endswith(".yml")):
         return False
-    normalized = file_path.replace(os.sep, "/")
-    return "/queue/" in normalized or normalized.startswith("queue/")
+    root = os.path.normpath(_project_root())
+    queue_prefix = os.path.join(root, "queue") + os.sep
+    normalized = os.path.normpath(file_path)
+    return normalized.startswith(queue_prefix)
 
 
 def main():
@@ -153,10 +178,10 @@ def main():
     is_valid, detail = _validate(text)
     marker_count = len(ID_MARKER_RE.findall(text))
 
-    state = _load_state()
-    prev = state.get(file_path)
-    state[file_path] = {"valid": is_valid, "marker_count": marker_count}
-    _save_state(state)
+    try:
+        prev = _update_state(file_path, {"valid": is_valid, "marker_count": marker_count})
+    except OSError:
+        sys.exit(0)  # 状態保存の失敗は致命ではない。今回は比較なしで通す(fail-open)。
 
     if prev is None:
         # 初回観測。比較対象が無いので静かに記録のみ。
