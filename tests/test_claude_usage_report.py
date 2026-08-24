@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """claude_usage_report.py のテスト。実行: python3 -m unittest tests.test_claude_usage_report -v"""
-import io, json, os, sys, tempfile, unittest
+import io, json, os, sys, tempfile, unittest, unittest.mock
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
@@ -64,7 +64,9 @@ class TestAggregation(Base):
         self.assertEqual(data["totals"]["cache_5m"], 8)
         self.assertEqual(data["totals"]["web_search"], 2)
         self.assertEqual(data["by_model"]["claude-sonnet-5"]["requests"], 2)
-        self.assertEqual(data["by_repo"]["/repo/a"]["branches"]["main"]["requests"], 2)
+        top = data["repo_ranking"][0]
+        self.assertEqual(top["repo"], "a")  # /repo/a は git 外 → パス末尾へ退避
+        self.assertEqual(top["branches"]["main"]["requests"], 2)
         self.assertAlmostEqual(data["rates"]["cache_read_rate"], 0.9, places=3)
 
     def test_broken_lines_do_not_crash(self):
@@ -116,6 +118,51 @@ class TestPrivacy(Base):
         row = cur.extract(json.loads(rec("r1", content="conversation body")))
         self.assertNotIn("content", json.dumps(row))
         self.assertEqual(set(row) & {"content", "toolUseResult", "lastPrompt"}, set())
+
+
+class TestRepoRanking(Base):
+    def test_normalize_remote_forms(self):
+        for url in ("git@github.com:geolonia/geonicdb-console.git",
+                    "https://github.com/geolonia/geonicdb-console.git",
+                    "https://github.com/geolonia/geonicdb-console",
+                    "ssh://git@github.com/geolonia/geonicdb-console.git"):
+            self.assertEqual(cur.normalize_remote(url), "geolonia/geonicdb-console")
+
+    def test_ranking_descending_with_coverage(self):
+        self.write("a.jsonl", [
+            rec("r1", cwd="/w/big", usage={"cache_read_input_tokens": 7000,
+                                           "cache_creation_input_tokens": 0}),
+            rec("r2", cwd="/w/mid", usage={"cache_read_input_tokens": 2000,
+                                           "cache_creation_input_tokens": 0}),
+            rec("r3", cwd="/w/small", usage={"cache_read_input_tokens": 850,
+                                             "cache_creation_input_tokens": 0}),
+        ])
+        rc, out, data = self.run_main()
+        ranking = data["repo_ranking"]
+        self.assertEqual([r["repo"] for r in ranking], ["big", "mid", "small"])
+        totals = [r["total_tokens"] for r in ranking]
+        self.assertEqual(totals, sorted(totals, reverse=True))
+        self.assertAlmostEqual(ranking[0]["share"] + ranking[1]["share"] + ranking[2]["share"],
+                               1.0, places=2)
+        self.assertEqual(ranking[-1]["cum_share"], 1.0)
+        self.assertGreater(ranking[1]["cum_share"], ranking[0]["cum_share"])
+
+    def test_worktrees_fold_into_same_repo(self):
+        self.write("a.jsonl", [rec("r1", cwd="/w/repo"), rec("r2", cwd="/w/repo-wt3")])
+        orig = cur._git_remote
+        cur._git_remote = lambda cwd: "git@github.com:geolonia/repo.git"
+        try:
+            os.makedirs(os.path.join(self.tmp.name, "w"), exist_ok=True)
+            with unittest.mock.patch.object(cur.os.path, "isdir", return_value=True):
+                agg = cur.aggregate(self.tmp.name)
+                ranked, secs, cwds = cur.fold_repos(agg)
+        finally:
+            cur._git_remote = orig
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["repo"], "geolonia/repo")
+        self.assertEqual(ranked[0]["requests"], 2)
+        self.assertEqual(sorted(ranked[0]["paths"]), ["/w/repo", "/w/repo-wt3"])
+        self.assertEqual(cwds, 2)
 
 
 class TestWarnings(Base):

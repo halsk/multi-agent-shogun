@@ -8,13 +8,15 @@ isSidechain / sessionId / timestamp / requestId)だけを取り出します。
 プロンプト本文・会話内容・ツールの入出力(message.content, toolUseResult 等)には
 一切アクセスしません。読むフィールドは下の extract() に列挙されたものがすべてで、
 それ以外のキーには触れず、出力にも会話内容は一切含まれません。
+このほか、リポジトリ名の正規化のために各作業ディレクトリで
+`git remote get-url origin`(読み取り専用)を1回だけ実行します。
 
 使い方:  python3 claude_usage_report.py [--dir PATH] [--days N] [--json FILE]
 出力:    人が読む要約(標準出力) と 機械可読 JSON(--json、既定 claude-usage-report.json)
 
 依存: Python 3.9+ 標準ライブラリのみ。
 """
-import argparse, glob, json, os, sys
+import argparse, glob, json, os, re, subprocess, sys, time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
@@ -25,6 +27,30 @@ E5M_SHARE_MAX = 0.20        # キャッシュ書込のうち5分TTLの比率が�
 
 TOKEN_KEYS = ("input_tokens", "output_tokens",
               "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
+def normalize_remote(url):
+    """remote URL を owner/repo へ正規化する(https / ssh / git@ の各形式に対応)。"""
+    m = re.search(r"[:/]([^/:]+/[^/:]+?)(?:\.git)?/?$", url.strip())
+    return m.group(1) if m else url.strip()
+
+
+def _git_remote(cwd):
+    try:
+        r = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"],
+                           capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def resolve_repo(cwd, cache):
+    """cwd を git remote(owner/repo)へ正規化。消えた/非gitのディレクトリはパス末尾へ退避。
+    社員ごとのパス差や worktree(同じ remote を返す)はこれで自然に畳まれる。"""
+    if cwd not in cache:
+        url = _git_remote(cwd) if os.path.isdir(cwd) else None
+        cache[cwd] = normalize_remote(url) if url else os.path.basename(cwd.rstrip("/")) or cwd
+    return cache[cwd]
 
 
 def extract(rec):
@@ -62,7 +88,7 @@ def aggregate(base_dir, days=None, dedup=True):
     agg = {
         "files": len(files), "parse_errors": 0, "requests": 0, "duplicate_rows_skipped": 0,
         "sessions": set(), "first_ts": None, "last_ts": None,
-        "totals": Counter(), "by_model": defaultdict(Counter), "by_repo": defaultdict(Counter),
+        "totals": Counter(), "by_model": defaultdict(Counter), "by_cwd": defaultdict(Counter),
         "by_branch": defaultdict(lambda: defaultdict(Counter)),
         "effort": Counter(), "speed": Counter(), "service_tier": Counter(),
         "sidechain": defaultdict(Counter), "seen": set(),
@@ -114,7 +140,7 @@ def _add(agg, row):
     m["requests"] += 1
     for k, v in row["tokens"].items():
         m[k] += v
-    r = agg["by_repo"][row["cwd"]]
+    r = agg["by_cwd"][row["cwd"]]
     r["requests"] += 1
     for k, v in row["tokens"].items():
         r[k] += v
@@ -127,6 +153,30 @@ def _add(agg, row):
     s = agg["sidechain"]["sidechain" if row["sidechain"] else "main"]
     s["requests"] += 1
     s["output_tokens"] += row["tokens"]["output_tokens"]
+
+
+def fold_repos(agg):
+    """cwd 単位の集計を git remote(owner/repo)へ畳み、トークン量の降順ランキングにする。
+    各行に全体比(share)と上位からの累積カバー率(cum_share)を持たせる。"""
+    t0 = time.monotonic()
+    cache, repos = {}, defaultdict(lambda: {"c": Counter(), "paths": [], "branches": defaultdict(Counter)})
+    for cwd, c in agg["by_cwd"].items():
+        r = repos[resolve_repo(cwd, cache)]
+        r["c"].update(c)
+        r["paths"].append(cwd)
+        for b, bc in agg["by_branch"][cwd].items():
+            r["branches"][b].update(bc)
+    grand = sum(sum(r["c"][k] for k in TOKEN_KEYS) for r in repos.values())
+    ranked, cum = [], 0
+    for name, r in sorted(repos.items(), key=lambda kv: -sum(kv[1]["c"][k] for k in TOKEN_KEYS)):
+        total = sum(r["c"][k] for k in TOKEN_KEYS)
+        cum += total
+        ranked.append(dict(r["c"], repo=name, total_tokens=total,
+                           share=round(total / grand, 4) if grand else 0,
+                           cum_share=round(cum / grand, 4) if grand else 0,
+                           paths=sorted(r["paths"]),
+                           branches={b: dict(bc) for b, bc in r["branches"].items()}))
+    return ranked, round(time.monotonic() - t0, 2), len(agg["by_cwd"])
 
 
 def rates(agg):
@@ -164,7 +214,7 @@ def M(n):  # 百万トークン表記
     return f"{n / 1e6:,.1f}M"
 
 
-def render(agg, r, warns, json_path):
+def render(agg, r, warns, ranked, resolve_secs, cwd_count, json_path):
     t, out = agg["totals"], []
     period = f"{(agg['first_ts'] or '?')[:10]} 〜 {(agg['last_ts'] or '?')[:10]}"
     out.append(f"━━ Claude Code 利用レポート ({period}) ━━")
@@ -201,15 +251,20 @@ def render(agg, r, warns, json_path):
         out.append(f"■ セッションあたり出力: {t['output_tokens'] // len(agg['sessions']):,} tokens")
     out.append(f"■ web検索 {t['web_search']:,}回 / webフェッチ {t['web_fetch']:,}回")
     out.append("")
-    out.append("■ リポジトリ別 上位 (リクエスト / 出力)")
-    for cwd, c in sorted(agg["by_repo"].items(), key=lambda kv: -kv[1]["output_tokens"])[:8]:
-        out.append(f"  {cwd:52s} {c['requests']:>7,}  {M(c['output_tokens']):>9}")
+    out.append("■ リポジトリ別ランキング (トークン量の降順・git remote で正規化)")
+    out.append(f"  {'repo':40s} {'総トークン':>10} {'全体比':>7} {'累積':>6}")
+    for row in ranked[:10]:
+        out.append(f"  {row['repo']:40s} {M(row['total_tokens']):>11} "
+                   f"{row['share']:>7.1%} {row['cum_share']:>6.0%}")
+    if len(ranked) > 10:
+        out.append(f"  … 他 {len(ranked) - 10} リポ (全量は JSON 参照)")
+    out.append(f"  (remote 解決: {cwd_count} ディレクトリを {resolve_secs}秒)")
     out.append("")
     out.append(f"機械可読の全量は {json_path} に出力済み(ブランチ別内訳もこちら)。")
     return "\n".join(out)
 
 
-def to_json(agg, r, warns):
+def to_json(agg, r, warns, ranked, resolve_secs):
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "period": {"from": agg["first_ts"], "to": agg["last_ts"]},
@@ -225,8 +280,8 @@ def to_json(agg, r, warns):
         "effort": dict(agg["effort"]), "speed": dict(agg["speed"]),
         "service_tier": dict(agg["service_tier"]),
         "sidechain": {k: dict(v) for k, v in agg["sidechain"].items()},
-        "by_repo": {cwd: dict(c, branches={b: dict(bc) for b, bc in agg["by_branch"][cwd].items()})
-                    for cwd, c in agg["by_repo"].items()},
+        "repo_ranking": ranked,
+        "repo_resolve_seconds": resolve_secs,
     }
 
 
@@ -245,7 +300,8 @@ def main(argv=None):
     agg = aggregate(a.dir, days=a.days, dedup=not a.raw)
     r = rates(agg)
     warns = warnings_for(r)
-    payload = json.dumps(to_json(agg, r, warns), ensure_ascii=False, indent=1)
+    ranked, resolve_secs, cwd_count = fold_repos(agg)
+    payload = json.dumps(to_json(agg, r, warns, ranked, resolve_secs), ensure_ascii=False, indent=1)
     if a.json == "-":
         print(payload)
     else:
@@ -254,7 +310,7 @@ def main(argv=None):
                 f.write(payload + "\n")
         except OSError as e:
             print(f"JSONを書き込めません({e})。要約のみ表示します。", file=sys.stderr)
-    print(render(agg, r, warns, a.json))
+    print(render(agg, r, warns, ranked, resolve_secs, cwd_count, a.json))
     return 0
 
 
