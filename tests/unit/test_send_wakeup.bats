@@ -1093,6 +1093,11 @@ YAML
 # --- T-CRESET-003: send_context_reset sends /clear for ashigaru ---
 
 @test "T-CRESET-003: send_context_reset sends /clear for ashigaru" {
+    # cmd_760 fix1(b): send_context_reset now confirms via agent_is_busy_confirmed()
+    # before sending, which needs the idle flag under the AGENT_ID actually used
+    # inside the run block (setup() only pre-creates one for the harness default
+    # "test_agent", not for the "ashigaru3" this test reassigns to).
+    touch "$TEST_TMPDIR/shogun_idle_ashigaru3"
     run bash -c '
         source "'"$TEST_HARNESS"'"
         AGENT_ID="ashigaru3"

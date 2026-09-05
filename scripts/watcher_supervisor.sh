@@ -68,12 +68,61 @@ start_ntfy_listener_if_missing() {
 
 ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2)
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    while true; do
-        for agent in "${ALL_AGENTS[@]}"; do
-            start_watcher_if_missing "$agent" "logs/inbox_watcher_${agent}.log"
-        done
-        start_ntfy_listener_if_missing
-        sleep 5
+# ─── D006-safe watcher swap-in (cmd_760 item③) ───
+# D006 (kill系統無条件禁止) を破らずに、稼働中の inbox_watcher.sh に新しい
+# コードを反映させる仕組み。kill/pkill等でプロセスを終了させるのではなく、
+# 「停止フラグファイル」を置くだけに留める — 実際にプロセスを終了させるのは
+# 対象プロセス自身(inbox_watcher.shのメインループが自らフラグを検知しexit 0
+# する、cooperative shutdown)。プロセスを外部から終了させる行為が一切無い
+# ため、D006に抵触しない。
+#
+# 終了後は、このスクリプト自身(watcher_supervisor.sh)が既存のstart_watcher_
+# if_missingループ(5秒毎pgrepポーリング)で「不在」を検知し、自動的に
+# 最新のscripts/inbox_watcher.shを読み込んで再起動する。bashスクリプトは
+# 起動のたびにファイルを読むため、これだけで新コードへの完全な入れ替えが
+# 完了する — 明示的な「新版を起動する」ステップは不要。
+#
+# 使い方: bash scripts/watcher_supervisor.sh stop <agent_id|all>
+WATCHER_STOP_FLAG_DIR="${WATCHER_STOP_FLAG_DIR:-${IDLE_FLAG_DIR:-/tmp}}"
+
+request_watcher_stop() {
+    local agent="$1"
+    touch "${WATCHER_STOP_FLAG_DIR}/shogun_watcher_stop_${agent}"
+    echo "[$(date)] [STOP-REQUEST] Stop flag placed for $agent (watcher will self-exit within one poll cycle, supervisor auto-restarts it with fresh code)" >&2
+}
+
+request_watcher_stop_all() {
+    local agent
+    for agent in "${ALL_AGENTS[@]}"; do
+        request_watcher_stop "$agent"
     done
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        stop)
+            if [ -z "${2:-}" ]; then
+                echo "Usage: $0 stop <agent_id|all>" >&2
+                exit 1
+            elif [ "$2" = "all" ]; then
+                request_watcher_stop_all
+            else
+                request_watcher_stop "$2"
+            fi
+            exit 0
+            ;;
+        "")
+            while true; do
+                for agent in "${ALL_AGENTS[@]}"; do
+                    start_watcher_if_missing "$agent" "logs/inbox_watcher_${agent}.log"
+                done
+                start_ntfy_listener_if_missing
+                sleep 5
+            done
+            ;;
+        *)
+            echo "Usage: $0 [stop <agent_id|all>]" >&2
+            exit 1
+            ;;
+    esac
 fi

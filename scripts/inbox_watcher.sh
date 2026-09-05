@@ -606,8 +606,11 @@ send_cli_command() {
     # Busy guard: never send /clear when agent is actively processing.
     # clear_command inbox processor also checks busy, but this is a defense-in-depth guard.
     # Sending /clear during Working destroys in-progress context and causes data loss.
-    if [[ "$cmd" == "/clear" ]] && agent_is_busy; then
-        echo "[$(date)] [SKIP] Agent is busy — /clear deferred to next cycle (agent=$AGENT_ID)" >&2
+    # cmd_760 fix1(b): this is the single choke point all /clear sends funnel through
+    # (Phase 3 escalation calls send_cli_command directly too) — use the ground-truth
+    # confirmed check here so a stuck idle flag can never let /clear through.
+    if [[ "$cmd" == "/clear" ]] && agent_is_busy_confirmed; then
+        echo "[$(date)] [SKIP] Agent is busy (confirmed via pane) — /clear deferred to next cycle (agent=$AGENT_ID)" >&2
         return 0
     fi
 
@@ -664,20 +667,57 @@ send_cli_command() {
     esac
 
     echo "[$(date)] [SEND-KEYS] Sending CLI command to $AGENT_ID ($effective_cli): $actual_cmd" >&2
-    # Clear stale input first, then send command (text and Enter separated for Codex TUI)
-    # Codex CLI: C-c when idle causes CLI to exit — skip it
-    if [[ "$effective_cli" != "codex" ]]; then
-        timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
-        sleep 0.5
-    fi
-    timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
-    # /clear needs longer gap before Enter — CLI prompt may not be ready at 0.3s
+
     if [[ "$actual_cmd" == "/clear" || "$actual_cmd" == "/new" ]]; then
-        sleep 1.0
+        # cmd_760 fix3 (9/5残滓/clear事故対策): 送信前に必ずC-uで入力欄を
+        # 空にし(前サイクルの残滓が上積みされるのを防ぐ)、送信後は
+        # send_wakeup と同じ capture-pane 確認+リトライで実際に受理された
+        # (=入力欄からコマンド文字列が消えた)ことを検証する。未検証のまま
+        # 次サイクルへ進むと、Enter取りこぼしが入力欄に残留し、後続の
+        # 無関係な操作をきっかけに遅延発火する(9/5型の温床)。
+        local clear_max_retries=2 clear_attempt=0 clear_sent_ok=0
+        while [ $clear_attempt -le $clear_max_retries ]; do
+            if [[ "$effective_cli" != "codex" ]]; then
+                timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
+                sleep 0.5
+            fi
+            timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+            sleep 0.3
+            timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
+            sleep 1.0
+            timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+            sleep 0.5
+            # Check ONLY the last non-blank line, not a multi-line tail window.
+            # Claude Code legitimately echoes "> /clear" into scrollback history
+            # once the command IS accepted — scanning several lines would match
+            # that echo and cause a false "still queued" retry on every single
+            # successful /clear (the same T-BUSY-008 class of bug lib/agent_status.sh
+            # already had to fix once for busy detection).
+            local clear_pane_content
+            clear_pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 || echo "")
+            if echo "$clear_pane_content" | grep -qF "$actual_cmd"; then
+                echo "[$(date)] WARNING: $actual_cmd text still visible in pane, retrying (attempt $((clear_attempt+1)))" >&2
+                clear_attempt=$((clear_attempt+1))
+                continue
+            fi
+            clear_sent_ok=1
+            break
+        done
+        if [ "$clear_sent_ok" -eq 0 ]; then
+            echo "[$(date)] WARNING: $actual_cmd may not have been accepted after $clear_max_retries retries for $AGENT_ID — purging input line defensively" >&2
+            timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+        fi
     else
+        # Clear stale input first, then send command (text and Enter separated for Codex TUI)
+        # Codex CLI: C-c when idle causes CLI to exit — skip it
+        if [[ "$effective_cli" != "codex" ]]; then
+            timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
+            sleep 0.5
+        fi
+        timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
         sleep 0.3
+        timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
     fi
-    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
 
     # /clear needs extra wait time before follow-up
     if [[ "$actual_cmd" == "/clear" ]]; then
@@ -747,6 +787,18 @@ send_context_reset() {
     if [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ] || [ "$AGENT_ID" = "gunshi2" ]; then
         echo "[$(date)] [SKIP] $AGENT_ID: suppressing context reset (command-layer agent)" >&2
         return 0
+    fi
+
+    # cmd_760 fix1(b)/fix4: send_context_reset is a THIRD destructive /clear|/new
+    # send site (found while writing tests for this fix) that bypassed every busy
+    # guard entirely — it fires the instant a task_assigned message is first seen,
+    # with no check at all. Apply the same ground-truth confirmation used at the
+    # other two sites. Return 1 (not sent) so the caller does NOT mark
+    # NEW_CONTEXT_SENT — the reset will be retried on a later cycle instead of
+    # being silently skipped forever.
+    if agent_is_busy_confirmed; then
+        echo "[$(date)] [SKIP] $AGENT_ID is busy (confirmed via pane) — context reset deferred to next cycle" >&2
+        return 1
     fi
 
     local reset_cmd
@@ -856,6 +908,23 @@ agent_is_busy() {
         # 従来のpane解析（Codex等フォールバック）
         agent_is_busy_check "$PANE_TARGET"
     fi
+}
+
+# ─── Agent busy detection — destructive-action confirmation (cmd_760 fix1(b)) ───
+# idleフラグ shogun_idle_<agent> はcreate-onlyで、これを削除するコードは
+# どこにも存在しない。一度idleフラグが立つと、以後本当にbusy(Working)へ
+# 遷移してもagent_is_busy()は永久にidleを返し続け、/clear送信直前のbusy
+# guardが実質no-op化する(9/3型事故の根本原因)。
+# この関数は「破壊的操作(/clear注入)の直前」でのみ呼ぶこと。既存の
+# (壊れうる)フラグ判定に加え、実pane内容を読むground truth確認
+# (lib/agent_status.shのagent_is_busy_check)をORする——フラグが誤ってidle
+# を示していても、pane解析がWorking中を検出すればbusyとして扱う。
+# 非破壊サイト(通常nudge・escalationタイマー判定)は追加のcapture-pane
+# コストを払う必要が無いため、引き続き軽量なagent_is_busy()を使うこと。
+# Returns 0 (true) if busy, non-zero if idle/pane不在.
+agent_is_busy_confirmed() {
+    agent_is_busy && return 0
+    agent_is_busy_check "$PANE_TARGET"
 }
 
 # ─── Pane focus detection (human safety) ───
@@ -1160,12 +1229,17 @@ for s in data.get('specials', []):
         if agent_is_busy && [[ "$AGENT_ID" != "shogun" ]]; then
             local busy_cli
             busy_cli=$(get_effective_cli_type)
-            # Stale busy safety net: if agent has been "busy" for >5 minutes with
-            # unread messages, force-create idle flag. This recovers from false-busy
-            # deadlock where stop_hook failed to create the flag.
+            # Stale busy safety net: if agent has been "busy" (per the create-only
+            # idle flag) for >5 minutes with unread messages, confirm via actual
+            # pane content (ground truth) before touching the flag. cmd_760 fix1(b):
+            # the old implementation force-created the flag unconditionally once the
+            # time limit passed, which could paper over a genuinely long-running turn
+            # (falsely telling the rest of the swarm the agent is idle). Now we only
+            # correct the flag when the pane itself confirms the agent is not working.
             local stale_busy_limit=300  # 5 minutes
-            if [ "${FIRST_UNREAD_SEEN:-0}" -gt 0 ] && [ "$((now - FIRST_UNREAD_SEEN))" -ge "$stale_busy_limit" ]; then
-                echo "[$(date)] WARNING: $AGENT_ID busy for $((now - FIRST_UNREAD_SEEN))s with $normal_count unread — forcing idle flag (stale busy recovery)" >&2
+            if [ "${FIRST_UNREAD_SEEN:-0}" -gt 0 ] && [ "$((now - FIRST_UNREAD_SEEN))" -ge "$stale_busy_limit" ] \
+               && ! agent_is_busy_check "$PANE_TARGET"; then
+                echo "[$(date)] WARNING: $AGENT_ID busy-flag stuck for $((now - FIRST_UNREAD_SEEN))s with $normal_count unread, but pane confirms idle — forcing idle flag (stale busy recovery)" >&2
                 touch "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}"
                 # Fall through to normal nudge/escalation below
             else
@@ -1193,8 +1267,13 @@ for s in data.get('specials', []):
         # Skip if: (1) already sent this batch, (2) clear_command already handled above,
         #          (3) agent is shogun (human-controlled).
         if [ "$has_task_assigned" = "1" ] && [ "$NEW_CONTEXT_SENT" -eq 0 ] && [ "$clear_seen" -eq 0 ]; then
-            send_context_reset
-            NEW_CONTEXT_SENT=1
+            # send_context_reset returns 1 (not 0) when it deferred due to a
+            # confirmed-busy agent (cmd_760 fix1(b)) — only mark NEW_CONTEXT_SENT
+            # when it actually sent something, so a deferred reset is retried on
+            # a later cycle instead of being silently skipped forever.
+            if send_context_reset; then
+                NEW_CONTEXT_SENT=1
+            fi
         fi
 
         # If startup prompt was just sent (Codex), skip follow-up nudge this cycle.
@@ -1251,11 +1330,27 @@ for s in data.get('specials', []):
                     FIRST_UNREAD_SEEN=$now  # Reset timer
                     send_wakeup_with_escape "$normal_count"
                 else
-                    echo "[$(date)] ESCALATION Phase 3: Agent $AGENT_ID unresponsive for ${age}s. Sending /clear." >&2
-                    send_cli_command "/clear"
-                    LAST_CLEAR_TS=$now
-                    FIRST_UNREAD_SEEN=0  # Reset — will re-detect on next cycle
-                    NEW_CONTEXT_SENT=0
+                    # cmd_760 fix1(b): confirm via pane ground truth immediately before
+                    # the destructive /clear send. If busy, defer WITHOUT resetting the
+                    # escalation timer/state — the old code unconditionally reset
+                    # FIRST_UNREAD_SEEN/LAST_CLEAR_TS here even when send_cli_command's
+                    # own busy guard silently swallowed the send, which could hide a
+                    # stuck agent from escalation indefinitely.
+                    if agent_is_busy_confirmed; then
+                        # Do NOT send Escape/C-c here — agent_is_busy_confirmed()=true means
+                        # the pane itself shows Working right now (the cheap flag check at
+                        # the top of this branch already said "not busy", which is exactly
+                        # the stuck-idle-flag scenario). Escape+C-c would interrupt a real
+                        # in-progress turn. Stay silent and let Stop hook / the next cycle
+                        # handle it, same as the busy-claude path above.
+                        echo "[$(date)] ESCALATION Phase 3: $AGENT_ID busy (confirmed via pane) — deferring /clear, keeping escalation timer, no keystrokes sent" >&2
+                    else
+                        echo "[$(date)] ESCALATION Phase 3: Agent $AGENT_ID unresponsive for ${age}s. Sending /clear." >&2
+                        send_cli_command "/clear"
+                        LAST_CLEAR_TS=$now
+                        FIRST_UNREAD_SEEN=0  # Reset — will re-detect on next cycle
+                        NEW_CONTEXT_SENT=0
+                    fi
                 fi
             else
                 # Cooldown active — fall back to Escape+nudge
@@ -1307,7 +1402,22 @@ process_unread_once
 # Shorter timeout = faster escalation retry for stuck agents.
 INOTIFY_TIMEOUT="${INOTIFY_TIMEOUT:-30}"
 
+# ─── D006-safe stop flag (cmd_760 item③) ───
+# watcher_supervisor.sh's `stop` subcommand places this flag instead of
+# killing the process. We check it ourselves and exit(0) voluntarily —
+# nobody sends this process a termination signal, so D006 (kill系統無条件
+# 禁止) is never touched. watcher_supervisor.sh's existing pgrep-based
+# restart loop (5s poll) then relaunches us, picking up whatever this
+# script file currently contains (bash re-reads the file at launch).
+WATCHER_STOP_FLAG="${WATCHER_STOP_FLAG_DIR:-${IDLE_FLAG_DIR:-/tmp}}/shogun_watcher_stop_${AGENT_ID}"
+
 while true; do
+    if [ -f "$WATCHER_STOP_FLAG" ]; then
+        echo "[$(date)] [STOP] Stop flag detected for $AGENT_ID — exiting gracefully (supervisor will restart with current code)" >&2
+        rm -f "$WATCHER_STOP_FLAG"
+        exit 0
+    fi
+
     # Block until file is modified OR timeout
     # Backend-specific file watching: inotifywait (Linux) or fswatch (macOS)
     set +e
