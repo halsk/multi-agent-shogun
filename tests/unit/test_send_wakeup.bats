@@ -55,6 +55,10 @@
 #   T-CRESET-003: send_context_reset — sends /clear for ashigaru
 #   T-COPILOT-001: send_cli_command — copilot /clear → Ctrl-C + restart
 #   T-COPILOT-002: send_cli_command — copilot /model → skip
+#   T-CRESET-004: send_context_reset — claude経路は/clear後にsend_startup_promptを呼ぶ
+#         (★真因の回帰テスト。codex経路(T-CRESET-005)とのCONTEXT-RESET非対称是正)
+#   T-CRESET-005: send_context_reset — codex経路は既にstartup promptを送る(regression)
+#   T-CRESET-006: send_cli_command(clear_command型) — claude /clearは既にstartup promptを送る(regression)
 
 # --- セットアップ ---
 
@@ -1108,4 +1112,62 @@ YAML
 
     # /clear should have been sent via send-keys
     grep -q "send-keys.*/clear" "$MOCK_LOG"
+}
+
+# --- T-CRESET-004: ★真因の回帰テスト — claude経路は/clear後にsend_startup_promptを呼ぶ ---
+# 是正前: send_context_resetのnon-codex分岐(claude/copilot/kimi共通)は/clear送信後
+# idleになるまでpollするだけで終わり、send_startup_promptを一切呼んでいなかった。
+# codex経路(818-830行)はsend_startup_promptを呼ぶため、claude経路だけ非対称だった。
+
+@test "T-CRESET-004: send_context_reset calls send_startup_prompt after /clear for claude (symmetry fix)" {
+    touch "$TEST_TMPDIR/shogun_idle_ashigaru3"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="ashigaru3"
+        CLI_TYPE="claude"
+        send_context_reset
+    '
+    [ "$status" -eq 0 ]
+
+    # /clear must have been sent
+    grep -q "send-keys.*/clear" "$MOCK_LOG"
+
+    # send_startup_prompt's fallback prompt text (no cli_adapter under __INBOX_WATCHER_TESTING__)
+    # must appear AFTER the /clear send — proving the follow-up re-dispatch happened.
+    local clear_line startup_line
+    clear_line=$(grep -n "send-keys.*/clear" "$MOCK_LOG" | head -1 | cut -d: -f1)
+    startup_line=$(grep -n "Session Start" "$MOCK_LOG" | head -1 | cut -d: -f1)
+    [ -n "$clear_line" ]
+    [ -n "$startup_line" ]
+    [ "$startup_line" -gt "$clear_line" ]
+}
+
+# --- T-CRESET-005: regression — codex経路は既にstartup promptを送る ---
+
+@test "T-CRESET-005: send_context_reset still sends startup prompt after /new for codex (regression)" {
+    touch "$TEST_TMPDIR/shogun_idle_ashigaru4"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="ashigaru4"
+        CLI_TYPE="codex"
+        send_context_reset
+    '
+    [ "$status" -eq 0 ]
+
+    grep -q "send-keys.*/new" "$MOCK_LOG"
+    grep -q "Session Start" "$MOCK_LOG"
+}
+
+# --- T-CRESET-006: regression — clear_command型(send_cli_command)のclaude /clearは既にstartup promptを送る ---
+
+@test "T-CRESET-006: send_cli_command still sends startup prompt after /clear for claude (regression)" {
+    # setup() already created shogun_idle_test_agent (default AGENT_ID=test_agent)
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        send_cli_command "/clear"
+    '
+    [ "$status" -eq 0 ]
+
+    grep -q "send-keys.*/clear" "$MOCK_LOG"
+    grep -q "Session Start" "$MOCK_LOG"
 }

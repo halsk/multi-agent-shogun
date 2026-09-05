@@ -163,11 +163,25 @@ dump_watcher_log() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# E2E-008-C: Claude agent does NOT receive startup prompt
-#            (only Codex gets it)
+# E2E-008-C: Claude agent DOES receive a startup prompt after /clear
+#            (CONTEXT-RESET symmetry fix — cmd_760 addendum_20260905_2215)
 # ═══════════════════════════════════════════════════════════════
+# Historical note: this test previously asserted the OPPOSITE — that
+# claude must NOT receive a startup prompt after /clear, on the theory
+# that CLAUDE.md auto-reload alone was enough to resume work. That
+# assumption was the real production bug: /clear resets context and the
+# SessionStart hook injects reminders, but nothing submits an actual
+# turn, so a real Claude Code agent sits idle at a blank prompt. See
+# queue/reports/gunshi_report.yaml and tests/unit/test_send_wakeup.bats
+# (T-CRESET-004) for the root cause and the real-tmux proof in
+# tests/e2e/e2e_context_reset_symmetry.bats (E2E-CRSYM-A).
+# mock_cli.sh's handle_clear() auto-checks the task file regardless of
+# subsequent input (a simplification that did not reproduce the real
+# incident), so task.status still reaches "done" either way — the
+# distinguishing assertion is whether the startup prompt log line
+# appears at all.
 
-@test "E2E-008-C: Claude agent does not receive startup prompt after /clear" {
+@test "E2E-008-C: Claude agent receives startup prompt after /clear (symmetry fix)" {
     local ashigaru1_pane
     ashigaru1_pane=$(pane_target 1)
 
@@ -197,9 +211,9 @@ dump_watcher_log() {
     fi
     assert_success
 
-    # 5. Check that startup prompt was NOT sent (claude doesn't need it)
+    # 5. Check that startup prompt WAS sent (symmetry fix — see header note)
     run grep "Sending startup prompt" "$log_file"
-    assert_failure
+    assert_success
 
     # 6. Check that /clear was sent (not /new)
     run grep "CONTEXT-RESET.*Sending /clear" "$log_file"
