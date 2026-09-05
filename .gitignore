@@ -131,6 +131,7 @@
 !scripts/stall_watchdog.sh
 !scripts/stall-watchdog-launcher.sh
 !scripts/com.swarm.stall-watchdog.plist
+!scripts/claude_usage_report.py
 !scripts/console_stall_watchdog.sh
 !scripts/console-stall-watchdog-launcher.sh
 !scripts/com.swarm.console-stall-watchdog.plist
@@ -163,6 +164,7 @@ logs/
 !docs/migration-to-macos.md
 !docs/migration-n8n.md
 !docs/setup_venv.md
+!docs/claude-usage-report.md
 
 # Screenshots (masked — no secrets)
 !images/
@@ -227,6 +229,7 @@ tests/specs/osato_lms_*
 !tests/
 !tests/*.bats
 !tests/*.sh
+!tests/test_claude_usage_report.py
 !tests/fixtures/
 !tests/fixtures/*.yaml
 !tests/unit/
