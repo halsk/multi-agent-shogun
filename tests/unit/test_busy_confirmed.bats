@@ -26,6 +26,13 @@
 #   T-C9: stale-busy回復 — flag無し(busy)が長時間続いても、paneが実際に
 #         Working中なら flag を強制作成しない (★退行防止: 本当に長考中の
 #         agentへ誤ってidle判定を持ち込まない)
+#   T-C10: ★安全性 — Phase3でbusy確認時にEscape/C-c等の破壊的キーを送らない
+#         (テスト作成中に発見: 当初案はsend_wakeup_with_escapeを呼んでおり、
+#         確認済みで真にWorking中のagentへEscape+C-cを送る危険があった)
+#   T-C11: ★テスト作成中に発見した第三の未ガード送信箇所 — send_context_reset
+#         はtask_assigned初検知時に/clear|/newを無条件送信しており、busy確認
+#         guardが一切無かった(fix1(b)/fix4の対象漏れ)。confirmed-busy時は
+#         送信せずreturn 1し、NEW_CONTEXT_SENTを立てず次サイクルへ再試行する。
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 WATCHER_SCRIPT="$SCRIPT_DIR/scripts/inbox_watcher.sh"
@@ -287,4 +294,71 @@ YAML
     "
     [ "$status" -eq 0 ]
     [ ! -f "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent" ]
+}
+
+# ─── T-C10: ★安全性 — Phase3で busy確認時にEscape/C-c等の破壊的キーを送らない ───
+
+@test "T-C10: Phase 3 sends no keystrokes at all when agent_is_busy_confirmed is true (no Escape, no /clear)" {
+    # idle flag はある(=軽量flagチェックはidleと判定し、Phase3のロジックまで
+    # 到達する) が、pane は実際にWorking中(=stuck idle flagバグの再現)。
+    touch "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent"
+    MOCK_CAPTURE_PANE="✻ Working on task (250s • esc to interrupt)"
+
+    cat > "$TEST_TMP/queue/inbox/test_busy_agent.yaml" << 'YAML'
+messages:
+- content: task
+  from: karo
+  id: msg_001
+  read: false
+  timestamp: '2026-01-01T00:00:00'
+  type: task_assigned
+YAML
+    cat > "$TEST_TMP/queue/tasks/test_busy_agent.yaml" << 'YAML'
+task:
+  status: in_progress
+YAML
+
+    run bash -c "
+        source '$WATCHER_HARNESS'
+        now=\$(date +%s)
+        FIRST_UNREAD_SEEN=\$((now - 250))  # past ESCALATE_PHASE2(240s) -> Phase 3
+        LAST_CLEAR_TS=0
+        ASW_DISABLE_ESCALATION=0
+        process_unread event
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF "send-keys -t test:0.0 /clear" "$MOCK_LOG"
+    [ "$status" -ne 0 ]
+    run grep -qF "send-keys -t test:0.0 Escape" "$MOCK_LOG"
+    [ "$status" -ne 0 ]
+}
+
+# ─── T-C11: send_context_reset — 未ガードだった第三の破壊的送信箇所 ───
+
+@test "T-C11: send_context_reset defers (returns 1, sends nothing) when agent_is_busy_confirmed is true" {
+    touch "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent"
+    MOCK_CAPTURE_PANE="✻ Working on task (5s • esc to interrupt)"
+
+    run bash -c "
+        source '$WATCHER_HARNESS'
+        LAST_CLEAR_TS=0
+        send_context_reset
+    "
+    [ "$status" -eq 1 ]
+    run grep -qF "send-keys -t test:0.0 /clear" "$MOCK_LOG"
+    [ "$status" -ne 0 ]
+}
+
+@test "T-C11b: send_context_reset sends /clear (returns 0) when agent is truly idle (regression)" {
+    touch "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent"
+    MOCK_CAPTURE_PANE="❯"
+
+    run bash -c "
+        source '$WATCHER_HARNESS'
+        LAST_CLEAR_TS=0
+        send_context_reset
+    "
+    [ "$status" -eq 0 ]
+    run grep -qF "send-keys -t test:0.0 /clear" "$MOCK_LOG"
+    [ "$status" -eq 0 ]
 }

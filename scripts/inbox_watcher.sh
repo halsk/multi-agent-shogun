@@ -687,8 +687,14 @@ send_cli_command() {
             sleep 1.0
             timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
             sleep 0.5
+            # Check ONLY the last non-blank line, not a multi-line tail window.
+            # Claude Code legitimately echoes "> /clear" into scrollback history
+            # once the command IS accepted — scanning several lines would match
+            # that echo and cause a false "still queued" retry on every single
+            # successful /clear (the same T-BUSY-008 class of bug lib/agent_status.sh
+            # already had to fix once for busy detection).
             local clear_pane_content
-            clear_pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | tail -5 || echo "")
+            clear_pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 || echo "")
             if echo "$clear_pane_content" | grep -qF "$actual_cmd"; then
                 echo "[$(date)] WARNING: $actual_cmd text still visible in pane, retrying (attempt $((clear_attempt+1)))" >&2
                 clear_attempt=$((clear_attempt+1))
@@ -781,6 +787,18 @@ send_context_reset() {
     if [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ] || [ "$AGENT_ID" = "gunshi2" ]; then
         echo "[$(date)] [SKIP] $AGENT_ID: suppressing context reset (command-layer agent)" >&2
         return 0
+    fi
+
+    # cmd_760 fix1(b)/fix4: send_context_reset is a THIRD destructive /clear|/new
+    # send site (found while writing tests for this fix) that bypassed every busy
+    # guard entirely — it fires the instant a task_assigned message is first seen,
+    # with no check at all. Apply the same ground-truth confirmation used at the
+    # other two sites. Return 1 (not sent) so the caller does NOT mark
+    # NEW_CONTEXT_SENT — the reset will be retried on a later cycle instead of
+    # being silently skipped forever.
+    if agent_is_busy_confirmed; then
+        echo "[$(date)] [SKIP] $AGENT_ID is busy (confirmed via pane) — context reset deferred to next cycle" >&2
+        return 1
     fi
 
     local reset_cmd
@@ -1249,8 +1267,13 @@ for s in data.get('specials', []):
         # Skip if: (1) already sent this batch, (2) clear_command already handled above,
         #          (3) agent is shogun (human-controlled).
         if [ "$has_task_assigned" = "1" ] && [ "$NEW_CONTEXT_SENT" -eq 0 ] && [ "$clear_seen" -eq 0 ]; then
-            send_context_reset
-            NEW_CONTEXT_SENT=1
+            # send_context_reset returns 1 (not 0) when it deferred due to a
+            # confirmed-busy agent (cmd_760 fix1(b)) — only mark NEW_CONTEXT_SENT
+            # when it actually sent something, so a deferred reset is retried on
+            # a later cycle instead of being silently skipped forever.
+            if send_context_reset; then
+                NEW_CONTEXT_SENT=1
+            fi
         fi
 
         # If startup prompt was just sent (Codex), skip follow-up nudge this cycle.
@@ -1314,8 +1337,13 @@ for s in data.get('specials', []):
                     # own busy guard silently swallowed the send, which could hide a
                     # stuck agent from escalation indefinitely.
                     if agent_is_busy_confirmed; then
-                        echo "[$(date)] ESCALATION Phase 3: $AGENT_ID busy (confirmed via pane) — deferring /clear, keeping escalation timer" >&2
-                        send_wakeup_with_escape "$normal_count"
+                        # Do NOT send Escape/C-c here — agent_is_busy_confirmed()=true means
+                        # the pane itself shows Working right now (the cheap flag check at
+                        # the top of this branch already said "not busy", which is exactly
+                        # the stuck-idle-flag scenario). Escape+C-c would interrupt a real
+                        # in-progress turn. Stay silent and let Stop hook / the next cycle
+                        # handle it, same as the busy-claude path above.
+                        echo "[$(date)] ESCALATION Phase 3: $AGENT_ID busy (confirmed via pane) — deferring /clear, keeping escalation timer, no keystrokes sent" >&2
                     else
                         echo "[$(date)] ESCALATION Phase 3: Agent $AGENT_ID unresponsive for ${age}s. Sending /clear." >&2
                         send_cli_command "/clear"
