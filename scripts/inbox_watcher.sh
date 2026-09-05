@@ -855,6 +855,30 @@ send_context_reset() {
     if agent_is_busy; then
         echo "[$(date)] [CONTEXT-RESET] $AGENT_ID still busy after 15s — proceeding anyway" >&2
     fi
+
+    # Claude: send startup prompt so agent re-runs Session Start after /clear.
+    # Without this, /clear resets context but the agent is left at a blank
+    # prompt with no submitted turn — nothing re-reads the task YAML (the
+    # asymmetry vs. the codex branch above, which already calls this).
+    if [[ "$effective_cli" == "claude" ]]; then
+        send_startup_prompt
+    fi
+
+    # "送ったら確かめる" (cmd_760 addendum_20260905_2215): sending /clear +
+    # startup prompt is not proof the agent actually resumed. This log line
+    # names what to check and where the existing safety net lives — it does
+    # NOT implement a new fast-confirmation loop (out of this task's scope;
+    # see queue/tasks/ashigaru2.yaml design memo section for the proposal).
+    #   - Verify: queue/tasks/${AGENT_ID}.yaml status transitions
+    #     assigned → in_progress within a couple minutes of this line.
+    #   - Existing safety net: scripts/stall_watchdog.sh (launchd, 5min
+    #     interval) already escalates silently-stalled agents to shogun via
+    #     ntfy after ~40min (P1 nudge → P2 /clear → P3 ntfy). It was not
+    #     designed for "context reset silently failed to dispatch" — its
+    #     grace periods are tuned for mid-task silence, not post-reset
+    #     confirmation, so a real dispatch failure here could go unnoticed
+    #     for up to ~40min before stall_watchdog's own escalation catches it.
+    echo "[$(date)] [CONTEXT-RESET] $AGENT_ID reset dispatched — verify queue/tasks/${AGENT_ID}.yaml status moves to in_progress; stall_watchdog.sh covers the slow path (~40min) if not" >&2
 }
 
 # ─── Agent self-watch detection ───
