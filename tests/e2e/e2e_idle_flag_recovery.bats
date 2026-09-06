@@ -106,6 +106,18 @@ wait_for_log() {
     local ashigaru_idle_flag="$flag_dir/shogun_idle_ashigaru1"
     first_unread_seen=$(( $(date +%s) - 420 ))
 
+    # E2E-010-A (which runs before this test in the same file) launches its
+    # watcher with cli="claude", which leaves @agent_cli="claude" set on this
+    # pane (setup_e2e_session's default). This test wants "copilot" — without
+    # resetting the option, get_effective_cli_type() finds the stale "claude"
+    # pane value, logs a CLI-drift warning, and uses "claude" instead of the
+    # "copilot" arg below. That sends this test down the claude Stop-hook
+    # branch ("... but agent is busy (claude) — Stop hook will deliver"),
+    # which never reaches the stale-busy-recovery code this test targets —
+    # confirmed via the actual CI log ("[WARN] CLI drift detected for
+    # ashigaru1: arg=copilot, pane=claude. Using pane value.").
+    tmux set-option -p -t "$ashigaru1_pane" @agent_cli "copilot"
+
     # Start mock in busy state before unread messages arrive.
     send_to_pane "$ashigaru1_pane" "busy_hold 12"
     sleep 1

@@ -51,6 +51,24 @@ dump_watcher_log() {
     echo "=== End watcher log ===" >&2
 }
 
+# Helper: poll a log file for a pattern instead of checking once.
+# send_context_reset()/send_startup_prompt() each poll for idle in up to
+# 3×5s steps before logging anything, so a one-shot grep right after
+# task.status reaches "done" can run well before those lines are written
+# (mock_cli.sh's handle_clear() marks the task done independently of
+# whether the startup prompt was actually sent — see E2E-008-C header).
+wait_for_log() {
+    local log_file="$1" pattern="$2" timeout="${3:-40}"
+    local elapsed=0
+    while [ "$elapsed" -lt "$timeout" ]; do
+        grep -qF "$pattern" "$log_file" 2>/dev/null && return 0
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    echo "TIMEOUT: '$pattern' not found in $log_file after ${timeout}s" >&2
+    return 1
+}
+
 # ═══════════════════════════════════════════════════════════════
 # E2E-008-A: Codex agent receives startup prompt after /new
 #            and processes assigned task
@@ -211,8 +229,15 @@ dump_watcher_log() {
     fi
     assert_success
 
-    # 5. Check that startup prompt WAS sent (symmetry fix — see header note)
-    run grep "Sending startup prompt" "$log_file"
+    # 5. Check that startup prompt WAS sent (symmetry fix — see header note).
+    # Poll instead of a one-shot check: task.status can reach "done" (step 4)
+    # well before send_context_reset()/send_startup_prompt() finish their
+    # own idle-polling and actually log this line (see wait_for_log comment).
+    run wait_for_log "$log_file" "Sending startup prompt"
+    if [ "$status" -ne 0 ]; then
+        dump_pane_for_debug "$ashigaru1_pane" "ashigaru1-claude-C-startup"
+        dump_watcher_log "$log_file"
+    fi
     assert_success
 
     # 6. Check that /clear was sent (not /new)
