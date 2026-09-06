@@ -101,6 +101,53 @@ fixture_mixed="Previous task output
 ✻ Now processing next step..."
 assert_eq "1i: spinner優先 → busy" "busy" "$(classify_pane "$fixture_mixed")"
 
+# 1j (cmd_771 fix_d・acceptance(a)): 許可プロンプト表示中 → permission_prompt で検知される
+echo "--- 1j: 許可プロンプト表示中 → permission_prompt (9/5 ashigaru1実例の再現)"
+fixture_permission_prompt="⏺ Bash(rm -rf \"\$SCRATCH/\$d/.git\")
+  ⎿  (承認待ち)
+
+╭──────────────────────────────────────────────────────╮
+│ Bash command                                          │
+│                                                        │
+│   rm -rf \"\$SCRATCH/\$d/.git\"                          │
+│                                                        │
+│ Do you want to proceed?                               │
+│ ❯ 1. Yes                                               │
+│   2. Yes, and don't ask again for rm commands          │
+│   3. No, and tell Claude what to do differently        │
+╰──────────────────────────────────────────────────────╯"
+assert_eq "1j: 許可プロンプト → permission_prompt" "permission_prompt" "$(classify_pane "$fixture_permission_prompt")"
+
+# 1k (acceptance(b)): 通常の作業中pane出力 → permission_prompt として検知されない
+echo "--- 1k: 通常の作業中pane出力 → permission_prompt ではない (誤検知しない)"
+fixture_normal_work="Reading file /Users/hal/workspace/project/src/app.ts...
+Successfully read 245 lines.
+✻ Analyzing code structure..."
+result_1k=$(classify_pane "$fixture_normal_work")
+if [[ "$result_1k" != "permission_prompt" ]]; then
+    assert_eq "1k: 通常作業中 → permission_prompt でない" "not_permission_prompt" "not_permission_prompt"
+else
+    assert_eq "1k: 通常作業中 → permission_prompt でない" "not_permission_prompt" "permission_prompt (誤検知)"
+fi
+
+# 1l (acceptance(c)): 既に完了したpane(❯プロンプトのみ) → permission_prompt として検知されない
+echo "--- 1l: 完了済みpane(❯のみ) → permission_prompt ではない (誤検知しない)"
+fixture_completed="Task completed successfully.
+❯"
+result_1l=$(classify_pane "$fixture_completed")
+assert_eq "1l: 完了済み(❯のみ) → idle のまま(permission_prompt でない)" "idle" "$result_1l"
+
+# 1m (is_permission_prompt 単体・2条件AND回帰): 片方の条件のみでは検知しない
+echo "--- 1m: 'Do you want to proceed?' のみ(選択肢カーソル無し) → 検知しない"
+fixture_partial="Some banner text
+Do you want to proceed?
+(no cursor line here)"
+if is_permission_prompt "$fixture_partial"; then
+    assert_eq "1m: 片方の条件のみでは非検知" "not_detected" "detected (誤検知)"
+else
+    assert_eq "1m: 片方の条件のみでは非検知" "not_detected" "not_detected"
+fi
+
 # ── Section 2: エスカレーション state machine 単体テスト (実 escalate() 使用) ─
 
 echo ""
@@ -359,6 +406,61 @@ if grep -q 'command -v md5sum' "$SCRIPT_DIR/scripts/stall_watchdog.sh" \
     assert_eq "7d: md5_short が md5sum/shasum フォールバック実装を持つ" "found" "found"
 else
     assert_eq "7d: md5_short が md5sum/shasum フォールバック実装を持つ" "found" "not found"
+fi
+
+# ── Section 8: cmd_771 fix_d — 許可プロンプト検知の安全性確認 ────────────────
+
+echo ""
+echo "=== Section 8: cmd_771 fix_d — 許可プロンプト検知の安全性確認 ==="
+echo ""
+
+# 8a: permission_prompt 分岐がコードに存在する
+if grep -q 'sig" == "permission_prompt"' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "8a: permission_prompt 分岐がコードに存在" "found" "found"
+else
+    assert_eq "8a: permission_prompt 分岐がコードに存在" "found" "not found"
+fi
+
+# 8b: permission_prompt 分岐は notify_dashboard/send_ntfy(通知のみ)だけを呼び、
+#     send_inbox(nudge/clear=キー入力を伴い誤って選択肢を確定させうる)を
+#     絶対に呼ばないことをコードで確認する(★★★自動応答禁止の要)。
+pp_line=$(grep -n 'sig" == "permission_prompt"' "$SCRIPT_DIR/scripts/stall_watchdog.sh" | head -1 | cut -d: -f1)
+pp_block=$(sed -n "${pp_line},+14p" "$SCRIPT_DIR/scripts/stall_watchdog.sh")
+if echo "$pp_block" | grep -q 'notify_dashboard' && echo "$pp_block" | grep -q 'send_ntfy' \
+    && ! echo "$pp_block" | grep -q 'send_inbox'; then
+    assert_eq "8b: permission_prompt分岐はnotify_dashboard/send_ntfyのみ・send_inbox不使用" "safe" "safe"
+else
+    assert_eq "8b: permission_prompt分岐はnotify_dashboard/send_ntfyのみ・send_inbox不使用" "safe" "unsafe: $pp_block"
+fi
+
+# 8c: permission_prompt 検知は既存の汎用 notify_dashboard()/send_ntfy() を再利用しており、
+#     専用の別建て通知関数(notify_dashboard_permission_prompt 等)を新設していないことを確認
+if grep -qE 'notify_dashboard_permission_prompt|send_ntfy_permission_prompt' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "8c: 新規の別建て通知関数を作っていない(既存機構へ相乗り)" "no_new_channel" "new dedicated function found"
+else
+    assert_eq "8c: 新規の別建て通知関数を作っていない(既存機構へ相乗り)" "no_new_channel" "no_new_channel"
+fi
+
+# 8d: is_permission_prompt 関数がコードに存在し、自動応答(y/n送信等)を実装していない
+if grep -q 'is_permission_prompt()' "$SCRIPT_DIR/lib/stall_detect.sh"; then
+    assert_eq "8d: is_permission_prompt関数がlib/stall_detect.shに存在" "found" "found"
+else
+    assert_eq "8d: is_permission_prompt関数がlib/stall_detect.shに存在" "found" "not found"
+fi
+if grep -qE 'send-keys.*(1|2|3|y|n|Yes|No)\b.*permission|permission.*send-keys' "$SCRIPT_DIR/lib/stall_detect.sh" "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "8e: 自動応答(send-keysでのy/n/選択肢送信)が実装されていない" "no_auto_response" "AUTO-RESPONSE CODE FOUND"
+else
+    assert_eq "8e: 自動応答(send-keysでのy/n/選択肢送信)が実装されていない" "no_auto_response" "no_auto_response"
+fi
+
+# 8f (統合・実 escalate() 経由でないことの確認): permission_prompt 検知時に main loop が
+# escalate() (P1/P2/P3・nudge/clear を含む段階的エスカレーション) を一切呼ばず
+# continue することをコードの制御フローで確認する。
+pp_to_continue=$(sed -n "${pp_line},/^    continue$/p" "$SCRIPT_DIR/scripts/stall_watchdog.sh" | head -20)
+if echo "$pp_to_continue" | grep -q 'continue' && ! echo "$pp_to_continue" | grep -qE '\bescalate\b'; then
+    assert_eq "8f: permission_prompt検知時はescalate()を呼ばずcontinueする" "no_escalate" "no_escalate"
+else
+    assert_eq "8f: permission_prompt検知時はescalate()を呼ばずcontinueする" "no_escalate" "escalate() called or continue missing"
 fi
 
 # ── サマリー ──────────────────────────────────────────────────────────────────
