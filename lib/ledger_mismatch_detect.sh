@@ -34,9 +34,17 @@ ledger_cmd_status() {
 }
 
 # report yaml の先頭階層にある "parent_cmd:" / "status:" を1行抽出する
+#
+# ★grep 単体を "{ ... || true; }" で包む: 呼び出し元 (stall_watchdog.sh) は
+# set -euo pipefail 下で動く。フィールドが存在せず grep が非0で終わると、
+# pipefail 下ではパイプライン全体が非0を返し、それを command substitution
+# で受ける代入文(例: report_status=$(_lmd_report_field ...))がそのまま
+# set -e を発動させ、呼び出し元ループがそのファイルで無言のまま止まる
+# (cmd_778②実装時に実データ(report:配下ネスト形式のreport)で実際に踏んだ・
+# 単体テストはbats run経由でset -eの影響を受けず気づけなかった)。
 _lmd_report_field() {
     local file="$1" field="$2"
-    grep -E "^${field}:" "$file" 2>/dev/null | head -1 \
+    { grep -E "^${field}:" "$file" 2>/dev/null || true; } | head -1 \
         | sed -E "s/^${field}:[[:space:]]*//" \
         | tr -d '"' | tr -d "'"
 }
@@ -98,9 +106,11 @@ detect_ledger_mismatches() {
 #       "file_name|status" で gap を列挙
 
 # task: 直下(2スペースインデント)のフィールドを1行抽出する
+# (grep が非0で終わってもpipefail経由でset -eを発動させない理由は
+# _lmd_report_field と同じ)
 _lmd_task_field() {
     local file="$1" field="$2"
-    grep -E "^  ${field}:" "$file" 2>/dev/null | head -1 \
+    { grep -E "^  ${field}:" "$file" 2>/dev/null || true; } | head -1 \
         | sed -E "s/^  ${field}:[[:space:]]*//" \
         | tr -d '"' | tr -d "'" \
         | sed -E 's/[[:space:]]+$//'
@@ -203,4 +213,100 @@ detect_orphan_cmds() {
 
         printf '%s|%s\n' "$cmd_id" "$status"
     done < <(_lmd_all_ledger_cmd_statuses "$ledger_file")
+}
+
+# ── cmd_778② 相乗り: report・task YAML・inboxの三面食い違い検知(型h) ────────
+#
+# 殿ご裁可(2026-09-06)。a〜gのように型を列挙して足すやり方は限界に来ている
+# ——「report・task YAML・inboxの三面が一致しているか」という一つの不変条件で
+# まだ見ぬ型も拾う。本日 ashigaru6 のreport(status: done)・task YAML
+# (status: assigned)・家老inbox(通知0件)が7〜12時間食い違ったまま放置された
+# 実例の再発防止。
+#
+# 不変条件: report(queue/reports/{agent}_report.yaml)の最新エントリが
+# status: done であるなら、
+#   (a) 対応する task YAML(queue/tasks/{agent}.yaml)の status も
+#       done/cancelled(完了相当)であるべき
+#   (b) 報告先inbox(既定=karo)に、その報告以降の from:{agent} エントリが
+#       存在するべき(read:true/falseは問わない——存在すること自体が
+#       「二手目(inbox_write)が打たれた」証跡)
+# いずれかが崩れていれば mismatch として列挙する。
+#
+# 提供関数:
+#   detect_three_way_mismatch <reports_dir> <tasks_dir> <inbox_file> <threshold_seconds>
+#     → 各行 "agent|parent_cmd|report_file|task_status|inbox_ok|age_seconds" で
+#       mismatch を列挙(inbox_ok=0のとき無音・1のとき通知あり)
+
+# inbox_file 内に、agent からの from: エントリで timestamp が since 以降の
+# ものが存在するかを判定する(read:true/falseは問わない=存在すればOK)。
+# ISO8601 (YYYY-MM-DDTHH:MM:SS) は文字列比較で時系列順が保たれる前提。
+_lmd_inbox_has_entry_from_after() {
+    local inbox_file="$1" agent="$2" since_ts="$3"
+    [[ -f "$inbox_file" ]] || return 1
+    [[ -z "$since_ts" ]] && return 1
+
+    awk -v agent="$agent" -v since="$since_ts" '
+        /^- content:/ { from = ""; ts = "" }
+        /^  from:/ {
+            val = $0
+            sub(/^  from:[[:space:]]*/, "", val)
+            gsub(/["'"'"']/, "", val)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+            from = val
+        }
+        /^  timestamp:/ {
+            val = $0
+            sub(/^  timestamp:[[:space:]]*/, "", val)
+            gsub(/["'"'"']/, "", val)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+            ts = val
+            if (from == agent && ts >= since) { found = 1 }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$inbox_file"
+}
+
+detect_three_way_mismatch() {
+    local reports_dir="$1"
+    local tasks_dir="$2"
+    local inbox_file="$3"
+    local threshold_sec="${4:-21600}"  # デフォルト6時間(detect_ledger_mismatchesに倣う)
+
+    [[ -d "$reports_dir" ]] || return 0
+
+    local now
+    now=$(date '+%s')
+
+    local f agent parent_cmd report_status report_ts mtime age task_status
+    local task_ok inbox_ok
+    for f in "$reports_dir"/*_report.yaml; do
+        [[ -f "$f" ]] || continue
+
+        agent="${f##*/}"
+        agent="${agent%_report.yaml}"
+
+        report_status=$(_lmd_report_field "$f" "status")
+        [[ "$report_status" != "done" ]] && continue
+
+        parent_cmd=$(_lmd_report_field "$f" "parent_cmd")
+        report_ts=$(_lmd_report_field "$f" "timestamp")
+
+        mtime=$(_lmd_file_mtime_epoch "$f")
+        [[ -z "$mtime" ]] && continue
+        age=$(( now - mtime ))
+        [[ "$age" -lt "$threshold_sec" ]] && continue
+
+        task_status=$(_lmd_task_field "$tasks_dir/${agent}.yaml" "status")
+        task_ok=0
+        [[ "$task_status" == "done" || "$task_status" == "cancelled" ]] && task_ok=1
+
+        inbox_ok=0
+        if _lmd_inbox_has_entry_from_after "$inbox_file" "$agent" "$report_ts"; then
+            inbox_ok=1
+        fi
+
+        if [[ "$task_ok" -eq 0 || "$inbox_ok" -eq 0 ]]; then
+            printf '%s|%s|%s|%s|%s|%s\n' "$agent" "$parent_cmd" "$f" "$task_status" "$inbox_ok" "$age"
+        fi
+    done
 }

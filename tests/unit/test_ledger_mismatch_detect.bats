@@ -247,3 +247,104 @@ seed_task() {
 @test "T-ORPHAN-005: stall_watchdog.sh invokes detect_orphan_cmds via check_orphan_cmds" {
   grep -qE "check_orphan_cmds|detect_orphan_cmds" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_778② (型h): report・task YAML・inboxの三面食い違い検知。
+# 個別の型(a〜g)を列挙するのでなく「三面が一致しているか」という一つの
+# 不変条件で見る。本日 ashigaru6 が実際に踏んだ事例
+# (report=done / task YAML=assigned / 家老inbox=通知0件・7〜12時間)の再現を含む。
+
+seed_inbox() {
+  local content="$1"
+  printf '%s\n' "$content" > "$TMP_DIR/inbox_karo.yaml"
+}
+
+# ── T-3WM-001: report=done・task=assigned・inbox無音(本日の実例再現) → 検知 ──
+
+@test "T-3WM-001: flags report=done/task=assigned/inbox-silent (ashigaru6 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru6_report.yaml" $'worker_id: ashigaru6\nparent_cmd: cmd_738\ntimestamp: "2026-09-06T10:49:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru6.yaml" $'task:\n  status: assigned\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_1\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru6|cmd_738|"* ]]
+  [[ "$output" == *"|assigned|0|"* ]]
+}
+
+# ── T-3WM-002: task=done かつ inboxにreport以降のfrom:{agent}あり → 検知しない(正常系) ──
+
+@test "T-3WM-002: does not flag when task is done and inbox has a from-agent entry after report" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru2_report.yaml" $'worker_id: ashigaru2\nparent_cmd: cmd_800\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: done\n'
+  seed_inbox $'messages:\n- content: 完了報告\n  from: ashigaru2\n  id: msg_2\n  read: true\n  timestamp: "2026-09-06T10:05:00"\n  type: report_received\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru2"* ]]
+}
+
+# ── T-3WM-003: task=doneだがinboxにreport以降のfrom:{agent}なし → 検知される(inbox面のみ食い違い) ──
+
+@test "T-3WM-003: flags when task is done but no matching inbox entry exists after the report" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru3_report.yaml" $'worker_id: ashigaru3\nparent_cmd: cmd_801\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  status: done\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_3\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru3|cmd_801|"* ]]
+  [[ "$output" == *"|done|0|"* ]]
+}
+
+# ── T-3WM-004: report=done経過時間が閾値未満 → 検知しない(即時誤検知防止) ──
+
+@test "T-3WM-004: does not flag before threshold elapses" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru4_report.yaml" $'worker_id: ashigaru4\nparent_cmd: cmd_802\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 0
+  seed_task "$TMP_DIR/tasks" "ashigaru4.yaml" $'task:\n  status: assigned\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_4\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru4"* ]]
+}
+
+# ── T-3WM-005: reportがdoneでない → 検知しない ──
+
+@test "T-3WM-005: does not flag when report itself is not done" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru5_report.yaml" $'worker_id: ashigaru5\nparent_cmd: cmd_803\ntimestamp: "2026-09-06T10:00:00"\nstatus: in_progress\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru5.yaml" $'task:\n  status: assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru5"* ]]
+}
+
+# ── T-3WM-006: task・inbox両面とも整合 → 両面ともOKなら検知しない(健全系の再確認) ──
+
+@test "T-3WM-006: does not flag when both task and inbox faces are consistent" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru7_report.yaml" $'worker_id: ashigaru7\nparent_cmd: cmd_804\ntimestamp: "2026-09-06T08:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru7.yaml" $'task:\n  status: cancelled\n'
+  seed_inbox $'messages:\n- content: 完了報告\n  from: ashigaru7\n  id: msg_7\n  read: false\n  timestamp: "2026-09-06T08:10:00"\n  type: report_received\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru7"* ]]
+}
+
+# ── T-3WM-007: stall_watchdog.sh がこの check を実際に呼び出している(相乗り確認) ──
+
+@test "T-3WM-007: stall_watchdog.sh invokes detect_three_way_mismatch via check_three_way_mismatch" {
+  grep -qE "check_three_way_mismatch|detect_three_way_mismatch" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}
