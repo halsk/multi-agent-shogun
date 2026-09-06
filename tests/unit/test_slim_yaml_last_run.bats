@@ -13,6 +13,11 @@ setup() {
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
     [ -f "$PROJECT_ROOT/scripts/slim_yaml.py" ] || skip "slim_yaml.py not found"
     command -v python3 &>/dev/null || skip "python3 not available"
+    # slim_yaml.pyはPyYAML必須。proj_copyには.venvが無いため素のpython3を
+    # 使うと(特にmacOS系のシステムpython3は)ModuleNotFoundErrorで落ちる。
+    # slim_yaml.sh自身と同じ作法(実PROJECT_ROOTの.venv優先)にする。
+    PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python3"
+    [ -x "$PYTHON_BIN" ] || PYTHON_BIN="python3"
 }
 
 build_tmp_project() {
@@ -24,7 +29,7 @@ build_tmp_project() {
 run_slim_yaml() {
     local root="$1"
     shift
-    python3 "$root/scripts/slim_yaml.py" "$@"
+    "$PYTHON_BIN" "$root/scripts/slim_yaml.py" "$@"
 }
 
 metrics_file() {

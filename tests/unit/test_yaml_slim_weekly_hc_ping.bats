@@ -194,7 +194,17 @@ MOCK_GS
   printf 'commands: []\n' > "$proj_copy/queue/shogun_to_karo.yaml"
   printf 'task:\n  status: done\n' > "$proj_copy/queue/tasks/ashigaru9.yaml"
 
-  run env SHOGUN_QUEUE_DIR="$proj_copy/queue" bash "$proj_copy/scripts/yaml_slim_weekly.sh"
+  # slim_yaml.sh はPYTHON_BINを"${PROJECT_ROOT}/.venv/bin/python3"にデフォルト
+  # 解決するが、この PROJECT_ROOT は proj_copy 自身の dirname から算出される
+  # ため proj_copy/.venv は存在せず素のpython3にフォールバックする。CIの
+  # macOSシステムpython3にはPyYAMLが無くslim_yaml.pyがModuleNotFoundError
+  # で落ちるため、実PROJECT_ROOTの.venvをSHOGUN_PYTHON_BINで明示注入する
+  # (実本番運用ではyaml-slim-launcher.shが実PROJECT_ROOTから起動するため
+  # この問題は起きない・proj_copyコピー方式のテストに固有)。
+  local test_python_bin="${PROJECT_ROOT}/.venv/bin/python3"
+  [ -x "$test_python_bin" ] || test_python_bin="python3"
+
+  run env SHOGUN_QUEUE_DIR="$proj_copy/queue" SHOGUN_PYTHON_BIN="$test_python_bin" bash "$proj_copy/scripts/yaml_slim_weekly.sh"
   [ "$status" -eq 0 ]
 
   # ashigaru9 は canonical set (ashigaru1-8) 外なので done → 直接 archive される
