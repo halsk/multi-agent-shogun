@@ -20,6 +20,11 @@ CANONICAL_TASKS = {f'ashigaru{i}' for i in range(1, 9)} | {'gunshi'}
 CANONICAL_REPORTS = {f'ashigaru{i}_report' for i in range(1, 9)} | {'gunshi_report'}
 IDLE_STUB = {'task': {'status': 'idle'}}
 
+# instructions/common/task_flow.md「Canonical statuses」節が正本。
+# pending/in_progress は active、done/cancelled/paused は archive対象(terminal)。
+LEDGER_CANONICAL_STATUSES = {'pending', 'in_progress', 'done', 'cancelled', 'paused'}
+LEDGER_TERMINAL_STATUSES = {'done', 'cancelled', 'paused'}
+
 
 def load_yaml(filepath):
     """Safely load YAML file."""
@@ -326,13 +331,27 @@ def slim_shugun_to_karo(dry_run=False):
     # Separate active and archived commands
     active = []
     archived = []
+    non_canonical = []
 
     for cmd in queue:
         status = cmd.get('status', 'unknown')
-        if status in ['done', 'cancelled']:
+        if status not in LEDGER_CANONICAL_STATUSES:
+            non_canonical.append(f"{cmd.get('id', '<missing-id>')}:{status}")
+        if status in LEDGER_TERMINAL_STATUSES:
             archived.append(cmd)
         else:
             active.append(cmd)
+
+    # 見える化のみ(自動で正規化はしない)。instructions/common/task_flow.md
+    # は non-canonical な status(superseded/hold/shelved 等)を禁じているが、
+    # 実データの正規化は家老の判断事項であり、本スクリプトが黙って書き換える
+    # べきではない。
+    if non_canonical:
+        print(
+            "[INVENTORY] non-canonical command status (task_flow.mdの正本外): "
+            + ", ".join(non_canonical),
+            file=sys.stderr,
+        )
 
     # If nothing to archive, return success without writing
     if not archived:
