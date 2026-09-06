@@ -11,6 +11,7 @@
 #   T-010: flock競合時のリトライ
 #   T-011: 特殊文字のエスケープ処理
 #   T-012: inbox初期化（ディレクトリ自動作成）
+#   T-013~T-016: report_received dedup guard（cmd_778①redo・窓30秒是正）
 
 # --- セットアップ ---
 
@@ -52,6 +53,23 @@ setup() {
 teardown() {
     # テスト用tmpディレクトリを削除
     [ -n "$TEST_TMPDIR" ] && [ -d "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
+}
+
+# dedupテスト用ヘルパー: 直近メッセージのtimestampを「N秒前」へ書き換え、
+# 実時刻ベースのdedup窓判定を任意のギャップで再現できるようにする。
+set_last_msg_seconds_ago() {
+    local file="$1" seconds_ago="$2"
+    "$VENV_PYTHON" -c "
+import yaml
+from datetime import datetime, timedelta
+
+p = '$file'
+with open(p) as f:
+    data = yaml.safe_load(f)
+data['messages'][-1]['timestamp'] = (datetime.now() - timedelta(seconds=$seconds_ago)).strftime('%Y-%m-%dT%H:%M:%S')
+with open(p, 'w') as f:
+    yaml.dump(data, f, default_flow_style=False, allow_unicode=True, indent=2)
+"
 }
 
 # =============================================================================
@@ -439,5 +457,118 @@ with open('$TEST_INBOX_DIR/test_agent.yaml') as f:
 assert len(data['messages']) == 1, 'Expected 1 message after auto-create'
 
 print('T-012: PASS')
+EOF
+}
+
+# =============================================================================
+# T-013: report_received dedup — 真の重複(同一事象・数秒差)は引き続きSKIP
+# cmd_778①redo: 窓を600秒→30秒へ短縮した後も、hookと手動report_commandが
+# 数秒差で同一報告を重複発火するケースは正しく吸収されることを確認する。
+# =============================================================================
+
+@test "T-013: report_received true duplicate (3s apart, within 30s window) → 2nd call skipped" {
+    run bash "$TEST_INBOX_WRITE" "karo_dedup1" "同一報告テキスト" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+
+    set_last_msg_seconds_ago "$TEST_INBOX_DIR/karo_dedup1.yaml" 3
+
+    run bash "$TEST_INBOX_WRITE" "karo_dedup1" "同一報告テキスト" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Skipped" ]]
+
+    "$VENV_PYTHON" <<EOF
+import yaml
+
+with open('$TEST_INBOX_DIR/karo_dedup1.yaml') as f:
+    data = yaml.safe_load(f)
+
+assert len(data['messages']) == 1, f'Expected 1 message (deduped), got {len(data["messages"])}'
+
+print('T-013: PASS')
+EOF
+}
+
+# =============================================================================
+# T-014: report_received dedup — 別タスクの正当な報告(内容が異なる・2分差)は
+# SKIPされず正しく通知される(PR#84のNO-GO原因だった穴: 旧600秒窓では
+# これが握りつぶされていた)。
+# =============================================================================
+
+@test "T-014: report_received different task (gap=120s, content differs) → both delivered, not deduped" {
+    run bash "$TEST_INBOX_WRITE" "karo_dedup2" "タスクAの完了報告" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+
+    set_last_msg_seconds_ago "$TEST_INBOX_DIR/karo_dedup2.yaml" 120
+
+    run bash "$TEST_INBOX_WRITE" "karo_dedup2" "タスクBの完了報告(内容が異なる)" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+    [[ ! "$output" =~ "Skipped" ]]
+
+    "$VENV_PYTHON" <<EOF
+import yaml
+
+with open('$TEST_INBOX_DIR/karo_dedup2.yaml') as f:
+    data = yaml.safe_load(f)
+
+assert len(data['messages']) == 2, f'Expected 2 messages (not deduped), got {len(data["messages"])}'
+
+print('T-014: PASS')
+EOF
+}
+
+# =============================================================================
+# T-015: report_received dedup — 高速redo(45秒差)は旧600秒窓では握りつぶされて
+# いたが、新30秒窓では正しく通知される。窓外への人為的な逃避(2020年等)を
+# 使わず、旧窓の内側(45s < 600s)かつ新窓の外側(45s > 30s)という実際の
+# 境界値で直接検証する(旧T-Dが窓外でしか検証していなかった穴を塞ぐ)。
+# =============================================================================
+
+@test "T-015: report_received fast redo (gap=45s, within OLD 600s window but outside NEW 30s window) → redo notified, not deduped" {
+    run bash "$TEST_INBOX_WRITE" "karo_dedup3" "初回完了報告" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+
+    set_last_msg_seconds_ago "$TEST_INBOX_DIR/karo_dedup3.yaml" 45
+
+    run bash "$TEST_INBOX_WRITE" "karo_dedup3" "redo後の再完了報告" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+    [[ ! "$output" =~ "Skipped" ]]
+
+    "$VENV_PYTHON" <<EOF
+import yaml
+
+with open('$TEST_INBOX_DIR/karo_dedup3.yaml') as f:
+    data = yaml.safe_load(f)
+
+assert len(data['messages']) == 2, f'Expected 2 messages (redo notified), got {len(data["messages"])}'
+
+print('T-015: PASS')
+EOF
+}
+
+# =============================================================================
+# T-016: report_received dedup 境界値 — 25秒差(新30秒窓の内側)は引き続きSKIP
+# されることを確認し、DEDUP_WINDOW_SECONDS=30が実際に効いていることを
+# 直接検証する(推測で「直った」としない)。
+# =============================================================================
+
+@test "T-016: report_received boundary (gap=25s, inside NEW 30s window) → still deduped" {
+    run bash "$TEST_INBOX_WRITE" "karo_dedup4" "境界値テスト報告" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+
+    set_last_msg_seconds_ago "$TEST_INBOX_DIR/karo_dedup4.yaml" 25
+
+    run bash "$TEST_INBOX_WRITE" "karo_dedup4" "境界値テスト報告2" "report_received" "ashigaru_x"
+    [ "$status" -eq 0 ]
+    [[ "$output" =~ "Skipped" ]]
+
+    "$VENV_PYTHON" <<EOF
+import yaml
+
+with open('$TEST_INBOX_DIR/karo_dedup4.yaml') as f:
+    data = yaml.safe_load(f)
+
+assert len(data['messages']) == 1, f'Expected 1 message (still within 30s window), got {len(data["messages"])}'
+
+print('T-016: PASS')
 EOF
 }

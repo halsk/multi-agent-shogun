@@ -89,14 +89,21 @@ try:
     if not data.get('messages'):
         data['messages'] = []
 
-    # cmd_778: report_received の二重通知防止。auto-notify hook
+    # cmd_778①redo: report_received の二重通知防止。auto-notify hook
     # (scripts/hooks/report_auto_notify.py)と手動のreport_commandが
     # 同一報告に対し重複発火するケースを吸収する。type=='report_received'
     # に限定することで、他のtype(task_assigned等)の正当な短時間連続
     # 送信を妨げない。
+    # ★窓は600秒(10分)→30秒へ短縮(軍師QC指摘・cmd_778①redo)。
+    # hookと手動report_commandが同一事象に対し発火する間隔は数秒〜
+    # 長くともhookのタイムアウト(20秒)+リトライ分程度に収まる一方、
+    # 同一agentが★別の★タスクを完了して正当なreport_receivedを送る
+    # 間隔・redoで再度doneにする間隔は、実作業を挟む以上どちらも
+    # 数十秒以上かかるのが通常。600秒という長すぎる窓が、後者2つの
+    # 正当な報告まで握りつぶしていたのが穴だった。
     if '$TYPE' == 'report_received':
         from datetime import datetime
-        DEDUP_WINDOW_SECONDS = 600
+        DEDUP_WINDOW_SECONDS = 30
         try:
             now_dt = datetime.strptime('$TIMESTAMP', '%Y-%m-%dT%H:%M:%S')
         except ValueError:
