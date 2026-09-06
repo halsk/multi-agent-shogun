@@ -17,6 +17,15 @@
 # Fast test settings: OP_AUTH_POLL_SEC=1, OP_AUTH_TIMEOUT_SEC=3
 
 setup() {
+  # scripts/sync-secrets-to-keychain.shは設計上macOS専用(uname -s != Darwinで
+  # 早期exit・ヘッダコメント "macOS ONLY" 明記)。ubuntu-latest上ではop/security
+  # のモック呼出しに到達する前にスクリプトが早期exitし、本テスト群の前提
+  # (auth polling等)が成立しない。SKIP=FAIL方針の例外(「CI environment」を
+  # 含むskip理由は許容・tests/unit/test_cli_adapter.bats:414と同一作法)。
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    skip "sync-secrets-to-keychain.sh is macOS-only by design (CI environment: uname=$(uname -s))"
+  fi
+
   export PROJECT_ROOT
   PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 

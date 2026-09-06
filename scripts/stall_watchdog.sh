@@ -179,8 +179,11 @@ state_set() {
     fi
 
     if grep -qE "^${field}:" "$state_file" 2>/dev/null; then
-        # sed で該当行を置換 (macOS/BSD 対応)
-        sed -i '' "s|^${field}:.*|${field}: ${value}|" "$state_file"
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _tmp
+        _tmp=$(mktemp)
+        sed "s|^${field}:.*|${field}: ${value}|" "$state_file" > "$_tmp" && mv "$_tmp" "$state_file"
     else
         printf '%s: %s\n' "$field" "$value" >> "$state_file"
     fi
@@ -226,9 +229,13 @@ notify_dashboard_e4_limit() {
     local entry="- 🚨 [e4_suppress_limit] ${agent}: human attach抑止(E4)が約${minutes}分継続中。attachしたまま放置されていないか確認せよ @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -308,9 +315,13 @@ notify_dashboard() {
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
         # 🚨要対応 直後の行に挿入
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -414,9 +425,13 @@ notify_dashboard_ledger_mismatch() {
     local entry="- 🚨 [ledger_mismatch] ${cmd_id}: ${report_file##*/} はdone報告済だが台帳status=${ledger_status}のまま約${hours}時間経過 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -466,9 +481,13 @@ notify_dashboard_blocked_reason_gap() {
     local entry="- 🚨 [blocked_reason_gap] ${file_name}: status=${status}なのにblocked_on/blocked_reasonが空 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -542,9 +561,13 @@ notify_dashboard_orphan_cmd() {
     local entry="- 🚨 [orphan_cmd] ${cmd_id}: 台帳status=${status}だが誰にも割り当てられていない(孤児cmd) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -597,9 +620,13 @@ notify_dashboard_heartbeat() {
     local entry="- 🚨 [heartbeat] ${job_name}: ${hb_status} — ${detail} @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
-        sed -i '' "/🚨要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi

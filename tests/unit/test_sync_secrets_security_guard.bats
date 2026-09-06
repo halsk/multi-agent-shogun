@@ -24,6 +24,12 @@
 #   the hash save for the failed entry, and continues to the next secret.
 
 setup() {
+  # scripts/sync-secrets-to-keychain.shは設計上macOS専用(uname -s != Darwinで
+  # 早期exit)。test_sync_secrets_auth_gate.batsと同一理由・同一作法。
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    skip "sync-secrets-to-keychain.sh is macOS-only by design (CI environment: uname=$(uname -s))"
+  fi
+
   export PROJECT_ROOT
   PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 
