@@ -122,3 +122,79 @@ detect_blocked_reason_gaps() {
         fi
     done
 }
+
+# ── cmd_771 fix_c 相乗り: 孤児cmd検知(idle足軽+台帳の未完了cmdが誰にも
+# 割り当てられていない状態)。maybe_nudge_idle は agent 自身の assigned
+# タスク前提で動くため、台帳に残った未完了cmdが誰の task YAML の
+# parent_cmd にも現れない場合に検知漏れとなる(2026-09-06 殿が2度、
+# swarmより先に気づいた主犯)。
+#
+# 提供関数:
+#   detect_orphan_cmds <ledger_file> <tasks_dir> [all_ashigaru_idle]
+#     → 各行 "cmd_id|status" で孤児cmdを列挙
+#
+#   孤児判定:
+#     ledger status が pending/in_progress かつ
+#     (a) どの task YAML の parent_cmd にも現れない(未割当) または
+#     (b) 現れているが all_ashigaru_idle=true (全員idleで誰も手を
+#         付けていない=割当があっても実質孤児)
+
+# ledger_file の全 "- id: X" エントリを "id|status" で1行ずつ列挙する
+_lmd_all_ledger_cmd_statuses() {
+    local ledger_file="$1"
+    [[ -f "$ledger_file" ]] || return 0
+
+    awk '
+        /^- id: / {
+            if (id != "") print id "|" status
+            id = $0
+            sub(/^- id: /, "", id)
+            status = ""
+            next
+        }
+        /^  status:/ {
+            val = $0
+            sub(/^  status:[[:space:]]*/, "", val)
+            gsub(/["'"'"']/, "", val)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+            status = val
+        }
+        END { if (id != "") print id "|" status }
+    ' "$ledger_file"
+}
+
+# tasks_dir 内の全 task YAML の parent_cmd を集合として返す(1行1id)
+_lmd_assigned_parent_cmds() {
+    local tasks_dir="$1"
+    local f
+    for f in "$tasks_dir"/ashigaru*.yaml "$tasks_dir"/gunshi*.yaml; do
+        [[ -f "$f" ]] || continue
+        local pc
+        pc=$(_lmd_task_field "$f" "parent_cmd")
+        [[ -n "$pc" ]] && printf '%s\n' "$pc"
+    done
+}
+
+detect_orphan_cmds() {
+    local ledger_file="$1"
+    local tasks_dir="$2"
+    local all_ashigaru_idle="${3:-false}"
+
+    [[ -f "$ledger_file" ]] || return 0
+
+    local assigned_cmds
+    assigned_cmds=$(_lmd_assigned_parent_cmds "$tasks_dir")
+
+    local cmd_id status
+    while IFS='|' read -r cmd_id status; do
+        [[ -z "$cmd_id" ]] && continue
+        [[ "$status" == "pending" || "$status" == "in_progress" ]] || continue
+
+        if printf '%s\n' "$assigned_cmds" | grep -qxF "$cmd_id"; then
+            # 割当あり → 全員idleの時のみ孤児扱い(実質誰も手を付けていない)
+            [[ "$all_ashigaru_idle" == "true" ]] || continue
+        fi
+
+        printf '%s|%s\n' "$cmd_id" "$status"
+    done < <(_lmd_all_ledger_cmd_statuses "$ledger_file")
+}
