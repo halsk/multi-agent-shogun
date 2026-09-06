@@ -24,6 +24,13 @@ source "$SCRIPT_DIR/lib/stall_detect.sh"
 # cmd_766 第一層: report done なのに台帳 cmd が pending/in_progress のまま
 # 残っている「done未遷移」を検知する(cmd_741 第二層watchdogへ相乗り・新機構は作らない)
 source "$SCRIPT_DIR/lib/ledger_mismatch_detect.sh"
+# shellcheck source=../lib/heartbeat_detect.sh
+# cmd_767 第一層(心拍): 定期ジョブ(launchd等)がlast-run.jsonを書く共通規約
+# (lib/run_log.sh・halsk/automation scripts/lib/run-log.sh)に相乗りし、実行が
+# 止まっている/失敗しているジョブを検知する。meeting-link sweepが13日間全滅
+# していたのに誰も気づけなかった実例への対応(★単独の新規監視機構は作らず、
+# 既存の本watchdogへ相乗りする)。
+source "$SCRIPT_DIR/lib/heartbeat_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -57,6 +64,27 @@ LEDGER_MISMATCH_THRESHOLD=$((6 * 60 * 60))
 # cmd_771 fix_e: human attach中(E4)の抑止上限。これを超えたら
 # 「attachしたまま放置」とみなし通知する(gunshi設計目安=1時間)
 E4_SUPPRESS_LIMIT=$((60 * 60))
+
+# cmd_767 第一層(心拍): 監視対象の定期ジョブレジストリ。
+# 各行 "job_name|last_run_json_path|max_interval_sec"。
+# max_interval_secはジョブの実行周期に十分な余裕(grace)を足した値
+# (例: 毎日09:00実行のジョブ=24h+6h猶予=30h)。
+#
+# ★対象外(follow-up・本ラウンドでは未実装。理由はreport参照):
+#   - n8n prod WF (n8n.hub.geolonia.com): このMac機体からAPI/DB直接アクセス
+#     不可(Cloudflare Access配下・APIキーはGitHub Actions secret限定)
+#   - n8n staging WF: 現在いずれもactive=false(定期実行なし・監視不要)
+#   - n8n-inbox-relay (scripts/n8n_inbox_relay.sh): .gitignoreでuntracked
+#     (`*`パターンでリポジトリ管理外)。last-run.json計装コードをcommit経路に
+#     乗せられないため本ラウンドは見送り(follow-upはreport参照)
+HEARTBEAT_REGISTRY="meeting-link-sweep|/Users/hal/workspace/automation/logs/meeting-link-sweep-last-run.json|108000
+console-stall-watchdog|$SCRIPT_DIR/logs/console-stall-watchdog-last-run.json|5400"
+
+# cmd_767 ⑥: 殿へのntfy pushは閾値・抑制を必須とする(「1回こけた程度で
+# 殿を起こすな」)。dashboard🚨(karo/gunshi向け)は検知immediate、ntfy
+# (殿の端末へ届く)はこの遅延を超えて同一問題が解消しない場合のみ発火する
+# (cmd_771 fix_eのE4_SUPPRESS_LIMITと同じ「first_seen+上限+1回だけ通知」作法)。
+HEARTBEAT_NTFY_DELAY=$((20 * 60))
 
 mkdir -p "$STATE_DIR" logs
 
@@ -541,6 +569,105 @@ check_orphan_cmds() {
     done < <(detect_orphan_cmds "$ledger_file" "$tasks_dir" "$idle_flag")
 }
 
+# ── cmd_767 第一層(心拍): 定期ジョブが黙って死んでいないかの検知 ────────────
+
+notify_dashboard_heartbeat() {
+    local job_name="$1"
+    local hb_status="$2"
+    local detail="$3"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [heartbeat] ${job_name}: ${hb_status} — ${detail} @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        sed -i '' "/🚨要対応/a\\
+$entry
+" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_heartbeat() {
+    local job_name="$1"
+    local hb_status="$2"
+    local detail="$3"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "heartbeat: ${job_name} が${hb_status}(${detail})。確認せよ。"
+}
+
+# job毎の検知状態を state ファイルへ記録し、ntfy(殿の端末へ届く)は
+# HEARTBEAT_NTFY_DELAY を超えて同一問題が解消しない場合のみ1回だけ発火する。
+# dashboard(karo/gunshi向け)は検知の都度、状態が変わった時のみ追記する
+# (同一状態の連続再送は抑止・cmd_766系の notified_status dedup と同方針)。
+check_heartbeats() {
+    local now
+    now=$(now_epoch)
+
+    local job_name hb_status detail
+    while IFS='|' read -r job_name hb_status detail; do
+        [[ -z "$job_name" ]] && continue
+
+        local state_key="heartbeat__${job_name}"
+        local problem_id="${hb_status}"
+
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" != "$problem_id" ]]; then
+            log "[HEARTBEAT] $job_name: $hb_status — $detail"
+            if ! $DRY_RUN; then
+                notify_dashboard_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would notify dashboard for $job_name ($hb_status)"
+            fi
+            state_set "$state_key" "notified_status" "$problem_id"
+            state_set "$state_key" "first_bad_at" "$(now_iso)"
+            state_set "$state_key" "ntfy_sent" "false"
+        fi
+
+        local first_bad_at first_bad_epoch elapsed
+        first_bad_at=$(state_get "$state_key" "first_bad_at" "")
+        first_bad_epoch=$(iso_to_epoch "$first_bad_at")
+        elapsed=$(( now - first_bad_epoch ))
+
+        local ntfy_sent
+        ntfy_sent=$(state_get "$state_key" "ntfy_sent" "false")
+        if [[ "$ntfy_sent" != "true" && "$elapsed" -ge "$HEARTBEAT_NTFY_DELAY" ]]; then
+            log "[HEARTBEAT-NTFY] $job_name: ${elapsed}s持続(閾値${HEARTBEAT_NTFY_DELAY}s超) → 殿へ通知"
+            if ! $DRY_RUN; then
+                send_ntfy_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would send ntfy for $job_name ($hb_status)"
+            fi
+            state_set "$state_key" "ntfy_sent" "true"
+        fi
+    done < <(detect_stale_heartbeats "$HEARTBEAT_REGISTRY" "$now")
+
+    reset_recovered_heartbeats "$now"
+}
+
+# 回復したジョブ(ok に戻った)の通知state をリセットする。
+# check_heartbeats とは別関数に分離し、レジストリの max_interval を正しく使う。
+reset_recovered_heartbeats() {
+    local now="$1"
+    local job_name json_path max_interval hb_line hb_status
+    while IFS='|' read -r job_name json_path max_interval; do
+        [[ -z "$job_name" ]] && continue
+        hb_line=$(heartbeat_check_one "$json_path" "$max_interval" "$now")
+        hb_status="${hb_line%%|*}"
+        if [[ "$hb_status" == "ok" ]]; then
+            local state_key="heartbeat__${job_name}"
+            local was_notified
+            was_notified=$(state_get "$state_key" "notified_status" "")
+            if [[ -n "$was_notified" ]]; then
+                log "[HEARTBEAT-RECOVERED] $job_name: 復旧 → state リセット"
+                state_set "$state_key" "notified_status" ""
+                state_set "$state_key" "first_bad_at" ""
+                state_set "$state_key" "ntfy_sent" "false"
+            fi
+        fi
+    done <<< "$HEARTBEAT_REGISTRY"
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -668,6 +795,9 @@ check_blocked_reason_gaps
 
 # cmd_771 fix_c 相乗り: 孤児cmd(誰にも割り当てられていない未完了cmd)の検知
 check_orphan_cmds
+
+# cmd_767 第一層(心拍) 相乗り: 定期ジョブが黙って死んでいないかの検知
+check_heartbeats
 
 log "[DONE] stall_watchdog scan complete"
 

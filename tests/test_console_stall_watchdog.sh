@@ -157,14 +157,22 @@ assert_eq "7c: night_end_hourが設定から読める" "8" "$night_end"
 throttle=$(load_console_setting "throttle_hours" "999")
 assert_eq "7d: throttle_hoursが設定から読める" "6" "$throttle"
 
-# ── Section 8: 既存 stall_watchdog.sh 非干渉確認 ─────────────────────────────
+# ── Section 8: 既存 stall_watchdog.sh 非破壊確認 ─────────────────────────────
+# ★cmd_725当初は console_stall_watchdog.sh を stall_watchdog.sh と完全独立に
+# 保つ方針だったため「差分ゼロ」を assert していた。cmd_767(静かな失敗の検知)
+# はこの方針を上書きし、★★★単独の新規監視機構を作らず既存stall_watchdog.sh
+# へ相乗りすることを明示的に要求する(lib/heartbeat_detect.sh経由)。
+# よって本セクションは「差分ゼロ」ではなく「既存ロジックの削除・書き換えを
+# 伴わない(純追加のみ)」へ弱める——cmd_766/771の相乗りでも同じ形の追加が
+# 既に前例としてある。
 echo ""
-echo "=== Section 8: 既存 stall_watchdog.sh / plist / launcher が変更されていないこと ==="
+echo "=== Section 8: 既存 stall_watchdog.sh のエスカレーションロジックが破壊されていないこと(cmd_767以降は純追加の相乗りを許可) ==="
 
-if git -C "$SCRIPT_DIR" diff --quiet -- scripts/stall_watchdog.sh scripts/com.swarm.stall-watchdog.plist scripts/stall-watchdog-launcher.sh 2>/dev/null; then
-    assert_eq "8a: 既存stall-watchdog関連ファイルに差分なし" "clean" "clean"
+removed_lines=$(git -C "$SCRIPT_DIR" diff -- scripts/stall_watchdog.sh scripts/com.swarm.stall-watchdog.plist scripts/stall-watchdog-launcher.sh 2>/dev/null | grep -E '^-' | grep -vc '^--- ' || true)
+if [[ "$removed_lines" -eq 0 ]]; then
+    assert_eq "8a: 既存stall-watchdog関連ファイルは純追加のみ(既存行の削除・書き換えなし)" "0" "0"
 else
-    assert_eq "8a: 既存stall-watchdog関連ファイルに差分なし" "clean" "DIRTY: $(git -C "$SCRIPT_DIR" diff --stat -- scripts/stall_watchdog.sh scripts/com.swarm.stall-watchdog.plist scripts/stall-watchdog-launcher.sh)"
+    assert_eq "8a: 既存stall-watchdog関連ファイルは純追加のみ(既存行の削除・書き換えなし)" "0" "$removed_lines"
 fi
 
 # 新規ジョブ名が既存と異なること (Label衝突防止)
