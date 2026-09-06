@@ -338,6 +338,57 @@ check_ledger_mismatches() {
     done < <(detect_ledger_mismatches "$reports_dir" "$ledger_file" "$LEDGER_MISMATCH_THRESHOLD")
 }
 
+# ── cmd_766 第一層 相乗り: blocked/blocked_needs_decisionでblocked_on/
+# blocked_reason空の検知(2026-09-06 ashigaru4→ashigaru5で2度実測された欠陥) ──
+
+notify_dashboard_blocked_reason_gap() {
+    local file_name="$1"
+    local status="$2"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [blocked_reason_gap] ${file_name}: status=${status}なのにblocked_on/blocked_reasonが空 @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        sed -i '' "/🚨要対応/a\\
+$entry
+" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_blocked_reason_gap() {
+    local file_name="$1"
+    local status="$2"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "blocked_reason_gap: ${file_name} がstatus=${status}なのにblocked_on/blocked_reasonが空。実態を書け。"
+}
+
+check_blocked_reason_gaps() {
+    local tasks_dir="$SCRIPT_DIR/queue/tasks"
+
+    local file_name status
+    while IFS='|' read -r file_name status; do
+        [[ -z "$file_name" ]] && continue
+
+        local state_key="blocked_reason_gap__${file_name}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$status" ]]; then
+            # 同一状態を既に通知済み → 再送しない(スパム防止)
+            continue
+        fi
+
+        log "[BLOCKED-REASON-GAP] $file_name: status=$status blocked_on/blocked_reason空"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard+ntfy for $file_name"
+            continue
+        fi
+        notify_dashboard_blocked_reason_gap "$file_name" "$status"
+        send_ntfy_blocked_reason_gap "$file_name" "$status"
+        state_set "$state_key" "notified_status" "$status"
+    done < <(detect_blocked_reason_gaps "$tasks_dir")
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -435,6 +486,9 @@ done
 
 # cmd_766 第一層: report done vs 台帳 pending/in_progress の突き合わせ(全agent scan後・1回のみ)
 check_ledger_mismatches
+
+# cmd_766 第一層 相乗り: blocked/blocked_needs_decisionでblocked_on/blocked_reason空の検知
+check_blocked_reason_gaps
 
 log "[DONE] stall_watchdog scan complete"
 

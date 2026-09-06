@@ -78,3 +78,47 @@ detect_ledger_mismatches() {
         printf '%s|%s|%s|%s\n' "$parent_cmd" "$f" "$ledger_status" "$age"
     done
 }
+
+# ── cmd_766 第一層 相乗り: blocked/blocked_needs_decision なのに blocked_on/
+# blocked_reason が空の「status が実態を語っていない」ケースを検知する
+# (2026-09-06 同日中に ashigaru4→ashigaru5 で2度実測された欠陥への対応)
+#
+# 通常の依存待ち(blocked_by あり)は対象外——それは「実態不明」ではなく
+# 正常な依存待ちのため誤検知としない。
+#
+# 提供関数:
+#   detect_blocked_reason_gaps <tasks_dir>
+#     → queue/tasks/ashigaru*.yaml, gunshi*.yaml を走査し、各行
+#       "file_name|status" で gap を列挙
+
+# task: 直下(2スペースインデント)のフィールドを1行抽出する
+_lmd_task_field() {
+    local file="$1" field="$2"
+    grep -E "^  ${field}:" "$file" 2>/dev/null | head -1 \
+        | sed -E "s/^  ${field}:[[:space:]]*//" \
+        | tr -d '"' | tr -d "'" \
+        | sed -E 's/[[:space:]]+$//'
+}
+
+detect_blocked_reason_gaps() {
+    local tasks_dir="$1"
+    [[ -d "$tasks_dir" ]] || return 0
+
+    local f status blocked_by blocked_on blocked_reason
+    for f in "$tasks_dir"/ashigaru*.yaml "$tasks_dir"/gunshi*.yaml; do
+        [[ -f "$f" ]] || continue
+
+        status=$(_lmd_task_field "$f" "status")
+        [[ "$status" == "blocked" || "$status" == "blocked_needs_decision" ]] || continue
+
+        blocked_by=$(_lmd_task_field "$f" "blocked_by")
+        [[ -n "$blocked_by" ]] && continue
+
+        blocked_on=$(_lmd_task_field "$f" "blocked_on")
+        blocked_reason=$(_lmd_task_field "$f" "blocked_reason")
+
+        if [[ -z "$blocked_on" || -z "$blocked_reason" ]]; then
+            printf '%s|%s\n' "${f##*/}" "$status"
+        fi
+    done
+}

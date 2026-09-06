@@ -113,3 +113,70 @@ seed_report() {
   grep -q "ledger_mismatch_detect.sh" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
   grep -qE "check_ledger_mismatches|detect_ledger_mismatches" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_766 第一層 相乗り(subtask_766_layer1_blocked_reason_check):
+# status: blocked/blocked_needs_decision なのに blocked_on/blocked_reason が
+# 空の「statusが実態を語っていない」ケースの検知。2026-09-06に同日中
+# ashigaru4→ashigaru5で2度実測された欠陥の再発防止。
+
+seed_task() {
+  local dir="$1" name="$2" content="$3"
+  mkdir -p "$dir"
+  printf '%s\n' "$content" > "$dir/$name"
+}
+
+# ── T-BRG-001: blocked_on/blocked_reason 両方ありは検知されない ──
+
+@test "T-BRG-001: does not flag when both blocked_on and blocked_reason are present" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru4.yaml" $'task:\n  status: blocked\n  blocked_on: "殿の手番待ち"\n  blocked_reason: "swarmが勝手に書き換え禁止のため"\n'
+
+  run detect_blocked_reason_gaps "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru4.yaml"* ]]
+}
+
+# ── T-BRG-002: blocked_needs_decisionでblocked_on空 = 検知される ──
+
+@test "T-BRG-002: flags blocked_needs_decision with empty blocked_on" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru5.yaml" $'task:\n  status: blocked_needs_decision\n  blocked_on: ""\n  blocked_reason: "将軍裁可待ち"\n'
+
+  run detect_blocked_reason_gaps "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru5.yaml|blocked_needs_decision"* ]]
+}
+
+# ── T-BRG-003: blocked_byありの通常blockedは対象外(依存待ちは正常系) ──
+
+@test "T-BRG-003: does not flag normal blocked_by dependency wait even without blocked_on/reason" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru6.yaml" $'task:\n  status: blocked\n  blocked_by: "subtask_760_prereq"\n'
+
+  run detect_blocked_reason_gaps "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru6.yaml"* ]]
+}
+
+# ── T-BRG-004: status: assigned/done等は対象外 ──
+
+@test "T-BRG-004: does not flag status assigned or done" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: assigned\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: done\n'
+
+  run detect_blocked_reason_gaps "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru1.yaml"* ]]
+  [[ "$output" != *"ashigaru2.yaml"* ]]
+}
+
+# ── T-BRG-005: stall_watchdog.sh がこの check を実際に呼び出している(相乗り確認) ──
+
+@test "T-BRG-005: stall_watchdog.sh invokes detect_blocked_reason_gaps via check_blocked_reason_gaps" {
+  grep -qE "check_blocked_reason_gaps|detect_blocked_reason_gaps" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}
