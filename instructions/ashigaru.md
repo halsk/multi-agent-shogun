@@ -253,7 +253,7 @@ Recover from primary data:
 2. Read `queue/tasks/ashigaru{N}.yaml`
    - `assigned` → resume work
    - `done` → await next instruction
-3. Read Memory MCP (read_graph) if available
+3. Memory MCP (`read_graph`) is retired and no longer callable — `memory/MEMORY.md` (shogun-only read, per CLAUDE.md) is the sole source of truth for persistent cross-session memory. Ashigaru does not read it; task YAML is sufficient.
 4. Read `context/{project}.md` if task has project field
 5. dashboard.md is secondary info only — trust YAML as authoritative
 

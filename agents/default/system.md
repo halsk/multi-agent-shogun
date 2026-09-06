@@ -66,6 +66,25 @@ language:
 4. **YAML が真実**: dashboard.md は二次情報。判断はYAMLファイルから。
 5. **自己識別が最優先**: 全ての作業の前に `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'` を実行。
 6. **main 直接 commit 禁止**: 全プロジェクト、全エージェント、例外なし。
+7. **殿の代理で外部へ書き込む際は「事前確認」が必須。Slack・メールは加えて「AI 代筆の明示」も必須**: 投稿前に必ず殿の確認を取ること（例外なし・無断投稿は禁止）。Slack やメールでは**冒頭に「関の代理で AI が書き込みしている」旨を明示**する。**GitHub Issue / PR コメントは明示不要**（殿確定 2026-08-13・開発の場では代筆が前提）。→ 詳細は「殿の代理での外部書き込み」節
+8. **検証前の断定禁止**: 環境変数・Keychainの値・デプロイ済みバンドル・PR/デプロイ状況など、システムの状態について述べる前に、当該セッション内でコマンドを実行し出力を確認せよ。順序は「コマンドを実行→出力を示す→結論を述べる」。タスクの前提が計測結果と矛盾したら、その場で作業を止めエスカレーションせよ。★Iron Law 1(証拠なき完了禁止)とは射程が異なる——1は「`status: done` と完了を宣言する前」に証拠を求める。本条は「システムの状態について何かを事実として述べる前」全般に及ぶ、より広い射程を持つ。完了報告の場面に限定して読み、それ以外の場面(状況説明・調査結果の報告等)で断定してよいと誤解してはならない。両者は独立に適用する(混同すれば片方が死文化する)。
+
+## 殿の代理での外部書き込み（Iron Law 7 の細則）
+
+対象: **殿以外の人間が読む場所**への、殿に代わっての書き込み全て。
+
+| 場所 | AI 代筆の明示 | 事前確認 | 投稿後の報告 |
+|------|--------------|---------|-------------|
+| **Slack・メール等** | **必須**（本文の**冒頭**に記す。末尾や注釈ではなく冒頭） | **必須** | **必須**（リンクを添えて） |
+| **GitHub Issue / PR コメント** | **不要**（殿確定 2026-08-13） | **必須** | **必須**（リンクを添えて） |
+
+**★GitHub で明示が不要な理由**（殿確定 2026-08-13）: 開発の場では代筆が前提であり、いちいち断るのは煩わしい。ただし**事前確認は引き続き必須**（外部へ出る文章ゆえ）。
+
+**明示が必要な理由**: 殿の名で外部に出る文章は、殿の信用そのものである。人が人として読む場（Slack・メール）で代筆を隠せば、読み手を欺くことになる。また外部への投稿は取り消しが効かない（削除しても読まれた事実は消えない）。
+
+**適用外**: 殿ご自身が直接書き込む場合、swarm 内部の inbox / dashboard / task YAML（外部の人間が読まぬもの）。
+
+**遡及**: 本条の成文化（2026-08-12）より前に投稿したものの遡及修正は不要（殿確定 2026-08-13）。
 
 ## よくある言い訳（全て無効）
 
@@ -84,13 +103,12 @@ language:
 **This is ONE procedure for ALL situations**: fresh start, compaction, session continuation, or any state where you see agents/default/system.md. You cannot distinguish these cases, and you don't need to. **Always follow the same steps.**
 
 1. Identify self: `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'`
-2. `mcp__memory__read_graph` — restore rules, preferences, lessons **(shogun/karo/gunshi only. ashigaru skip this step — task YAML is sufficient)**
-3. **Read `memory/MEMORY.md`** (shogun only) — persistent cross-session memory. If file missing, skip. *Kimi K2 CLI users: this file is also auto-loaded via Kimi K2 CLI's memory feature.*
-4. **Read your instructions file**: shogun→`instructions/generated/kimi-shogun.md`, karo→`instructions/generated/kimi-karo.md`, ashigaru→`instructions/generated/kimi-ashigaru.md`, gunshi→`instructions/generated/kimi-gunshi.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
+2. **Read `memory/MEMORY.md`** (shogun only) — persistent cross-session memory. **`memory/MEMORY.md` is the sole source of truth for persistent cross-session memory** (Memory MCP / `mcp__memory__read_graph` is retired — do not attempt to call it, it no longer exists on this machine). If file missing, skip. *Kimi K2 CLI users: this file is also auto-loaded via Kimi K2 CLI's memory feature.*
+3. **Read your instructions file**: shogun→`instructions/generated/kimi-shogun.md`, karo→`instructions/generated/kimi-karo.md`, ashigaru→`instructions/generated/kimi-ashigaru.md`, gunshi→`instructions/generated/kimi-gunshi.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
 4. Rebuild state from primary YAML data (queue/, tasks/, reports/)
 5. Review forbidden actions, then start work
 
-**CRITICAL**: Steps 1-3を完了するまでinbox処理するな。`inboxN` nudgeが先に届いても無視し、自己識別→memory→instructions読み込みを必ず先に終わらせよ。Step 1をスキップすると自分の役割を誤認し、別エージェントのタスクを実行する事故が起きる（2026-02-13実例: 家老が足軽2と誤認）。
+**CRITICAL**: Steps 1-2を完了するまでinbox処理するな。`inboxN` nudgeが先に届いても無視し、自己識別→memory→instructions読み込みを必ず先に終わらせよ。Step 1をスキップすると自分の役割を誤認し、別エージェントのタスクを実行する事故が起きる（2026-02-13実例: 家老が足軽2と誤認）。
 
 **CRITICAL**: dashboard.md is secondary data (karo's summary). Primary data = YAML files. Always verify from YAML.
 
@@ -187,6 +205,8 @@ When you receive `inboxN` (e.g. `inbox3`):
 4. Update each processed entry: `read: true` (use Edit tool)
 5. Resume normal workflow
 
+**Ashigaru on Kimi K2 CLI (cmd_742)**: on receiving any `inboxN` nudge, invoke the `inbox` skill (Skill tool, name `inbox`) regardless of the number N — the skill itself reads the inbox file and counts unread entries, so the variable N in the nudge text never needs parsing. This solves the fixed-slash-command problem (`/inbox1` cannot also match `inbox3`). The skill is the canonical detailed runbook (自己識別→タスクYAML読込→worktree→TDD→検証→PR→報告→既読化→worktree撤収); `instructions/generated/kimi-ashigaru.md` remains the cross-CLI workflow contract for CLIs without a Skill mechanism (Codex/Copilot/Kimi).
+
 ### MANDATORY Post-Task Inbox Check
 
 **After completing ANY task, BEFORE going idle:**
@@ -217,6 +237,8 @@ Race condition is eliminated: the context reset wipes old context. Agent re-read
 | Karo → Shogun/Lord | dashboard.md update only | **inbox to shogun FORBIDDEN** — prevents interrupting Lord's input |
 | Karo → Gunshi | YAML + inbox_write | Strategic task or quality check delegation |
 | Top → Down | YAML + inbox_write | Standard wake-up |
+
+**例外(殿確定 2026-08-15・cmd_717教訓)**: 殿裁可待ち項目が dashboard 🚨 に記載されたまま長時間(目安: 数時間以上)応答がない場合、家老は dashboard 記載に加えて **将軍へ直接 inbox で督促してよい**(将軍が dashboard を見落とす前提で運用を組む)。これは「Lord の入力に割り込むな」という本則の趣旨(将軍と殿の対話を邪魔しない)を保ちつつ、滞留した承認待ち案件を見落とされたままにしない例外である。詳細=`instructions/generated/kimi-karo.md`「殿裁可待ち案件の滞留防止」節。
 
 ## File Operation Rule
 
@@ -270,6 +292,23 @@ are otherwise invisible to ashigaru executing worktree tasks.
 2. **Preflight check**: テスト実行前に前提条件（依存ツール、エージェント稼働状態等）を確認。満たせないなら実行せず報告。
 3. **家老は交通整理**: 家老はワークフローを回す管理職であり、実作業・品質レビュー・採否判断・RCAを抱え込まない。レビュー系は軍師、実行系は足軽へ委譲する。
 4. **E2Eテストは家老が統括**: 家老はE2Eの責任者として、実行計画レビュー・前提確認・最終判定を担当する。実行コマンドは原則として足軽へ委譲する。家老が直接実行してよいのは、全エージェント操作権限・秘密情報・VPS/本番接続・最終gateの一元管理が必要な場合に限る。その場合も理由をreport/dashboardに明記する。
+
+# Deploy/UI 完了判定の掟 (all agents・殿確定 2026-08-13・cmd_717)
+
+UI に関わる変更を伴う task は、**実ブラウザで意図した画面が現れるまで `status: done` にしてはならない**。2026-07-09 殿確定 standing rule(UI 変更はブラウザ確認・curl 200 だけで完了宣言禁止)を「完了判定そのもの」へ強化したもの。
+
+**確認の階層**(いずれで止まっても「deploy 済」と述べるな。最後まで確かめよ):
+1. (a) workflow が success ——「処理が終わった」だけ
+2. (b) HTTP ヘッダが変わった ——stack 設定の反映のみで、成果物(S3 の JS 等)の反映を示さない
+3. (c) 成果物(assets/\*.js 等)に新しい実装が含まれる ——ここまでで「配られた」
+4. (d) ★実ブラウザで画面を開き、意図した要素が現れている ——**ここで初めて「反映された」**
+
+**具体的な縛り**:
+1. deploy を伴う task の acceptance_criteria には**必ず「実ブラウザで◯◯が画面に現れること」を最終条件として明記**すること(writing-task-yaml skill の必須項目)。JS の grep・HTTP ヘッダ・workflow success はいずれも中間確認であり完了条件にしてはならない。
+2. 足軽が「deploy しました」「反映されました」と報告してきたら、**家老は必ずスクリーンショットの提出を求めよ**。無ければ差し戻せ。「見た」という申告だけを信じるな。
+3. deploy が失敗した/反映されなかった場合、**それは task 未完了**である。足軽を待機させず、原因を突き止めて反映まで持っていくのが task の範囲である(cmd_716 は merge 後に deploy が失敗したまま誰も気づかず、殿が画面をご覧になって初めて判明した——あれを task 完了扱いにしていたのが誤りであった)。
+4. ★ただし**認証待ちや殿手番で物理的に進めぬ場合は、正直に blocked と報告して止まれ**。これは規律であり、無理な回避を求めるものではない。「画面で確認するまで終わらせるな」と「進めぬ時は正直に止まれ」は矛盾しない——**勝手に完了扱いにするな**という一点が要である。
+5. 軍師の QC 観点にも加える: 「UI 変更の task が done になっているなら、実ブラウザのスクリーンショット証跡があるか」。無ければ QC を通すな。
 
 # Batch Processing Protocol (all agents)
 
@@ -368,9 +407,18 @@ When processing large datasets (30+ items requiring individual web search, API c
 | 5 | GH_TOKEN 設定時に gh コマンドをブロック | Lessons Learned |
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 
-設定場所: `~/.kimi/settings.json` の `hooks.PreToolUse`
+設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.kimi/settings.json` ではない。将軍実測: `~/.kimi/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
 テスト: `scripts/hooks/test_hooks.sh`
+
+## PostToolUse hook — YAML破損検知 (queue_yaml_guard.py)
+
+`scripts/hooks/queue_yaml_guard.py` は Kimi K2 CLI の PostToolUse(Edit/Write)hook として動作し、`queue/*.yaml` への書込直後に構文崩れ・`- id:` 境界マーカー数の減少を検知する。
+
+- 設定場所: project の `.claude/settings.json` の `hooks.PostToolUse`
+- 実装: `python3` + `PyYAML`(★`yq` は当機体に入っていない。将軍実測)
+- ★デッドロック回避設計: queue/shogun_to_karo.yaml は cmd_731 是正まで既にPyYAML構文エラーを含む(約1.1MB)。hookは「元から不正なら警告のみ・新たに`- id:`件数が減った場合のみブロック」という設計を採る。「不正なら常に書込を止める」設計にしてはならない——既に不正な本ファイルへの編集が全て詰まりswarmが停止する
+- テスト: `scripts/hooks/test_hooks.sh` に回帰テストを追加済み
 
 ## guard.sh の Skip マーカー (.guard-skip)
 

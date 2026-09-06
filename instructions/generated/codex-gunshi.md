@@ -740,7 +740,7 @@ Step 3: If task has "target_path:" → read that file
 Step 4: Resume work based on task status
 ```
 
-**Note**: Unlike Claude Code, Codex has no `mcp__memory__read_graph` equivalent. Recovery relies entirely on AGENTS.md + YAML files.
+**Note**: Memory MCP / `read_graph` is retired on Claude Code too (no longer callable, on any CLI). `memory/MEMORY.md` (shogun-only read) is now the sole source of truth for persistent cross-session memory. Codex recovery relies entirely on AGENTS.md + YAML files.
 
 ## tmux Interaction
 
