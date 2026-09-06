@@ -291,7 +291,20 @@ YAML
         LAST_CLEAR_TS=0
         ASW_DISABLE_ESCALATION=0
         process_unread event
+        echo \"__DEBUG_UNAME=\$(uname -a)\"
+        echo \"__DEBUG_BASH_VERSION=\$BASH_VERSION\"
+        echo \"__DEBUG_agent_is_busy_check_rc=\$(agent_is_busy_check \\\"\$PANE_TARGET\\\"; echo \$?)\"
+        echo \"__DEBUG_get_effective_cli_type=\$(get_effective_cli_type)\"
+        echo \"__DEBUG_python3_which=\$(command -v python3)\"
+        echo \"__DEBUG_venv_python=\$SCRIPT_DIR/.venv/bin/python3\"
+        echo \"__DEBUG_venv_python_yaml=\$(\"\$SCRIPT_DIR/.venv/bin/python3\" -c 'import yaml; print(yaml.__version__)' 2>&1)\"
+        echo \"__DEBUG_FIRST_UNREAD_SEEN=\$FIRST_UNREAD_SEEN\"
     "
+    echo "# --- T-C9 debug output ---" >&3
+    while IFS= read -r __dbg_line; do
+        echo "# $__dbg_line" >&3
+    done <<< "$output"
+    echo "# idle_flag_exists=$( [ -f "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent" ] && echo yes || echo no )" >&3
     [ "$status" -eq 0 ]
     [ ! -f "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent" ]
 }
