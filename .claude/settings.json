@@ -45,7 +45,7 @@
           {
             "type": "command",
             "command": "python3 /Users/hal/tools/multi-agent-shogun/scripts/hooks/report_auto_notify.py",
-            "timeout": 15
+            "timeout": 25
           }
         ]
       }

@@ -253,11 +253,15 @@ def main():
     content = _compose_content(agent, data)
     inbox_write = os.path.join(project_root, "scripts", "inbox_write.sh")
     try:
+        # inbox_write.sh の最悪ケース(flock -w 5 × 3回 + リトライ間sleep 1s×2)は
+        # 約17秒に達しうる(実測ではなく同スクリプトのソース読解による見積り)。
+        # settings.json側のhook timeoutも合わせて25秒へ引き上げてあるので、
+        # ここは20秒(既定でsettings.json側より余裕を持たせる)とする。
         result = subprocess.run(
             ["bash", inbox_write, recipient, content, "report_received", agent],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=20,
         )
     except Exception as e:
         print(f"report_auto_notify: inbox_write.sh起動自体が失敗した: {e}", file=sys.stderr)
