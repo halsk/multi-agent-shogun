@@ -298,6 +298,23 @@ load_adapter_with() {
     [ "$result" = "copilot --yolo" ]
 }
 
+# cmd_777(上流D区分決着)実測確認で発見: モデル未指定のcopilotエージェント
+# は get_agent_model がClaude系デフォルト(sonnet/opus)にフォールバックし
+# ていた。build_cli_command 自体はcopilot分岐で--modelを付けないため
+# 実害はないが、get_model_display_name の表示名選択は model 文字列を
+# 先に見るため "Sonnet" 等の誤ったラベルになる(実際はCopilot稼働なのに)。
+@test "get_agent_model: モデル未指定のcopilotは空文字を返す(Claude系にフォールバックしない)" {
+    load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
+    result=$(get_agent_model "ashigaru7")
+    [ "$result" = "" ]
+}
+
+@test "get_model_display_name: モデル未指定のcopilotはSonnet等でなくCopilotと表示される" {
+    load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
+    result=$(get_model_display_name "ashigaru7")
+    [ "$result" = "Copilot" ]
+}
+
 @test "build_cli_command: kimi + model → kimi --yolo --model k2.5" {
     load_adapter_with "${TEST_TMP}/settings_kimi.yaml"
     result=$(build_cli_command "ashigaru3")
