@@ -71,7 +71,12 @@ state_set() {
     mkdir -p "$STATE_DIR"
     [ -f "$STATE_FILE" ] || : > "$STATE_FILE"
     if grep -qE "^${key}:" "$STATE_FILE" 2>/dev/null; then
-        sed -i '' "s|^${key}:.*|${key}: ${value}|" "$STATE_FILE"
+        # sed -i ''(BSD専用書式)はGNU sed(Linux)では空スクリプト+ファイル名誤認
+        # として壊れる(cmd_766教訓・ubuntu-latestで実際に踏んだ)。
+        # 一時ファイル経由のmvならBSD/GNU両対応で安全。
+        local _tmp
+        _tmp=$(mktemp)
+        sed "s|^${key}:.*|${key}: ${value}|" "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
     else
         printf '%s: %s\n' "$key" "$value" >> "$STATE_FILE"
     fi
@@ -106,7 +111,10 @@ notify_dashboard() {
             local tmpfile
             tmpfile=$(mktemp)
             printf '%s\n' "$entry" > "$tmpfile"
-            sed -i '' "${marker_line}r ${tmpfile}" "$DASHBOARD_FILE"
+            # sed -i ''(BSD専用書式)はGNU sedで壊れる。一時ファイル経由のmvへ。
+            local _out
+            _out=$(mktemp)
+            sed "${marker_line}r ${tmpfile}" "$DASHBOARD_FILE" > "$_out" && mv "$_out" "$DASHBOARD_FILE"
             rm -f "$tmpfile"
             return
         fi
@@ -258,10 +266,16 @@ check_layer3() {
 # ガードで別途守られている。
 mkdir -p "$STATE_DIR"
 LOCK_FILE="$STATE_DIR/.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "already running (lock held) — exiting"
-    exit 0
+if command -v flock &>/dev/null; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "already running (lock held) — exiting"
+        exit 0
+    fi
+else
+    _ld="${LOCK_FILE}.d"; _i=0
+    while ! mkdir "$_ld" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); [ $_i -ge 300 ] && { log "already running (lock held) — exiting"; exit 0; }; done
+    trap "rmdir '$_ld' 2>/dev/null" EXIT
 fi
 
 # ── メイン実行 ──────────────────────────────────────────────────────────────

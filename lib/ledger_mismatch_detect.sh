@@ -43,7 +43,13 @@ _lmd_report_field() {
 
 _lmd_file_mtime_epoch() {
     local file="$1"
-    stat -f '%m' "$file" 2>/dev/null || stat -c '%Y' "$file" 2>/dev/null
+    # GNU stat の -c を先に試す。逆順(-f を先)にすると、GNU stat上で
+    # -f は「フォーマット指定」ではなく「ファイルシステム情報表示」を
+    # 意味するため、失敗時にstderr抑制下でもstdoutへ無関係な情報が
+    # 漏れ、mtime変数が汚染されて算術式が壊れる(CI macOS実測・
+    # GNU coreutilsがPATH先頭に来る環境で顕在化)。BSD stat は -c 失敗時
+    # stdoutを一切汚さないため、-c→-fの順にすれば両対応で安全。
+    stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null
 }
 
 detect_ledger_mismatches() {

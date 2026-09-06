@@ -13,6 +13,11 @@ setup() {
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
     [ -f "$PROJECT_ROOT/scripts/slim_yaml.py" ] || skip "slim_yaml.py not found"
     command -v python3 &>/dev/null || skip "python3 not available"
+    # slim_yaml.pyはPyYAML必須。proj_copyには.venvが無いため素のpython3を
+    # 使うと(特にmacOS系のシステムpython3は)ModuleNotFoundErrorで落ちる。
+    # slim_yaml.sh自身と同じ作法(実PROJECT_ROOTの.venv優先)にする。
+    PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python3"
+    [ -x "$PYTHON_BIN" ] || PYTHON_BIN="python3"
 }
 
 build_tmp_project() {
@@ -24,11 +29,24 @@ build_tmp_project() {
 run_slim_yaml() {
     local root="$1"
     shift
-    python3 "$root/scripts/slim_yaml.py" "$@"
+    "$PYTHON_BIN" "$root/scripts/slim_yaml.py" "$@"
 }
 
 metrics_file() {
     echo "$1/queue/metrics/slim_yaml_last_run.json"
+}
+
+set_mtime_hours_ago() {
+    # touch -A はBSD/GNUで引数書式・対応可否が異なる(GNU touchには-A自体が
+    # 無い・CI macOSはGNU coreutilsをPATH先頭に置くため touch -A が丸ごと失敗する)。
+    # python3(本ファイルのsetup()で必須化済み)経由でmtimeを直接設定し、
+    # シェル非依存にする。
+    local file="$1" hours="$2"
+    python3 -c "
+import os, time
+t = time.time() - ${hours} * 3600
+os.utime('${file}', (t, t))
+"
 }
 
 json_get() {
@@ -71,7 +89,7 @@ YAML
 
     # reports: 非canonicalな古い report で parent_cmd が非活性(cmd_3以外) → archiveされる
     printf 'parent_cmd: cmd_done_elsewhere\nstatus: done\n' > "$root/queue/reports/subtask_x_report.yaml"
-    touch -A -480000 "$root/queue/reports/subtask_x_report.yaml"
+    set_mtime_hours_ago "$root/queue/reports/subtask_x_report.yaml" 48
 
     # inbox: read:true 1件 → archiveされる
     cat > "$root/queue/inbox/ashigaru9.yaml" <<'YAML'

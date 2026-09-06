@@ -267,16 +267,27 @@ JSON
 
     mkdir -p "$root/queue/mgmt_bloat_watchdog"
     # 先行プロセスが lock を保持しているのを模擬する(watchdog本体と同じ
-    # STATE_DIR/.lock を flock -w で掴んだまま長時間居座らせる)。
-    exec 8>"$root/queue/mgmt_bloat_watchdog/.lock"
-    flock -x 8
+    # STATE_DIR/.lock を掴んだまま長時間居座らせる)。本体は flock 不在環境
+    # では mkdir 方式にフォールバックするので、テスト側も同じ方式で模擬する。
+    local using_flock=false
+    if command -v flock &>/dev/null; then
+        using_flock=true
+        exec 8>"$root/queue/mgmt_bloat_watchdog/.lock"
+        flock -x 8
+    else
+        mkdir -p "$root/queue/mgmt_bloat_watchdog/.lock.d"
+    fi
 
     run run_watchdog "$root"
     [ "$status" -eq 0 ]
     [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "0" ]
     [ "$(ntfy_call_count "$root")" = "0" ]
 
-    flock -u 8
-    exec 8>&-
+    if $using_flock; then
+        flock -u 8
+        exec 8>&-
+    else
+        rmdir "$root/queue/mgmt_bloat_watchdog/.lock.d" 2>/dev/null || true
+    fi
     rm -rf "$root"
 }
