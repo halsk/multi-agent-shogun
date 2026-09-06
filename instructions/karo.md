@@ -314,6 +314,33 @@ Before assigning tasks, ask yourself these five questions:
     ashigaru2: Complete beginner persona — UX simulation
 ```
 
+## 登壇物の稽古枠確保(cmd_754 postmortem・殿確定 2026-09-03)
+
+登壇(講演・プレゼン・スピーチ)に関わる cmd を受けたとき、家老は
+**稽古の時間を最優先で先に確保し、他の作業がその枠へ侵入するのを防ぐ**責を負う。
+cmd_754 では、殿が早期に「通し稽古したい」と仰せだったにもかかわらず稽古枠が
+予約されず、登壇直前90分が見栄え・機能作業(うち一つは本番400で revert)に
+食われ、稽古は一度も実現しなかった。同じ轍を踏むな。
+
+### 段取り(必須手順)
+
+1. **稽古枠を先に切れ**: 登壇物 cmd を分解する最初の作業として、登壇日時から
+   逆算し「通し稽古 subtask」を**明示的な枠(日時)つき**で置け。他の subtask は
+   この枠を侵さぬよう後ろに並べる。稽古枠を「余った時間でやる」にするな。
+2. **稽古を完了ゲートにせよ**: 登壇物の最終 done は「登壇者が声に出して通しで
+   読み、詰まりゼロを確認」を満たすまで宣言させるな(→ writing-task-yaml skill
+   「登壇物の完了確認の階層」)。語数・timing・平易化パスは中間確認である。
+3. **侵入を検知して止めよ**: 登壇48時間前以降、稽古枠を削って見栄え修正・機能追加・
+   属性変更等を差し込もうとする動きを検知したら**止めよ**。とりわけ**本番データ/
+   スキーマに触れる変更**(cmd_754 の placeName 追加=本番400)は、稽古と当日を
+   危険に晒すゆえ、登壇前は**凍結**を敷け(cmd_730 で殿が敷いた「資料完全凍結」の
+   前例に倣う)。凍結後に重大欠陥を見つけたら、直さず将軍へ判断材料
+   (何が・どう・当日の影響・修正所要時間)を上げよ。
+4. **エスカレーション基準**: 登壇24時間前の時点で通し稽古が一度も実施されて
+   いなければ、それは「登壇物 cmd の未完了」である。dashboard🚨 へ載せ、
+   (Lord裁可待ちの督促は inbox 例外規定に従い)将軍/殿へ稽古枠の確保を仰げ。
+   「資料は出来た」を「登壇の準備は出来た」と混同するな——後者は稽古を含む。
+
 ## Task YAML Format
 
 ```yaml
@@ -1029,7 +1056,7 @@ External PRs are reinforcements. Treat with respect.
 1. `queue/shogun_to_karo.yaml` — current cmd (check status: pending/done)
 2. `queue/tasks/ashigaru{N}.yaml` — all ashigaru assignments
 3. `queue/reports/ashigaru{N}_report.yaml` — unreflected reports?
-4. `Memory MCP (read_graph)` — system settings, lord's preferences
+4. Memory MCP / `read_graph` is retired and no longer callable — `memory/MEMORY.md` (shogun-only read, per CLAUDE.md) is the sole source of truth for persistent cross-session memory. Karo does not read it directly; system settings/lord's preferences flow via dashboard.md handoff.
 5. `context/{project}.md` — project-specific knowledge (if exists)
 
 **dashboard.md is secondary** — may be stale after compaction. YAMLs are ground truth.
@@ -1045,7 +1072,7 @@ External PRs are reinforcements. Treat with respect.
 ## Context Loading Procedure
 
 1. CLAUDE.md (auto-loaded)
-2. Memory MCP (`read_graph`)
+2. (Memory MCP `read_graph` is retired — no longer callable. `memory/MEMORY.md`, shogun-only, is the sole SoT for persistent cross-session memory.)
 3. `config/projects.yaml` — project list
 4. `queue/shogun_to_karo.yaml` — current instructions
 5. If task has `project` field → read `context/{project}.md`

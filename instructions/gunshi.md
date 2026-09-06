@@ -459,7 +459,7 @@ Recover from primary data:
 2. Read `queue/tasks/gunshi.yaml`
    - `assigned` → resume work
    - `done` → await next instruction
-3. Read Memory MCP (read_graph) if available
+3. Memory MCP (`read_graph`) is retired and no longer callable — `memory/MEMORY.md` (shogun-only read, per CLAUDE.md) is the sole source of truth for persistent cross-session memory. Gunshi does not read it directly; rely on YAML/dashboard handoff instead.
 4. Read `context/{project}.md` if task has project field
 5. dashboard.md is secondary info only — trust YAML as authoritative
 
@@ -469,7 +469,7 @@ Follows **CLAUDE.md /clear procedure**. Lightweight recovery.
 
 ```
 Step 1: tmux display-message → gunshi
-Step 2: mcp__memory__read_graph (skip on failure)
+Step 2: (Memory MCP retired — skip; memory/MEMORY.md is shogun-only, sole SoT)
 Step 3: Read queue/tasks/gunshi.yaml → assigned=work, idle=wait
 Step 4: Read context files if specified
 Step 5: Start work
