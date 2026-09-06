@@ -444,6 +444,27 @@ for agent in "${ALL_AGENTS[@]}"; do
     pane_text=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -40)
     sig=$(classify_pane "$pane_text")
 
+    # permission_prompt シグネチャ → P1/P2 (nudge/clear) を経由させず、
+    # cmd_767 既存機構(dashboard🚨+ntfy)へ直接相乗りして通知のみ行う。
+    # ★★★理由: P1のnudgeもP2の/clearも tmux 経由でキー入力(Enter含む)を
+    # 送る。許可プロンプト表示中に Enter が届けば、カーソル選択中の項目
+    # (既定で先頭の "Yes")を誤って確定させ、自動応答(絶対禁止)と同じ
+    # 結果になる恐れがある。よって通常のエスカレーション段階を踏ませず、
+    # 検知したその場で通知のみ行い、以後は自動操作を一切行わない。
+    if [[ "$sig" == "permission_prompt" ]]; then
+        current_hash_pp=$(md5_short "$pane_text")
+        already_notified_pp=$(state_get "$agent" "permission_prompt_notified_hash" "")
+        if [[ "$already_notified_pp" != "$current_hash_pp" ]]; then
+            log "[PERMISSION-PROMPT] $agent: 許可プロンプト検知 → dashboard+ntfy通知のみ(自動応答なし)"
+            notify_dashboard "$agent" "permission_prompt"
+            send_ntfy "$agent" "permission_prompt"
+            state_set "$agent" "permission_prompt_notified_hash" "$current_hash_pp"
+        else
+            log "[PERMISSION-PROMPT] $agent: 同一状態を既に通知済み(再送抑止)"
+        fi
+        continue
+    fi
+
     # busy シグネチャ → リセット
     if [[ "$sig" == "busy" ]]; then
         reset_state "$agent"
