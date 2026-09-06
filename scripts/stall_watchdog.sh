@@ -31,6 +31,13 @@ source "$SCRIPT_DIR/lib/ledger_mismatch_detect.sh"
 # していたのに誰も気づけなかった実例への対応(★単独の新規監視機構は作らず、
 # 既存の本watchdogへ相乗りする)。
 source "$SCRIPT_DIR/lib/heartbeat_detect.sh"
+# shellcheck source=../lib/ci_heartbeat_detect.sh
+# subtask_767_771_self_ci_heartbeat: 自リポ(multi-agent-shogun)自身の
+# GitHub Actions CI(test.yml)が黙って死んでいないかの検知。殿がActions権限を
+# 許可(2026-09-06)するまでrunが一度も立っていなかった(total_count=0)件を
+# 受け、cmd_767の心拍検知と同じ考え方を適用する(★単独の新規監視機構は作らず
+# 本watchdogへ相乗り)。
+source "$SCRIPT_DIR/lib/ci_heartbeat_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -85,6 +92,16 @@ console-stall-watchdog|$SCRIPT_DIR/logs/console-stall-watchdog-last-run.json|540
 # (殿の端末へ届く)はこの遅延を超えて同一問題が解消しない場合のみ発火する
 # (cmd_771 fix_eのE4_SUPPRESS_LIMITと同じ「first_seen+上限+1回だけ通知」作法)。
 HEARTBEAT_NTFY_DELAY=$((20 * 60))
+
+# subtask_767_771_self_ci_heartbeat: 自リポCI心拍。last-run.jsonのような
+# 実行痕跡ファイルが無いため registry 行では表現できず、専用定数+専用関数
+# (check_ci_heartbeat)を1件だけ用いる。grace_secは「PRが作られてから
+# CI runが立つまでに許容する時間」(GitHub Actions側のjobキュー待ちを
+# 考慮し30分)。
+CI_HEARTBEAT_OWNER_REPO="halsk/multi-agent-shogun"
+CI_HEARTBEAT_WORKFLOW_FILE="test.yml"
+CI_HEARTBEAT_GRACE_SEC=$((30 * 60))
+CI_HEARTBEAT_NTFY_DELAY=$((30 * 60))
 
 mkdir -p "$STATE_DIR" logs
 
@@ -668,6 +685,66 @@ reset_recovered_heartbeats() {
     done <<< "$HEARTBEAT_REGISTRY"
 }
 
+# subtask_767_771_self_ci_heartbeat: 自リポ(multi-agent-shogun)のGitHub
+# Actions CI心拍検知。check_heartbeats/reset_recovered_heartbeatsと同じ
+# 相乗り作法(dashboard即時通知・ntfyは閾値超過後1回のみ)を、registry行では
+# 表現できない単一job(gh api依存)に対して適用する。
+check_ci_heartbeat() {
+    local now
+    now=$(now_epoch)
+
+    local result hb_status detail
+    result=$(ci_heartbeat_check "$CI_HEARTBEAT_OWNER_REPO" "$CI_HEARTBEAT_WORKFLOW_FILE" "$CI_HEARTBEAT_GRACE_SEC" "$now")
+    hb_status="${result%%|*}"
+    detail="${result#*|}"
+
+    local job_name="ci-self-repo"
+    local state_key="heartbeat__${job_name}"
+
+    if [[ "$hb_status" != "ok" ]]; then
+        local problem_id="$hb_status"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" != "$problem_id" ]]; then
+            log "[CI-HEARTBEAT] $job_name: $hb_status — $detail"
+            if ! $DRY_RUN; then
+                notify_dashboard_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would notify dashboard for $job_name ($hb_status)"
+            fi
+            state_set "$state_key" "notified_status" "$problem_id"
+            state_set "$state_key" "first_bad_at" "$(now_iso)"
+            state_set "$state_key" "ntfy_sent" "false"
+        fi
+
+        local first_bad_at first_bad_epoch elapsed
+        first_bad_at=$(state_get "$state_key" "first_bad_at" "")
+        first_bad_epoch=$(iso_to_epoch "$first_bad_at")
+        elapsed=$(( now - first_bad_epoch ))
+
+        local ntfy_sent
+        ntfy_sent=$(state_get "$state_key" "ntfy_sent" "false")
+        if [[ "$ntfy_sent" != "true" && "$elapsed" -ge "$CI_HEARTBEAT_NTFY_DELAY" ]]; then
+            log "[CI-HEARTBEAT-NTFY] $job_name: ${elapsed}s持続(閾値${CI_HEARTBEAT_NTFY_DELAY}s超) → 殿へ通知"
+            if ! $DRY_RUN; then
+                send_ntfy_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would send ntfy for $job_name ($hb_status)"
+            fi
+            state_set "$state_key" "ntfy_sent" "true"
+        fi
+    else
+        local was_notified
+        was_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ -n "$was_notified" ]]; then
+            log "[CI-HEARTBEAT-RECOVERED] $job_name: 復旧 → state リセット"
+            state_set "$state_key" "notified_status" ""
+            state_set "$state_key" "first_bad_at" ""
+            state_set "$state_key" "ntfy_sent" "false"
+        fi
+    fi
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -798,6 +875,10 @@ check_orphan_cmds
 
 # cmd_767 第一層(心拍) 相乗り: 定期ジョブが黙って死んでいないかの検知
 check_heartbeats
+
+# subtask_767_771_self_ci_heartbeat 相乗り: 自リポGitHub Actions CIが
+# 黙って死んでいないかの検知(PR作成後、猶予内にrunが立つか)
+check_ci_heartbeat
 
 log "[DONE] stall_watchdog scan complete"
 
