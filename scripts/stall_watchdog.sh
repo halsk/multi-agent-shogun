@@ -54,6 +54,10 @@ COOLDOWN_P23=$((15 * 60))
 # cmd_766 第一層: report done vs 台帳 pending/in_progress の許容経過時間(目安6h・gunshi設計)
 LEDGER_MISMATCH_THRESHOLD=$((6 * 60 * 60))
 
+# cmd_771 fix_e: human attach中(E4)の抑止上限。これを超えたら
+# 「attachしたまま放置」とみなし通知する(gunshi設計目安=1時間)
+E4_SUPPRESS_LIMIT=$((60 * 60))
+
 mkdir -p "$STATE_DIR" logs
 
 # ── ユーティリティ関数 ──────────────────────────────────────────────────────
@@ -161,6 +165,74 @@ pane_has_human_client() {
     local active
     active=$(tmux display-message -t "$pane" -p '#{pane_active}' 2>/dev/null || echo "0")
     [[ "$clients" -ge 1 && "$active" == "1" ]]
+}
+
+# ── cmd_771 fix_e: E4(human attach中)抑止に上限を設ける ─────────────────────
+# attachしたまま離席されると実stallが隠れる(実測1830件抑止)ため、抑止が
+# 連続 E4_SUPPRESS_LIMIT 秒を超えたら1回だけ通知する(以後は連続通知しない・
+# stateがresetされるまで再送しない)。
+
+notify_dashboard_e4_limit() {
+    local agent="$1"
+    local elapsed="$2"
+    local ts
+    ts=$(now_iso)
+    local minutes=$(( elapsed / 60 ))
+    local entry="- 🚨 [e4_suppress_limit] ${agent}: human attach抑止(E4)が約${minutes}分継続中。attachしたまま放置されていないか確認せよ @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        sed -i '' "/🚨要対応/a\\
+$entry
+" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_e4_limit() {
+    local agent="$1"
+    local elapsed="$2"
+    local minutes=$(( elapsed / 60 ))
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "e4_suppress_limit: ${agent} のhuman attach抑止が約${minutes}分継続中。attachしたまま放置されていないか確認せよ。"
+}
+
+# attach抑止が続いている間、経過時間を state に記録し上限超過時に1回通知する
+check_e4_suppress_limit() {
+    local agent="$1"
+
+    local since
+    since=$(state_get "$agent" "e4_skip_since" "")
+    if [[ -z "$since" ]]; then
+        state_set "$agent" "e4_skip_since" "$(now_iso)"
+        return
+    fi
+
+    local since_epoch elapsed now
+    since_epoch=$(iso_to_epoch "$since")
+    now=$(now_epoch)
+    elapsed=$(( now - since_epoch ))
+
+    if [[ "$elapsed" -ge "$E4_SUPPRESS_LIMIT" ]]; then
+        local already
+        already=$(state_get "$agent" "e4_limit_notified" "false")
+        if [[ "$already" != "true" ]]; then
+            log "[E4-LIMIT] $agent: human attach抑止が${elapsed}s(上限${E4_SUPPRESS_LIMIT}s)超過 → 通知"
+            if $DRY_RUN; then
+                log "[DRY-RUN] would notify E4 limit exceeded for $agent"
+            else
+                notify_dashboard_e4_limit "$agent" "$elapsed"
+                send_ntfy_e4_limit "$agent" "$elapsed"
+            fi
+            state_set "$agent" "e4_limit_notified" "true"
+        fi
+    fi
+}
+
+# attach が外れた/pane が非アクティブになった時に抑止 state をリセットする
+reset_e4_suppress_state() {
+    local agent="$1"
+    state_set "$agent" "e4_skip_since" ""
+    state_set "$agent" "e4_limit_notified" "false"
 }
 
 # ── エスカレーション ──────────────────────────────────────────────────────────
@@ -389,6 +461,86 @@ check_blocked_reason_gaps() {
     done < <(detect_blocked_reason_gaps "$tasks_dir")
 }
 
+# ── cmd_771 fix_c 相乗り: 孤児cmd(idle足軽+台帳の未完了cmdが誰にも
+# 割り当てられていない状態)の検知 ────────────────────────────────────────────
+
+# 全ashigaruのpaneが idle かどうかを判定する(孤児cmdの(b)条件用)。
+# pane不在(busy_rc=2)は個別には判定対象外とし誤検知を避けるが、
+# ★1体も観測できなかった場合(tmux/セッション全断等)は「全員idle」と
+# 断定せずfalseを返す——さもないとinfra障害を「全員idleだから孤児」と
+# 誤認し、割当ありcmdまで誤って孤児扱いしてしまう(fail-safe側に倒す)。
+all_ashigaru_idle() {
+    local agent pane busy_rc observed=0
+    for agent in ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7; do
+        pane=$(resolve_pane_by_agent_id "$agent")
+        [[ -z "$pane" ]] && continue
+        observed=1
+        busy_rc=0
+        agent_is_busy_check "$pane" || busy_rc=$?
+        if [[ "$busy_rc" -eq 0 ]]; then
+            echo "false"
+            return
+        fi
+    done
+    if [[ "$observed" -eq 0 ]]; then
+        echo "false"
+        return
+    fi
+    echo "true"
+}
+
+notify_dashboard_orphan_cmd() {
+    local cmd_id="$1"
+    local status="$2"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [orphan_cmd] ${cmd_id}: 台帳status=${status}だが誰にも割り当てられていない(孤児cmd) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        sed -i '' "/🚨要対応/a\\
+$entry
+" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_orphan_cmd() {
+    local cmd_id="$1"
+    local status="$2"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "orphan_cmd: ${cmd_id}(台帳status=${status})が誰にも割り当てられていない。task起票せよ。"
+}
+
+check_orphan_cmds() {
+    local ledger_file="$SCRIPT_DIR/queue/shogun_to_karo.yaml"
+    local tasks_dir="$SCRIPT_DIR/queue/tasks"
+
+    local idle_flag
+    idle_flag=$(all_ashigaru_idle)
+
+    local cmd_id status
+    while IFS='|' read -r cmd_id status; do
+        [[ -z "$cmd_id" ]] && continue
+
+        local state_key="orphan_cmd__${cmd_id}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$status" ]]; then
+            # 同一状態を既に通知済み → 再送しない(スパム防止)
+            continue
+        fi
+
+        log "[ORPHAN-CMD] $cmd_id: status=$status 誰にも割り当てられていない(all_ashigaru_idle=$idle_flag)"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard+ntfy for $cmd_id (orphan)"
+            continue
+        fi
+        notify_dashboard_orphan_cmd "$cmd_id" "$status"
+        send_ntfy_orphan_cmd "$cmd_id" "$status"
+        state_set "$state_key" "notified_status" "$status"
+    done < <(detect_orphan_cmds "$ledger_file" "$tasks_dir" "$idle_flag")
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -409,7 +561,8 @@ for agent in "${ALL_AGENTS[@]}"; do
     status=$(task_status "$agent")
 
     # 対象外 status → state リセットして次へ
-    if [[ "$status" != "in_progress" && "$status" != "work" ]]; then
+    # cmd_771 fix_e: assigned状態の滞留はstatusフィルタ外だった穴を埋める
+    if [[ "$status" != "in_progress" && "$status" != "work" && "$status" != "assigned" ]]; then
         reset_state "$agent"
         continue
     fi
@@ -437,8 +590,10 @@ for agent in "${ALL_AGENTS[@]}"; do
     # E4: 人間 attach 中
     if pane_has_human_client "$pane"; then
         log "[SKIP-E4] $agent: human client attached and pane active"
+        check_e4_suppress_limit "$agent"
         continue
     fi
+    reset_e4_suppress_state "$agent"
 
     # pane テキスト取得
     pane_text=$(tmux capture-pane -t "$pane" -p 2>/dev/null | tail -40)
@@ -511,7 +666,13 @@ check_ledger_mismatches
 # cmd_766 第一層 相乗り: blocked/blocked_needs_decisionでblocked_on/blocked_reason空の検知
 check_blocked_reason_gaps
 
+# cmd_771 fix_c 相乗り: 孤児cmd(誰にも割り当てられていない未完了cmd)の検知
+check_orphan_cmds
+
 log "[DONE] stall_watchdog scan complete"
+
+# cmd_771 ④ 24時間計数報告(自己ゲート・既存5分周期に相乗り・新規launchd不要)
+bash "$SCRIPT_DIR/scripts/stall_watchdog_report.sh" || true
 
 # Healthchecks.io ping — scan tick 完了 (HC_PING_URL_STALL_WATCHDOG 未設定時は no-op)
 if [[ -n "${HC_PING_URL_STALL_WATCHDOG:-}" ]] && ! $DRY_RUN; then

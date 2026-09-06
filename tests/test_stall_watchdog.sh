@@ -463,6 +463,112 @@ else
     assert_eq "8f: permission_prompt検知時はescalate()を呼ばずcontinueする" "no_escalate" "escalate() called or continue missing"
 fi
 
+# ── Section 9: cmd_771 fix_e — E4(human attach中)抑止上限テスト ─────────────
+
+echo ""
+echo "=== Section 9: fix_e E4抑止上限テスト ==="
+echo ""
+
+TMPDIR_TEST8=$(mktemp -d)
+STATE_DIR="$TMPDIR_TEST8/stall_watchdog"
+mkdir -p "$STATE_DIR"
+LOG_FILE="$TMPDIR_TEST8/stall_watchdog.log"
+E4_LOG="$TMPDIR_TEST8/e4_calls.log"
+
+notify_dashboard_e4_limit() {
+    echo "DASHBOARD_E4: agent=$1 elapsed=$2" >> "$E4_LOG"
+}
+send_ntfy_e4_limit() {
+    echo "NTFY_E4: agent=$1 elapsed=$2" >> "$E4_LOG"
+}
+DRY_RUN=false
+
+# 9a: 初回のE4スキップ → e4_skip_sinceを記録するのみ、通知はまだしない
+: > "$E4_LOG"
+check_e4_suppress_limit "test_e4_agent"
+call_count=0
+call_count=$(grep -c 'DASHBOARD_E4\|NTFY_E4' "$E4_LOG" 2>/dev/null) || true
+assert_eq "9a: 初回E4スキップは通知しない" "0" "$call_count"
+
+since_val=$(state_get "test_e4_agent" "e4_skip_since" "")
+if [[ -n "$since_val" ]]; then
+    assert_eq "9a2: e4_skip_sinceが記録される" "recorded" "recorded"
+else
+    assert_eq "9a2: e4_skip_sinceが記録される" "recorded" "NOT recorded"
+fi
+
+# 9b: E4_SUPPRESS_LIMIT(1時間)未満の経過 → まだ通知しない
+: > "$E4_LOG"
+past_ts=$(date -v-30M '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -d '-30 minutes' '+%Y-%m-%dT%H:%M:%S')
+printf 'agent_id: test_e4_agent2\ne4_skip_since: %s\ne4_limit_notified: false\n' "$past_ts" > "$STATE_DIR/test_e4_agent2.yaml"
+check_e4_suppress_limit "test_e4_agent2"
+call_count=0
+call_count=$(grep -c 'DASHBOARD_E4\|NTFY_E4' "$E4_LOG" 2>/dev/null) || true
+assert_eq "9b: 上限(1時間)未満の抑止は通知しない" "0" "$call_count"
+
+# 9c: E4_SUPPRESS_LIMIT(1時間)超過 → 通知する
+: > "$E4_LOG"
+past_ts2=$(date -v-90M '+%Y-%m-%dT%H:%M:%S' 2>/dev/null || date -d '-90 minutes' '+%Y-%m-%dT%H:%M:%S')
+printf 'agent_id: test_e4_agent3\ne4_skip_since: %s\ne4_limit_notified: false\n' "$past_ts2" > "$STATE_DIR/test_e4_agent3.yaml"
+check_e4_suppress_limit "test_e4_agent3"
+if grep -q 'DASHBOARD_E4\|NTFY_E4' "$E4_LOG" 2>/dev/null; then
+    assert_eq "9c: 上限(1時間)超過の抑止は通知する" "found" "found"
+else
+    assert_eq "9c: 上限(1時間)超過の抑止は通知する" "found" "NOT FOUND: $(cat "$E4_LOG" 2>/dev/null || true)"
+fi
+
+# 9d: 既に通知済み(e4_limit_notified=true) → 再通知しない(スパム防止)
+: > "$E4_LOG"
+printf 'agent_id: test_e4_agent4\ne4_skip_since: %s\ne4_limit_notified: true\n' "$past_ts2" > "$STATE_DIR/test_e4_agent4.yaml"
+check_e4_suppress_limit "test_e4_agent4"
+call_count=0
+call_count=$(grep -c 'DASHBOARD_E4\|NTFY_E4' "$E4_LOG" 2>/dev/null) || true
+assert_eq "9d: 通知済みの場合は再通知しない" "0" "$call_count"
+
+# 9e: reset_e4_suppress_state で状態がクリアされる
+reset_e4_suppress_state "test_e4_agent3"
+since_after_reset=$(state_get "test_e4_agent3" "e4_skip_since" "")
+assert_eq "9e: reset後e4_skip_sinceが空になる" "" "$since_after_reset"
+
+rm -rf "$TMPDIR_TEST8"
+
+# ── Section 10: cmd_771 fix_e — assigned状態も監視対象に含まれる(コード確認) ──
+
+echo ""
+echo "=== Section 10: fix_e assigned状態監視 (コード確認) ==="
+echo ""
+
+if grep -qE '"\$status" != "in_progress" && "\$status" != "work" && "\$status" != "assigned"' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+    assert_eq "10a: assigned状態が監視対象statusフィルタに含まれる" "found" "found"
+else
+    assert_eq "10a: assigned状態が監視対象statusフィルタに含まれる" "found" "not found"
+fi
+
+# ── Section 11: cmd_771 fix_c — all_ashigaru_idle のfail-safe回帰テスト ──────
+# 誰も観測できない(pane全断)場合に「全員idle」と誤認しない(P1是正)
+
+echo ""
+echo "=== Section 11: all_ashigaru_idle fail-safe テスト ==="
+echo ""
+
+# 11a: 全paneが不在(resolve_pane_by_agent_id が常に空) → false (誤検知回避)
+resolve_pane_by_agent_id() { echo ""; }
+agent_is_busy_check() { return 1; }
+result_11a=$(all_ashigaru_idle)
+assert_eq "11a: 全pane不在時は全員idleと断定しない(false)" "false" "$result_11a"
+
+# 11b: 全pane解決できて全員idle(busy_rc=1) → true
+resolve_pane_by_agent_id() { echo "multiagent:agents.99"; }
+agent_is_busy_check() { return 1; }
+result_11b=$(all_ashigaru_idle)
+assert_eq "11b: 全員観測できてidleならtrue" "true" "$result_11b"
+
+# 11c: 1人でもbusy(busy_rc=0)なら false
+resolve_pane_by_agent_id() { echo "multiagent:agents.99"; }
+agent_is_busy_check() { return 0; }
+result_11c=$(all_ashigaru_idle)
+assert_eq "11c: 1人でもbusyならfalse" "false" "$result_11c"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""

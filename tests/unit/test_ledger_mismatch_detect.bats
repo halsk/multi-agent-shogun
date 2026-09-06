@@ -180,3 +180,70 @@ seed_task() {
 @test "T-BRG-005: stall_watchdog.sh invokes detect_blocked_reason_gaps via check_blocked_reason_gaps" {
   grep -qE "check_blocked_reason_gaps|detect_blocked_reason_gaps" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_771 fix_c: 孤児cmd(idle足軽+台帳の未完了cmdが誰にも割り当てられて
+# いない状態)の検知。maybe_nudge_idle はagent自身のassignedタスク前提で
+# 動くため、台帳に残った未完了cmdがどのtask YAMLのparent_cmdにも現れない
+# 場合に検知漏れとなる(2026-09-06 殿が2度、swarmより先に気づいた主犯)。
+
+# ── T-ORPHAN-001: 台帳pending/in_progressだがどのtask YAMLのparent_cmdにも
+# 現れない → 検知される(未割当) ──
+
+@test "T-ORPHAN-001: flags a pending ledger cmd that appears in no task YAML's parent_cmd" {
+  source "$LIB_FILE"
+
+  seed_ledger $'commands:\n- id: cmd_910\n  status: in_progress\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  parent_cmd: cmd_999\n  status: assigned\n'
+
+  run detect_orphan_cmds "$TMP_DIR/ledger.yaml" "$TMP_DIR/tasks" "false"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cmd_910|in_progress"* ]]
+}
+
+# ── T-ORPHAN-002: 台帳cmdがいずれかのtask YAMLのparent_cmdとして現れる
+# (=割当あり) かつ all_ashigaru_idle=false → 検知されない(正常系) ──
+
+@test "T-ORPHAN-002: does not flag when the cmd is assigned to a task YAML and not all ashigaru are idle" {
+  source "$LIB_FILE"
+
+  seed_ledger $'commands:\n- id: cmd_911\n  status: in_progress\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  parent_cmd: cmd_911\n  status: assigned\n'
+
+  run detect_orphan_cmds "$TMP_DIR/ledger.yaml" "$TMP_DIR/tasks" "false"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"cmd_911"* ]]
+}
+
+# ── T-ORPHAN-003: 割当ありでも全ashigaruがidle(all_ashigaru_idle=true)の
+# 場合は誰も手を付けていないとみなし検知される ──
+
+@test "T-ORPHAN-003: flags an assigned cmd when all_ashigaru_idle=true (nobody actually working)" {
+  source "$LIB_FILE"
+
+  seed_ledger $'commands:\n- id: cmd_912\n  status: pending\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  parent_cmd: cmd_912\n  status: assigned\n'
+
+  run detect_orphan_cmds "$TMP_DIR/ledger.yaml" "$TMP_DIR/tasks" "true"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cmd_912|pending"* ]]
+}
+
+# ── T-ORPHAN-004: 台帳status=done/superseded等は検知対象外(誤爆防止) ──
+
+@test "T-ORPHAN-004: does not flag ledger cmds with status done or superseded" {
+  source "$LIB_FILE"
+
+  seed_ledger $'commands:\n- id: cmd_913\n  status: done\n- id: cmd_914\n  status: superseded\n'
+
+  run detect_orphan_cmds "$TMP_DIR/ledger.yaml" "$TMP_DIR/tasks" "false"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"cmd_913"* ]]
+  [[ "$output" != *"cmd_914"* ]]
+}
+
+# ── T-ORPHAN-005: stall_watchdog.sh がこの check を実際に呼び出している
+# (相乗り確認) ──
+
+@test "T-ORPHAN-005: stall_watchdog.sh invokes detect_orphan_cmds via check_orphan_cmds" {
+  grep -qE "check_orphan_cmds|detect_orphan_cmds" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}
