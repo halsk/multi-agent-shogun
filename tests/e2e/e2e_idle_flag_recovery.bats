@@ -119,9 +119,6 @@ wait_for_log() {
 
     flag_dir="$(mktemp -d "/tmp/e2e_idle_flags_stale_XXXXXX")"
     local ashigaru_idle_flag="$flag_dir/shogun_idle_ashigaru1"
-    # Note: $ashigaru_idle_flag is never created here — the whole point of
-    # this scenario is that the idle flag is (and stays) absent, so
-    # agent_is_busy() reports "busy" per the flag while the pane is idle.
     first_unread_seen=$(( $(date +%s) - 420 ))
 
     tmux set-option -p -t "$ashigaru1_pane" @agent_cli "claude"
@@ -136,9 +133,12 @@ wait_for_log() {
     cp "$PROJECT_ROOT/tests/e2e/fixtures/task_ashigaru1_basic.yaml" \
         "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
-    bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
-
+    # Start the watcher WITHOUT the task_assigned message yet.
+    # inbox_watcher.sh unconditionally touches the idle flag at startup for
+    # cli=claude ("CLI starts idle") — if the task_assigned message were
+    # already queued, process_unread_once() would consume it right there
+    # via the normal send_context_reset() path (flag present = idle) before
+    # this test ever reaches the busy branch it's actually targeting.
     log_file="/tmp/e2e_inbox_watcher_ashigaru1_stale_busy_${BASHPID}.log"
     watcher_pid=$(
         IDLE_FLAG_DIR="$flag_dir" \
@@ -147,6 +147,18 @@ wait_for_log() {
             > "$log_file" 2>&1 &
         echo $!
     )
+
+    run wait_for_file_within "$ashigaru_idle_flag" 10
+    assert_success
+
+    # Simulate the flag going missing (the create-only-flag deadlock this
+    # safety net exists to recover from) BEFORE the unread message arrives,
+    # so agent_is_busy() reports "busy" (flag absent) from the very first
+    # read — matching the real "stuck busy while pane is actually idle" bug.
+    rm -f "$ashigaru_idle_flag"
+
+    bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
 
     run wait_for_log "$log_file" "forcing idle flag"
     if [ "$status" -ne 0 ]; then
