@@ -131,6 +131,8 @@
 !scripts/hooks/guard.sh
 !scripts/hooks/test_hooks.sh
 !scripts/hooks/queue_yaml_guard.py
+!scripts/hooks/report_auto_notify.py
+!scripts/hooks/test_report_auto_notify.sh
 !scripts/dashboard-viewer.py
 !scripts/get-secret.sh
 !scripts/sync-secrets-to-keychain.sh

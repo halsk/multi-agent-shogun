@@ -69,7 +69,13 @@ max_attempts=3
 
 while [ $attempt -lt $max_attempts ]; do
     if _acquire_lock; then
-        "$SCRIPT_DIR/.venv/bin/python3" -c "
+        # ★root cause fix(cmd_778調査中に発見): このpython呼出をif条件に
+        # 包まぬまま素の文として置くと、冒頭の`set -e`により非0終了時に
+        # スクリプト全体が直ちに終了し、直後の`STATUS=$?`以降(リトライ
+        # ロジック・dedupのexit 3判定)が一切実行されない実バグがあった。
+        # if の条件式にすることで`set -e`の対象から除外し、STATUSを
+        # 確実に捕捉する。
+        if "$SCRIPT_DIR/.venv/bin/python3" -c "
 import yaml, sys
 
 try:
@@ -82,6 +88,37 @@ try:
         data = {}
     if not data.get('messages'):
         data['messages'] = []
+
+    # cmd_778①redo: report_received の二重通知防止。auto-notify hook
+    # (scripts/hooks/report_auto_notify.py)と手動のreport_commandが
+    # 同一報告に対し重複発火するケースを吸収する。type=='report_received'
+    # に限定することで、他のtype(task_assigned等)の正当な短時間連続
+    # 送信を妨げない。
+    # ★窓は600秒(10分)→30秒へ短縮(軍師QC指摘・cmd_778①redo)。
+    # hookと手動report_commandが同一事象に対し発火する間隔は数秒〜
+    # 長くともhookのタイムアウト(20秒)+リトライ分程度に収まる一方、
+    # 同一agentが★別の★タスクを完了して正当なreport_receivedを送る
+    # 間隔・redoで再度doneにする間隔は、実作業を挟む以上どちらも
+    # 数十秒以上かかるのが通常。600秒という長すぎる窓が、後者2つの
+    # 正当な報告まで握りつぶしていたのが穴だった。
+    if '$TYPE' == 'report_received':
+        from datetime import datetime
+        DEDUP_WINDOW_SECONDS = 30
+        try:
+            now_dt = datetime.strptime('$TIMESTAMP', '%Y-%m-%dT%H:%M:%S')
+        except ValueError:
+            now_dt = None
+        if now_dt is not None:
+            for m in data['messages']:
+                if m.get('from') != '$FROM' or m.get('type') != 'report_received':
+                    continue
+                try:
+                    mt = datetime.strptime(m.get('timestamp', ''), '%Y-%m-%dT%H:%M:%S')
+                except (ValueError, TypeError):
+                    continue
+                if abs((now_dt - mt).total_seconds()) <= DEDUP_WINDOW_SECONDS:
+                    print('DEDUP_SKIP: duplicate report_received within window', file=sys.stderr)
+                    sys.exit(3)
 
     # Add new message
     new_msg = {
@@ -116,10 +153,17 @@ try:
 except Exception as e:
     print(f'ERROR: {e}', file=sys.stderr)
     sys.exit(1)
-"
-        STATUS=$?
+"; then
+            STATUS=0
+        else
+            STATUS=$?
+        fi
         _release_lock
         [ $STATUS -eq 0 ] && exit 0
+        if [ $STATUS -eq 3 ]; then
+            echo "[inbox_write] Skipped: duplicate report_received within dedup window (target=$TARGET, from=$FROM)" >&2
+            exit 0
+        fi
         attempt=$((attempt + 1))
         [ $attempt -lt $max_attempts ] && sleep 1
     else
