@@ -544,6 +544,31 @@ else
     assert_eq "10a: assigned状態が監視対象statusフィルタに含まれる" "found" "not found"
 fi
 
+# ── Section 11: cmd_771 fix_c — all_ashigaru_idle のfail-safe回帰テスト ──────
+# 誰も観測できない(pane全断)場合に「全員idle」と誤認しない(P1是正)
+
+echo ""
+echo "=== Section 11: all_ashigaru_idle fail-safe テスト ==="
+echo ""
+
+# 11a: 全paneが不在(resolve_pane_by_agent_id が常に空) → false (誤検知回避)
+resolve_pane_by_agent_id() { echo ""; }
+agent_is_busy_check() { return 1; }
+result_11a=$(all_ashigaru_idle)
+assert_eq "11a: 全pane不在時は全員idleと断定しない(false)" "false" "$result_11a"
+
+# 11b: 全pane解決できて全員idle(busy_rc=1) → true
+resolve_pane_by_agent_id() { echo "multiagent:agents.99"; }
+agent_is_busy_check() { return 1; }
+result_11b=$(all_ashigaru_idle)
+assert_eq "11b: 全員観測できてidleならtrue" "true" "$result_11b"
+
+# 11c: 1人でもbusy(busy_rc=0)なら false
+resolve_pane_by_agent_id() { echo "multiagent:agents.99"; }
+agent_is_busy_check() { return 0; }
+result_11c=$(all_ashigaru_idle)
+assert_eq "11c: 1人でもbusyならfalse" "false" "$result_11c"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""

@@ -465,12 +465,16 @@ check_blocked_reason_gaps() {
 # 割り当てられていない状態)の検知 ────────────────────────────────────────────
 
 # 全ashigaruのpaneが idle かどうかを判定する(孤児cmdの(b)条件用)。
-# pane不在(busy_rc=2)は判定対象外とし誤検知を避ける。
+# pane不在(busy_rc=2)は個別には判定対象外とし誤検知を避けるが、
+# ★1体も観測できなかった場合(tmux/セッション全断等)は「全員idle」と
+# 断定せずfalseを返す——さもないとinfra障害を「全員idleだから孤児」と
+# 誤認し、割当ありcmdまで誤って孤児扱いしてしまう(fail-safe側に倒す)。
 all_ashigaru_idle() {
-    local agent pane busy_rc
+    local agent pane busy_rc observed=0
     for agent in ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7; do
         pane=$(resolve_pane_by_agent_id "$agent")
         [[ -z "$pane" ]] && continue
+        observed=1
         busy_rc=0
         agent_is_busy_check "$pane" || busy_rc=$?
         if [[ "$busy_rc" -eq 0 ]]; then
@@ -478,6 +482,10 @@ all_ashigaru_idle() {
             return
         fi
     done
+    if [[ "$observed" -eq 0 ]]; then
+        echo "false"
+        return
+    fi
     echo "true"
 }
 
