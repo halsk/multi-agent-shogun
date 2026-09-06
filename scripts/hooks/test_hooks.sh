@@ -522,6 +522,183 @@ check "git log" allow "git log --oneline -10"
 check "git diff" allow "git diff HEAD"
 
 echo ""
+echo "=== PostToolUse: queue_yaml_guard.py (queue YAML破損検知・cmd_742) ==="
+QYG="$SCRIPT_DIR/queue_yaml_guard.py"
+
+# 各テストケースは専用の隔離 CLAUDE_PROJECT_DIR を使い、baseline 状態
+# (.claude/hook_state/queue_yaml_guard_state.json) をケース間で共有させない。
+# 呼び出し方: qyg_check <desc> <expected: block|allow> <tool_name> <before_content|__NONE__> <after_content>
+#   before_content が __NONE__ でなければ先に1回呼んで baseline を確立してから
+#   after_content で本番の呼び出しをテストする。
+qyg_check() {
+  local desc="$1" expected="$2" tool_name="$3" before="$4" after="$5"
+  local root queue_dir target
+  root=$(mktemp -d)
+  queue_dir="$root/queue"
+  mkdir -p "$queue_dir"
+  target="$queue_dir/test.yaml"
+
+  if [[ "$before" != "__NONE__" ]]; then
+    printf '%s' "$before" > "$target"
+    local base_json="{\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$target\"},\"tool_response\":{\"success\":true}}"
+    CLAUDE_PROJECT_DIR="$root" bash -c "echo '$base_json' | python3 '$QYG'" >/dev/null 2>&1
+  fi
+
+  printf '%s' "$after" > "$target"
+  local json="{\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$target\"},\"tool_response\":{\"success\":true}}"
+  CLAUDE_PROJECT_DIR="$root" bash -c "echo '$json' | python3 '$QYG'" >/dev/null 2>&1
+  local exit_code=$?
+
+  rm -rf "$root"
+
+  if [[ "$expected" == "block" && $exit_code -eq 2 ]]; then
+    echo "  ✅ WARN(exit2): $desc"
+    ((PASS++)) || true
+  elif [[ "$expected" == "allow" && $exit_code -eq 0 ]]; then
+    echo "  ✅ SILENT(exit0): $desc"
+    ((PASS++)) || true
+  else
+    echo "  ❌ FAIL: $desc (expected=$expected, got exit_code=$exit_code)"
+    ((FAIL++)) || true
+  fi
+}
+
+VALID_YAML_2='commands:
+- id: cmd_001
+  x: a
+- id: cmd_002
+  x: b
+'
+VALID_YAML_1='commands:
+- id: cmd_001
+  x: a
+'
+# cmd_002 の "- id:" 行が消え、直前の cmd_001 の下に x: b がぶら下がる
+# (家老が本日3回起こした事故の再現: マーカー削除→重複キー化)
+CORRUPTED_DUP_KEY='commands:
+- id: cmd_001
+  x: a
+  x: b
+'
+BROKEN_SYNTAX='commands:
+- id: cmd_001
+  x: a
+  y: [unterminated
+'
+
+# (a) 正常なYAML=通る (初回観測はbaselineのみで常にexit0)
+qyg_check "初回観測(正常YAML): baselineのみ記録・警告なし" allow "Write" "__NONE__" "$VALID_YAML_2"
+# (a') 正常なYAML→正常なYAML(変化なし)は通る
+qyg_check "正常YAML→正常YAML(変化なし): 警告なし" allow "Write" "$VALID_YAML_2" "$VALID_YAML_2"
+
+# (b) 構文を壊したYAML=検知される (valid→invalid の遷移でのみ warn)
+qyg_check "正常YAML→構文崩れ: この編集が壊したとみなし警告" block "Write" "$VALID_YAML_2" "$BROKEN_SYNTAX"
+
+# ★最重要(デッドロック回避の核心): 既に壊れているファイルへの追加編集は
+# 警告を出さない(前回観測時点で既にinvalidなら「今回のせいではない」とみなす)。
+qyg_check "構文崩れ→構文崩れ(既存の壊れ具合を維持): 警告なし(デッドロック回避)" allow "Write" "$BROKEN_SYNTAX" "$BROKEN_SYNTAX"
+
+# (c) `- id:` の数が減った=検知される (重複キー化のケース。構文自体はvalidだが件数減)
+qyg_check "\`- id:\`マーカー数減少(2→1・重複キー化): 警告" block "Write" "$VALID_YAML_2" "$CORRUPTED_DUP_KEY"
+
+# マーカー数が増える/変化なしは警告なし
+qyg_check "\`- id:\`マーカー数増加(1→2): 警告なし" allow "Write" "$VALID_YAML_1" "$VALID_YAML_2"
+
+# (d) YAML以外のファイルは発火しない(スコープ外)
+qyg_check "拡張子.json(スコープ外): 発火せず常にexit0" allow "Write" "__NONE__" '{"not": "yaml"}'
+
+# tool_name が Edit/Write 以外(Bash等)は即exit0
+root_bash=$(mktemp -d)
+mkdir -p "$root_bash/queue"
+printf '%s' "$BROKEN_SYNTAX" > "$root_bash/queue/test.yaml"
+bash_json="{\"tool_name\":\"Bash\",\"tool_input\":{\"file_path\":\"$root_bash/queue/test.yaml\"}}"
+CLAUDE_PROJECT_DIR="$root_bash" bash -c "echo '$bash_json' | python3 '$QYG'" >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+  echo "  ✅ SILENT(exit0): tool_name=Bash はスコープ外(即exit0)"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: tool_name=Bash はスコープ外のはずが非0終了"
+  ((FAIL++)) || true
+fi
+rm -rf "$root_bash"
+
+# queue/ 配下でないパスは対象外(スコープ外)
+root_outside=$(mktemp -d)
+mkdir -p "$root_outside/notqueue"
+printf '%s' "$VALID_YAML_2" > "$root_outside/notqueue/test.yaml"
+printf '%s' "$BROKEN_SYNTAX" > "$root_outside/notqueue/test.yaml"
+outside_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$root_outside/notqueue/test.yaml\"},\"tool_response\":{\"success\":true}}"
+CLAUDE_PROJECT_DIR="$root_outside" bash -c "echo '$outside_json' | python3 '$QYG'" >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+  echo "  ✅ SILENT(exit0): queue/配下でないパスはスコープ外"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: queue/配下でないパスがスコープ外のはずが非0終了"
+  ((FAIL++)) || true
+fi
+rm -rf "$root_outside"
+
+# ★境界ケース(自己レビューで追加): パス文字列に "/queue/" を含むが、
+# CLAUDE_PROJECT_DIR 配下の queue/ ではない別プロジェクトのファイルは
+# 対象外とする(過度に広いスコープ判定=誤検知の回避)。
+root_other_proj=$(mktemp -d)
+mkdir -p "$root_other_proj/some-other-repo/queue"
+printf '%s' "$BROKEN_SYNTAX" > "$root_other_proj/some-other-repo/queue/test.yaml"
+root_this_proj=$(mktemp -d)
+other_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$root_other_proj/some-other-repo/queue/test.yaml\"},\"tool_response\":{\"success\":true}}"
+CLAUDE_PROJECT_DIR="$root_this_proj" bash -c "echo '$other_json' | python3 '$QYG'" >/dev/null 2>&1
+if [[ $? -eq 0 ]]; then
+  echo "  ✅ SILENT(exit0): パス文字列に/queue/を含むが別プロジェクトはスコープ外(過剰検知防止)"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: 別プロジェクトのqueue/がスコープ外のはずが非0終了"
+  ((FAIL++)) || true
+fi
+rm -rf "$root_other_proj" "$root_this_proj"
+
+# 並行書込の競合防止(fcntl.flock): 同一ファイルへの状態更新を10並列で
+# 発火させても JSON が壊れず、全プロセスが exit 0 で完走することを確認する。
+# (自己レビューで追加: ロック無しだと read-modify-write の競合で片方の
+# 更新が消える/JSONが壊れうる)
+CONC_ROOT=$(mktemp -d)
+mkdir -p "$CONC_ROOT/queue"
+CONC_PIDS=()
+for i in $(seq 1 10); do
+  (
+    printf '%s' "$VALID_YAML_2" > "$CONC_ROOT/queue/test_$i.yaml"
+    conc_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CONC_ROOT/queue/test_$i.yaml\"},\"tool_response\":{\"success\":true}}"
+    CLAUDE_PROJECT_DIR="$CONC_ROOT" bash -c "echo '$conc_json' | python3 '$QYG'"
+  ) &
+  CONC_PIDS+=($!)
+done
+CONC_FAIL=0
+for pid in "${CONC_PIDS[@]}"; do
+  wait "$pid" || CONC_FAIL=1
+done
+CONC_STATE="$CONC_ROOT/.claude/hook_state/queue_yaml_guard_state.json"
+if [[ $CONC_FAIL -eq 0 ]] && python3 -c "import json,sys; d=json.load(open('$CONC_STATE')); sys.exit(0 if len(d)==10 else 1)" 2>/dev/null; then
+  echo "  ✅ 並行10プロセス書込: state JSON破損なし・全10エントリ保存(flock有効)"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: 並行書込でstate JSONが壊れた、またはエントリ欠落"
+  ((FAIL++)) || true
+fi
+rm -rf "$CONC_ROOT"
+
+# 実ファイル(queue/shogun_to_karo.yaml)を1.32MBのまま実測し、timeout(10s)に対し
+# 十分な余裕があることを確認(デッドロック回避の実行時間要件)。
+if [[ -f "$PROJ_ROOT/queue/shogun_to_karo.yaml" ]]; then
+  real_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$PROJ_ROOT/queue/shogun_to_karo.yaml\"},\"tool_response\":{\"success\":true}}"
+  QYG_TIME_ROOT=$(mktemp -d)
+  QYG_T0=$(python3 -c "import time; print(time.monotonic())")
+  CLAUDE_PROJECT_DIR="$QYG_TIME_ROOT" bash -c "echo '$real_json' | python3 '$QYG'" >/dev/null 2>&1
+  QYG_T1=$(python3 -c "import time; print(time.monotonic())")
+  rm -rf "$QYG_TIME_ROOT"
+  QYG_ELAPSED=$(python3 -c "print(f'{$QYG_T1 - $QYG_T0:.3f}')")
+  echo "  ℹ️  実ファイル(1.32MB)での実行時間: ${QYG_ELAPSED}s (timeout=10s)"
+fi
+
+echo ""
 echo "================================"
 echo "Results: PASS=$PASS, FAIL=$FAIL"
 if [[ $FAIL -eq 0 ]]; then

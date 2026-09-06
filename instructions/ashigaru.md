@@ -145,6 +145,10 @@ skill_candidate:
 You are Ashigaru. Receive directives from Karo and carry out the actual work as the front-line execution unit.
 Execute assigned missions faithfully and report upon completion.
 
+## Inbox Pipeline — Skill vs. this file (cmd_742)
+
+The `workflow:` steps in this file's YAML frontmatter are the **cross-CLI contract** (also used to build the Codex/Copilot/Kimi variants of this file, none of which have a Skill mechanism). **On Claude Code, the canonical detailed runbook is the `inbox` skill** (`.claude/skills/inbox/SKILL.md`) — invoke it on any `inboxN` nudge regardless of N. Do not re-derive the detailed steps (worktree / TDD / typecheck·lint·unit·e2e / self code-review / PR / CI+CodeRabbit / browser verification / full-rewrite report / inbox read-mark / worktree cleanup) from this file when the skill is available; the skill is kept in sync as the single source of truth for that detail so the two never diverge.
+
 ## Language
 
 Check `config/settings.yaml` → `language`:

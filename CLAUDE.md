@@ -67,6 +67,7 @@ language:
 5. **自己識別が最優先**: 全ての作業の前に `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'` を実行。
 6. **main 直接 commit 禁止**: 全プロジェクト、全エージェント、例外なし。
 7. **殿の代理で外部へ書き込む際は「事前確認」が必須。Slack・メールは加えて「AI 代筆の明示」も必須**: 投稿前に必ず殿の確認を取ること（例外なし・無断投稿は禁止）。Slack やメールでは**冒頭に「関の代理で AI が書き込みしている」旨を明示**する。**GitHub Issue / PR コメントは明示不要**（殿確定 2026-08-13・開発の場では代筆が前提）。→ 詳細は「殿の代理での外部書き込み」節
+8. **検証前の断定禁止**: 環境変数・Keychainの値・デプロイ済みバンドル・PR/デプロイ状況など、システムの状態について述べる前に、当該セッション内でコマンドを実行し出力を確認せよ。順序は「コマンドを実行→出力を示す→結論を述べる」。タスクの前提が計測結果と矛盾したら、その場で作業を止めエスカレーションせよ。★Iron Law 1(証拠なき完了禁止)とは射程が異なる——1は「`status: done` と完了を宣言する前」に証拠を求める。本条は「システムの状態について何かを事実として述べる前」全般に及ぶ、より広い射程を持つ。完了報告の場面に限定して読み、それ以外の場面(状況説明・調査結果の報告等)で断定してよいと誤解してはならない。両者は独立に適用する(混同すれば片方が死文化する)。
 
 ## 殿の代理での外部書き込み（Iron Law 7 の細則）
 
@@ -204,6 +205,8 @@ When you receive `inboxN` (e.g. `inbox3`):
 3. Process each message according to its `type`
 4. Update each processed entry: `read: true` (use Edit tool)
 5. Resume normal workflow
+
+**Ashigaru on Claude Code (cmd_742)**: on receiving any `inboxN` nudge, invoke the `inbox` skill (Skill tool, name `inbox`) regardless of the number N — the skill itself reads the inbox file and counts unread entries, so the variable N in the nudge text never needs parsing. This solves the fixed-slash-command problem (`/inbox1` cannot also match `inbox3`). The skill is the canonical detailed runbook (自己識別→タスクYAML読込→worktree→TDD→検証→PR→報告→既読化→worktree撤収); `instructions/ashigaru.md` remains the cross-CLI workflow contract for CLIs without a Skill mechanism (Codex/Copilot/Kimi).
 
 ### MANDATORY Post-Task Inbox Check
 
@@ -405,9 +408,18 @@ When processing large datasets (30+ items requiring individual web search, API c
 | 5 | GH_TOKEN 設定時に gh コマンドをブロック | Lessons Learned |
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 
-設定場所: `~/.claude/settings.json` の `hooks.PreToolUse`
+設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
 テスト: `scripts/hooks/test_hooks.sh`
+
+## PostToolUse hook — YAML破損検知 (queue_yaml_guard.py)
+
+`scripts/hooks/queue_yaml_guard.py` は Claude Code の PostToolUse(Edit/Write)hook として動作し、`queue/*.yaml` への書込直後に構文崩れ・`- id:` 境界マーカー数の減少を検知する。
+
+- 設定場所: project の `.claude/settings.json` の `hooks.PostToolUse`
+- 実装: `python3` + `PyYAML`(★`yq` は当機体に入っていない。将軍実測)
+- ★デッドロック回避設計: queue/shogun_to_karo.yaml は cmd_731 是正まで既にPyYAML構文エラーを含む(約1.1MB)。hookは「元から不正なら警告のみ・新たに`- id:`件数が減った場合のみブロック」という設計を採る。「不正なら常に書込を止める」設計にしてはならない——既に不正な本ファイルへの編集が全て詰まりswarmが停止する
+- テスト: `scripts/hooks/test_hooks.sh` に回帰テストを追加済み
 
 ## guard.sh の Skip マーカー (.guard-skip)
 
