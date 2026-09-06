@@ -75,6 +75,7 @@
 !lib/branch_policy.sh
 !lib/stall_detect.sh
 !lib/console_stall_detect.sh
+!lib/ledger_mismatch_detect.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -135,6 +136,9 @@
 !scripts/console_stall_watchdog.sh
 !scripts/console-stall-watchdog-launcher.sh
 !scripts/com.swarm.console-stall-watchdog.plist
+!scripts/yaml_slim_weekly.sh
+!scripts/yaml-slim-launcher.sh
+!scripts/com.swarm.yaml-slim.plist
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/
