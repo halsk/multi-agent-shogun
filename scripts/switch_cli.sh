@@ -63,17 +63,24 @@ resolve_pane() {
     local agent_id="$1"
 
     # Phase 1: @agent_id メタデータから動的検索
-    local pane_count
-    pane_count=$(tmux list-panes -t "multiagent:agents" 2>/dev/null | wc -l)
-    if [[ "$pane_count" -gt 0 ]]; then
-        for i in $(seq 0 $((pane_count - 1))); do
+    # ★pane-base-index=1構成(macOS)ではpane番号が1始まりゆえ、
+    # `seq 0 $((pane_count-1))` の0始まり決め打ちでは agents.0(存在せず)を
+    # 誤って舐め、実在する最終ペイン(例: agents.9)を一枚読み飛ばす
+    # (2026-06-11 gunshi切替でashigaru7を誤再起動した実例の根本原因)。
+    # list-panes の実 pane_index をそのまま使う。
+    local pane_list
+    pane_list=$(tmux list-panes -t "multiagent:agents" -F '#{pane_index}' 2>/dev/null)
+    if [[ -n "$pane_list" ]]; then
+        local i
+        while IFS= read -r i; do
+            [[ -z "$i" ]] && continue
             local aid
             aid=$(tmux display-message -t "multiagent:agents.$i" -p '#{@agent_id}' 2>/dev/null)
             if [[ "$aid" == "$agent_id" ]]; then
                 echo "multiagent:agents.$i"
                 return 0
             fi
-        done
+        done <<< "$pane_list"
         log "WARN: @agent_id=$agent_id not found in any pane. Falling back to fixed mapping."
     fi
 

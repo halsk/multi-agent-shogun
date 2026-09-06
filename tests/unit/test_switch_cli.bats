@@ -276,6 +276,90 @@ YAML
     [ "$result" = "Sonnet+T" ]
 }
 
+# =============================================================================
+# resolve_pane Phase 1 (動的@agent_id検索) テスト — 実スクリプトの関数を直接抽出
+# pane-base-index=1構成(macOS)でも実在ペインを一枚も読み飛ばさないことを
+# 検証する回帰テスト(2026-06-11 gunshi切替でashigaru7を誤再起動した事故の再発防止)。
+# =============================================================================
+
+load_real_resolve_pane() {
+    # switch_cli.sh から resolve_pane() のみ抽出して実コードをそのままテストする
+    # (手書き複製ではなく、本番と乖離しないようにする)
+    log() { :; }
+    eval "$(sed -n '/^resolve_pane() {/,/^}/p' "${PROJECT_ROOT}/scripts/switch_cli.sh")"
+}
+
+@test "resolve_pane Phase1: pane-base-index=1構成で最終ペイン(agents.9)を読み飛ばさない" {
+    load_real_resolve_pane
+
+    # tmux mock: agents.1〜agents.9 の9ペイン(pane-base-index=1構成)
+    # gunshi は最終ペイン agents.9 にいる — 0始まり決め打ちのバグでは
+    # ここが読み飛ばされ、Phase2フォールバックの陳腐化マッピングへ落ちていた。
+    tmux() {
+        if [[ "$1" == "list-panes" ]]; then
+            printf '1\n2\n3\n4\n5\n6\n7\n8\n9\n'
+            return 0
+        fi
+        if [[ "$1" == "display-message" ]]; then
+            case "$3" in
+                multiagent:agents.1) echo "karo" ;;
+                multiagent:agents.9) echo "gunshi" ;;
+                *) echo "" ;;
+            esac
+            return 0
+        fi
+        return 0
+    }
+
+    result=$(resolve_pane "gunshi")
+    [ "$result" = "multiagent:agents.9" ]
+}
+
+@test "resolve_pane Phase1: agents.0が存在しない0始まり構成でも先頭ペインを解決する" {
+    load_real_resolve_pane
+
+    tmux() {
+        if [[ "$1" == "list-panes" ]]; then
+            printf '0\n1\n2\n'
+            return 0
+        fi
+        if [[ "$1" == "display-message" ]]; then
+            case "$3" in
+                multiagent:agents.0) echo "karo" ;;
+                *) echo "" ;;
+            esac
+            return 0
+        fi
+        return 0
+    }
+
+    result=$(resolve_pane "karo")
+    [ "$result" = "multiagent:agents.0" ]
+}
+
+@test "resolve_pane Phase1: どのペインにも@agent_idが無ければPhase2固定マッピングへフォールバック" {
+    load_real_resolve_pane
+
+    tmux() {
+        if [[ "$1" == "list-panes" ]]; then
+            printf '1\n2\n'
+            return 0
+        fi
+        if [[ "$1" == "display-message" ]]; then
+            echo ""
+            return 0
+        fi
+        if [[ "$1" == "show-options" ]]; then
+            echo "0"
+            return 0
+        fi
+        return 0
+    }
+
+    result=$(resolve_pane "ashigaru7")
+    [ "$result" = "multiagent:agents.7" ]
+}
+
 @test "display_name: thinking:false で +T が消える" {
     # ashigaru2は thinking:false
     result=$(get_model_display_name "ashigaru2")
