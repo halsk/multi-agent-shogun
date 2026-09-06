@@ -276,8 +276,14 @@ get_agent_model() {
                 *)              echo "k2.5" ;;
             esac
             ;;
+        copilot)
+            # Copilot CLI はモデル選択を内部で管理する。空文字を返し、
+            # build_cli_command が --model を付与しない/get_model_display_name が
+            # Claude系モデル名(Sonnet等)にフォールバックしないようにする。
+            echo ""
+            ;;
         *)
-            # Claude Code/Codex/Copilot用デフォルトモデル
+            # Claude Code/Codex用デフォルトモデル
             case "$agent_id" in
                 shogun)         echo "opus" ;;
                 karo)           echo "sonnet" ;;
