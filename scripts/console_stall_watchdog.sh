@@ -245,6 +245,30 @@ if ! flock -n 8; then
     exit 0
 fi
 
+# ── cmd_767 第一層(心拍): 本ジョブ自身の実行(生死)を last-run.json に記録する。
+# ★これは console_stall_watchdog.sh が「監視している対象(console)の停滞」とは
+# 別物——本ジョブ自体が launchd から30分毎に起動され続けているか、という
+# メタな心拍である。meeting-link-sweepと同じ共通規約(lib/run_log.sh)に相乗り。
+# shellcheck source=../lib/run_log.sh
+source "$SCRIPT_DIR/lib/run_log.sh"
+
+RUN_LOG_DIR="$SCRIPT_DIR/logs/console-stall-watchdog"
+RUN_STATUS_FILE="$SCRIPT_DIR/logs/console-stall-watchdog-last-run.json"
+RUN_ID="$(run_log_new_id)"
+RUN_START_EPOCH="$(date '+%s')"
+RUN_START_ISO="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+RUN_LOG_FILE="$(run_log_start "${RUN_LOG_DIR}" "${RUN_ID}" "console-stall-watchdog")"
+
+_cswd_on_exit() {
+  local exit_code=$?
+  local duration end_iso
+  duration="$(run_log_end "${RUN_LOG_FILE}" "${RUN_ID}" "${RUN_START_EPOCH}" "${exit_code}")"
+  end_iso="$(date '+%Y-%m-%dT%H:%M:%S%z')"
+  run_log_write_last_run "${RUN_STATUS_FILE}" "${RUN_ID}" "${RUN_START_ISO}" "${end_iso}" "${duration}" "${exit_code}"
+  run_log_rotate "${RUN_LOG_DIR}" 96
+}
+trap _cswd_on_exit EXIT
+
 # ── メイン ────────────────────────────────────────────────────────────────────
 
 log "[START] console_stall_watchdog dry_run=$DRY_RUN"
