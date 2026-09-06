@@ -75,6 +75,7 @@
 !lib/branch_policy.sh
 !lib/stall_detect.sh
 !lib/console_stall_detect.sh
+!lib/mgmt_bloat_thresholds.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -135,6 +136,7 @@
 !scripts/console_stall_watchdog.sh
 !scripts/console-stall-watchdog-launcher.sh
 !scripts/com.swarm.console-stall-watchdog.plist
+!scripts/mgmt_bloat_watchdog.sh
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/
@@ -143,6 +145,10 @@
 # Console Stall Watchdog state dir (cmd_725第三段・独立ジョブ — *.yaml は実行時状態)
 !queue/console_stall_watchdog/
 !queue/console_stall_watchdog/.gitignore
+
+# mgmt_bloat_watchdog state dir (cmd_766第三/四層 — *.yaml は実行時状態)
+!queue/mgmt_bloat_watchdog/
+!queue/mgmt_bloat_watchdog/.gitignore
 
 # SayTask (sample template only, not actual data)
 !saytask/
