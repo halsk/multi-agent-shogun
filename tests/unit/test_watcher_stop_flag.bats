@@ -21,8 +21,16 @@ WATCHER_SCRIPT="$SCRIPT_DIR/scripts/inbox_watcher.sh"
 setup_file() {
     [ -f "$SUPERVISOR_SCRIPT" ] || return 1
     [ -f "$WATCHER_SCRIPT" ] || return 1
-    command -v python3 &>/dev/null || skip "python3 not available"
-    python3 -c "import yaml" 2>/dev/null || skip "python3-yaml not available"
+    # T-C9調査(cmd_766残赤)で見つかった同種の問題: watcher_supervisor.sh/
+    # inbox_watcher.shが実際にYAML解析へ使うのは$SCRIPT_DIR/.venv/bin/python3
+    # (プロジェクトの実.venv、pip install pyyaml済み)であり、ここで素の
+    # `python3`(PATH上のsystem python3)を検査しても対象が違う。GitHub Actions
+    # macos-latestのsystem/homebrew python3にはPyYAMLが入っておらず、このズレに
+    # より本来greenであるべき全T-STOP系テストがSKIP扱いになっていた
+    # (SKIP=FAIL方針違反)。検査対象を実際に使われるvenv側へ合わせる。
+    local venv_python="$SCRIPT_DIR/.venv/bin/python3"
+    [ -x "$venv_python" ] || skip "project .venv python3 not available at $venv_python"
+    "$venv_python" -c "import yaml" 2>/dev/null || skip "PyYAML not available in project .venv"
 }
 
 setup() {
