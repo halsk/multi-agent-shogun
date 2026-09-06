@@ -47,8 +47,18 @@ setup_file() {
 setup() {
     export IDLE_FLAG_DIR="$(mktemp -d "$BATS_TMPDIR/busy_confirmed_test.XXXXXX")"
     export TEST_TMP="$(mktemp -d "$BATS_TMPDIR/busy_confirmed_tmp.XXXXXX")"
-    mkdir -p "$TEST_TMP/queue/inbox" "$TEST_TMP/queue/tasks" "$TEST_TMP/.venv/bin" "$TEST_TMP/lib"
-    ln -sf "$(command -v python3)" "$TEST_TMP/.venv/bin/python3"
+    mkdir -p "$TEST_TMP/queue/inbox" "$TEST_TMP/queue/tasks" "$TEST_TMP/lib"
+    # T-C9実runner調査(cmd_766残赤): 旧実装は raw system python3(command -v
+    # python3)を$TEST_TMP/.venv/bin/python3へsymlinkしていたが、GitHub Actions
+    # macos-latestのsystem/homebrew python3にはPyYAMLが入っておらずimportに
+    # 失敗していた(setup_file()のVENV_PYTHON検証は通っているのに、ここだけ
+    # 別のpython3を指していたのが原因)。単に実.venvのpython3バイナリ1本だけを
+    # symlinkする案も試したが、venvのpython3はpyvenv.cfgを実行ファイルの
+    # 「symlink先を辿らない」隣接ディレクトリから探すため、バイナリ単体の
+    # symlinkでは$TEST_TMP/.venv/pyvenv.cfgが見つからずsite-packages解決に
+    # 失敗し同じImportErrorを再現した(ローカルで実際に再現・確認済み)。
+    # .venvディレクトリ全体をsymlinkし、pyvenv.cfgも一緒に見えるようにする。
+    ln -sfn "$PROJECT_ROOT/.venv" "$TEST_TMP/.venv"
     # agent_is_busy_check() lives in the real lib/agent_status.sh — symlink it into
     # the isolated SCRIPT_DIR so process_unread()/agent_is_busy_confirmed() can find it
     # without pointing SCRIPT_DIR at the real project root (which would make
@@ -291,20 +301,7 @@ YAML
         LAST_CLEAR_TS=0
         ASW_DISABLE_ESCALATION=0
         process_unread event
-        echo \"__DEBUG_UNAME=\$(uname -a)\"
-        echo \"__DEBUG_BASH_VERSION=\$BASH_VERSION\"
-        echo \"__DEBUG_agent_is_busy_check_rc=\$(agent_is_busy_check \\\"\$PANE_TARGET\\\"; echo \$?)\"
-        echo \"__DEBUG_get_effective_cli_type=\$(get_effective_cli_type)\"
-        echo \"__DEBUG_python3_which=\$(command -v python3)\"
-        echo \"__DEBUG_venv_python=\$SCRIPT_DIR/.venv/bin/python3\"
-        echo \"__DEBUG_venv_python_yaml=\$(\"\$SCRIPT_DIR/.venv/bin/python3\" -c 'import yaml; print(yaml.__version__)' 2>&1)\"
-        echo \"__DEBUG_FIRST_UNREAD_SEEN=\$FIRST_UNREAD_SEEN\"
     "
-    echo "# --- T-C9 debug output ---" >&3
-    while IFS= read -r __dbg_line; do
-        echo "# $__dbg_line" >&3
-    done <<< "$output"
-    echo "# idle_flag_exists=$( [ -f "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent" ] && echo yes || echo no )" >&3
     [ "$status" -eq 0 ]
     [ ! -f "$IDLE_FLAG_DIR/shogun_idle_test_busy_agent" ]
 }

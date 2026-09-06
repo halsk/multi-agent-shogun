@@ -100,22 +100,6 @@ teardown() {
         fi
         sleep 1
     done
-
-    echo "# --- T-STOP-003/004 debug output ---" >&3
-    echo "# uname=$(uname -a)" >&3
-    echo "# bash_version=$BASH_VERSION" >&3
-    echo "# exited=$exited" >&3
-    echo "# flag_still_present=$( [ -f "$TEST_FLAG_DIR/shogun_watcher_stop_${WATCHER_AGENT}" ] && echo yes || echo no )" >&3
-    echo "# proc_alive_final=$(kill -0 "$WATCHER_PID" 2>/dev/null && echo yes || echo no)" >&3
-    if command -v ps &>/dev/null; then
-        echo "# ps_snapshot:" >&3
-        ps -o pid,ppid,stat,command -p "$WATCHER_PID" 2>&1 | while IFS= read -r __ps_line; do echo "# $__ps_line" >&3; done
-    fi
-    echo "# watcher.log:" >&3
-    while IFS= read -r __log_line; do
-        echo "# $__log_line" >&3
-    done < "$TEST_FLAG_DIR/watcher.log"
-
     [ "$exited" -eq 1 ]
 
     # The flag must have been consumed (rm'd) by the watcher itself, not left behind.
