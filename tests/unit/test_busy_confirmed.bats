@@ -47,8 +47,18 @@ setup_file() {
 setup() {
     export IDLE_FLAG_DIR="$(mktemp -d "$BATS_TMPDIR/busy_confirmed_test.XXXXXX")"
     export TEST_TMP="$(mktemp -d "$BATS_TMPDIR/busy_confirmed_tmp.XXXXXX")"
-    mkdir -p "$TEST_TMP/queue/inbox" "$TEST_TMP/queue/tasks" "$TEST_TMP/.venv/bin" "$TEST_TMP/lib"
-    ln -sf "$(command -v python3)" "$TEST_TMP/.venv/bin/python3"
+    mkdir -p "$TEST_TMP/queue/inbox" "$TEST_TMP/queue/tasks" "$TEST_TMP/lib"
+    # T-C9実runner調査(cmd_766残赤): 旧実装は raw system python3(command -v
+    # python3)を$TEST_TMP/.venv/bin/python3へsymlinkしていたが、GitHub Actions
+    # macos-latestのsystem/homebrew python3にはPyYAMLが入っておらずimportに
+    # 失敗していた(setup_file()のVENV_PYTHON検証は通っているのに、ここだけ
+    # 別のpython3を指していたのが原因)。単に実.venvのpython3バイナリ1本だけを
+    # symlinkする案も試したが、venvのpython3はpyvenv.cfgを実行ファイルの
+    # 「symlink先を辿らない」隣接ディレクトリから探すため、バイナリ単体の
+    # symlinkでは$TEST_TMP/.venv/pyvenv.cfgが見つからずsite-packages解決に
+    # 失敗し同じImportErrorを再現した(ローカルで実際に再現・確認済み)。
+    # .venvディレクトリ全体をsymlinkし、pyvenv.cfgも一緒に見えるようにする。
+    ln -sfn "$PROJECT_ROOT/.venv" "$TEST_TMP/.venv"
     # agent_is_busy_check() lives in the real lib/agent_status.sh — symlink it into
     # the isolated SCRIPT_DIR so process_unread()/agent_is_busy_confirmed() can find it
     # without pointing SCRIPT_DIR at the real project root (which would make
