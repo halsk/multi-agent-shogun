@@ -841,12 +841,18 @@ YAML
 # --- T-SHOGUN-003: shogun + active pane + client attached → send-keys (post PR#75) ---
 
 @test "T-SHOGUN-003: send_wakeup shogun + active + attached uses send-keys" {
+    # cmd_768 v2: shogun+non-ntfy now skips unconditionally (busy or idle), so
+    # this test — about send-keys mechanics (pane_active/list_clients), not
+    # nudge-suppression semantics (see T-SHOGUN-005/007) — must pass has_ntfy=1
+    # to reach the send-keys call at all. Idle flag is irrelevant here since
+    # ntfy bypasses busy too, but kept for clarity.
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
     run bash -c '
         MOCK_PANE_ACTIVE="1"
         MOCK_LIST_CLIENTS="/dev/pts/1: mock_session [200x50 xterm-256color]"
         source "'"$TEST_HARNESS"'"
         AGENT_ID="shogun"
-        send_wakeup 2
+        send_wakeup 2 1
     '
     [ "$status" -eq 0 ]
 
@@ -857,12 +863,14 @@ YAML
 # --- T-SHOGUN-004: shogun + active pane + no client → send-keys fallthrough ---
 
 @test "T-SHOGUN-004: send_wakeup shogun + active + detached falls through to send-keys" {
+    # cmd_768 v2: see T-SHOGUN-003 — has_ntfy=1 required to reach send-keys.
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
     run bash -c '
         MOCK_PANE_ACTIVE="1"
         MOCK_LIST_CLIENTS=""
         source "'"$TEST_HARNESS"'"
         AGENT_ID="shogun"
-        send_wakeup 2
+        send_wakeup 2 1
     '
     [ "$status" -eq 0 ]
 
@@ -1170,4 +1178,230 @@ YAML
 
     grep -q "send-keys.*/clear" "$MOCK_LOG"
     grep -q "Session Start" "$MOCK_LOG"
+}
+
+# --- cmd_768 v2: 将軍paneへの通常nudge抑止(busy/idle問わず・ntfyは即時のまま) ---
+# 真因(v1で見落とし): send_wakeup/process_unreadの旧guardが
+# `agent_is_busy && { AGENT_ID!=shogun || has_ntfy!=1 }` という形で、
+# busyの時にしか発火しなかった。将軍がidle(=殿が打鍵する瞬間そのもの)の
+# 場合はagent_is_busy=falseとなり、通常報告がそのままsend-keysへ落ちて
+# いた——差し戻しの核心はここ(busy時しか検証していなかった)。
+# 修正: shogun+has_ntfy!=1は、busy/idleの分岐に入る前に無条件でreturn 0。
+# shogun+has_ntfy=1は従来どおりbusyでも即時配送。他エージェントの
+# busy guardは変更なし。
+#
+#   T-SHOGUN-005: send_wakeup — shogun IDLE + has_ntfy=0(通常) → nudge抑止 ★v1の穴
+#   T-SHOGUN-005b: send_wakeup — shogun busy + has_ntfy=0(通常) → nudge抑止(回帰)
+#   T-SHOGUN-006: send_wakeup — shogun IDLE + has_ntfy=1(ntfy) → nudge即時配送(回帰)
+#   T-SHOGUN-006b: send_wakeup — shogun busy + has_ntfy=1(ntfy) → nudge即時配送(回帰)
+#   T-SHOGUN-007: process_unread — shogun IDLE + karo通常報告 → send-keys発火せず ★実証(a)そのもの
+#   T-SHOGUN-007b: process_unread — shogun busy + karo通常報告 → send-keys発火せず(回帰)
+#   T-SHOGUN-008: process_unread — shogun IDLE + ntfy_received → send-keys即時発火 ★実証(b)そのもの
+#   T-SHOGUN-008b: process_unread — shogun busy + ntfy_received → send-keys即時発火(回帰)
+#   T-SHOGUN-009: send_cli_command — shogunはCLIコマンド注入抑止のまま(安全弁2・未変更確認)
+#   T-SHOGUN-010: send_wakeup_with_escape — shogunはEscapeエスカレーション抑止のまま(安全弁3・未変更確認)
+
+# --- T-SHOGUN-005: send_wakeup skips nudge for IDLE shogun when message is NOT ntfy (the v1 gap) ---
+
+@test "T-SHOGUN-005: send_wakeup skips nudge when shogun is IDLE and has_ntfy=0 (normal report)" {
+    # Idle flag present => agent_is_busy() reports idle. This is exactly the
+    # moment the Lord is at the keyboard, and exactly what v1 failed to guard.
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_wakeup 3 0
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "SKIP.*shogun"
+
+    # No nudge should have been sent, idle or not.
+    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-005b: send_wakeup skips nudge for BUSY shogun when message is NOT ntfy (regression) ---
+
+@test "T-SHOGUN-005b: send_wakeup skips nudge when shogun is busy and has_ntfy=0 (normal report)" {
+    rm -f "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_wakeup 3 0
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "SKIP.*shogun"
+
+    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-006: send_wakeup still delivers immediately for IDLE shogun when message IS ntfy ---
+
+@test "T-SHOGUN-006: send_wakeup still sends nudge when shogun is IDLE and has_ntfy=1 (ntfy)" {
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_wakeup 1 1
+    '
+    [ "$status" -eq 0 ]
+
+    grep -q "send-keys.*inbox1" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-006b: send_wakeup still delivers immediately for BUSY shogun when message IS ntfy (regression) ---
+
+@test "T-SHOGUN-006b: send_wakeup still sends nudge when shogun is busy and has_ntfy=1 (ntfy)" {
+    rm -f "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_wakeup 1 1
+    '
+    [ "$status" -eq 0 ]
+
+    # ntfy must still reach the shogun pane immediately, even while busy.
+    grep -q "send-keys.*inbox1" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-007: process_unread — IDLE shogun + normal (karo) report → no send-keys (実証a) ---
+
+@test "T-SHOGUN-007: process_unread sends no nudge to IDLE shogun for a normal karo report" {
+    # This is the exact scenario the Lord experiences: shogun idle, karo's
+    # normal report arrives. v1 still fired send-keys here; v2 must not.
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        INBOX="$TEST_INBOX_DIR/shogun.yaml"
+        cat > "$INBOX" << "YAML"
+messages:
+  - id: msg_karo_report
+    from: karo
+    timestamp: "2026-09-06T09:00:00+09:00"
+    type: report_received
+    content: "cmd_999完了報告"
+    read: false
+YAML
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "SKIP.*shogun"
+
+    # No nudge keystrokes reached the shogun pane at all.
+    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-007b: process_unread — BUSY shogun + normal (karo) report → no send-keys (regression) ---
+
+@test "T-SHOGUN-007b: process_unread sends no nudge to busy shogun for a normal karo report" {
+    rm -f "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        INBOX="$TEST_INBOX_DIR/shogun.yaml"
+        cat > "$INBOX" << "YAML"
+messages:
+  - id: msg_karo_report
+    from: karo
+    timestamp: "2026-09-06T09:00:00+09:00"
+    type: report_received
+    content: "cmd_999完了報告"
+    read: false
+YAML
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "busy"
+
+    # No nudge keystrokes reached the shogun pane — Stop hook will pick it up at turn end.
+    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-008: process_unread — IDLE shogun + ntfy_received → nudge sent immediately (実証b) ---
+
+@test "T-SHOGUN-008: process_unread still sends nudge to IDLE shogun for ntfy_received" {
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
+    # Matches production launch config (shutsujin_departure.sh): ASW_DISABLE_NORMAL_NUDGE=0
+    # forces the independent Phase-2+ throttle (disable_normal_nudge(), unrelated to cmd_768)
+    # to never suppress Phase 1 nudges — the real deployed behavior this test verifies against.
+    run bash -c '
+        export ASW_DISABLE_NORMAL_NUDGE=0
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        INBOX="$TEST_INBOX_DIR/shogun.yaml"
+        cat > "$INBOX" << "YAML"
+messages:
+  - id: msg_ntfy
+    from: ntfy_listener
+    timestamp: "2026-09-06T09:00:00+09:00"
+    type: ntfy_received
+    content: "ntfyから新しいメッセージ受信。queue/ntfy_inbox.yaml を確認し処理せよ。"
+    read: false
+YAML
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+
+    grep -q "send-keys.*inbox1" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-008b: process_unread — BUSY shogun + ntfy_received → nudge sent immediately (regression) ---
+
+@test "T-SHOGUN-008b: process_unread still sends nudge to busy shogun for ntfy_received (regression)" {
+    rm -f "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        export ASW_DISABLE_NORMAL_NUDGE=0
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        INBOX="$TEST_INBOX_DIR/shogun.yaml"
+        cat > "$INBOX" << "YAML"
+messages:
+  - id: msg_ntfy
+    from: ntfy_listener
+    timestamp: "2026-09-06T09:00:00+09:00"
+    type: ntfy_received
+    content: "ntfyから新しいメッセージ受信。queue/ntfy_inbox.yaml を確認し処理せよ。"
+    read: false
+YAML
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+
+    # ntfy delivery must not be delayed by busy state.
+    grep -q "send-keys.*inbox1" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-009: safety valve #2 (untouched) — CLI command injection suppression for shogun ---
+
+@test "T-SHOGUN-009: send_cli_command still suppresses CLI injection for shogun (safety valve, unchanged)" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_cli_command "/clear"
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "suppressing CLI command injection"
+
+    # /clear must never be injected into the shogun pane.
+    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+}
+
+# --- T-SHOGUN-010: safety valve #3 (untouched) — Escape escalation suppression for shogun ---
+
+@test "T-SHOGUN-010: send_wakeup_with_escape still suppresses Escape for shogun (safety valve, unchanged)" {
+    # has_ntfy=1 here — this test's job is to confirm Escape is never sent to
+    # shogun, decoupled from cmd_768's has_ntfy=0 nudge-suppression (T-SHOGUN-005).
+    # It falls through to plain send_wakeup, which for ntfy still delivers.
+    touch "$TEST_TMPDIR/shogun_idle_shogun"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="shogun"
+        send_wakeup_with_escape 2 1
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qi "suppressing Escape escalation"
+
+    # Escape must never be sent to the shogun pane; falls through to plain nudge instead.
+    ! grep -q "send-keys.*Escape" "$MOCK_LOG"
+    grep -q "send-keys.*inbox2" "$MOCK_LOG"
 }

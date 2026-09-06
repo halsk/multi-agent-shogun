@@ -562,9 +562,11 @@ try:
     normal_count = len(unread) - len(specials)
     normal_msgs = [m for m in unread if m.get("type") not in special_types]
     has_task_assigned = any(m.get("type") == "task_assigned" for m in normal_msgs)
+    has_ntfy = any(m.get("type") == "ntfy_received" for m in normal_msgs)
     payload = {
         "count": normal_count,
         "has_task_assigned": has_task_assigned,
+        "has_ntfy": has_ntfy,
         "specials": [{"type": m.get("type", ""), "content": m.get("content", "")} for m in specials],
     }
     print(json.dumps(payload))
@@ -979,6 +981,10 @@ session_has_client() {
 #   3. tmux send-keys (短いnudgeのみ、timeout 5s)
 send_wakeup() {
     local unread_count="$1"
+    # cmd_768: has_ntfy=1 marks that the unread batch contains an ntfy_received
+    # message (Lord → shogun via phone). Only that case may bypass the busy
+    # guard below for shogun; ordinary karo/gunshi reports must not.
+    local has_ntfy="${2:-0}"
     local nudge="inbox${unread_count}"
 
     if [ "${FINAL_ESCALATION_ONLY:-0}" = "1" ]; then
@@ -992,9 +998,20 @@ send_wakeup() {
         return 0
     fi
 
+    # cmd_768 v2: shogun + non-ntfy normal message → nudge is suppressed
+    # unconditionally, busy or idle. v1's `agent_is_busy && {...}` guard only
+    # fired while busy, so an idle shogun (exactly when the Lord is at the
+    # keyboard) still fell through to send-keys. The Lord picks up normal
+    # reports by reading the inbox at the top of his own turn instead.
+    if [[ "$AGENT_ID" == "shogun" ]] && [[ "$has_ntfy" != "1" ]]; then
+        echo "[$(date)] [SKIP] shogun: normal (non-ntfy) message — nudge suppressed regardless of busy state" >&2
+        return 0
+    fi
+
     # 優先度2: Agent busy — nudge送信するとEnterが消失するためスキップ
     # Claude Code: Stop hook catches unread at turn end. Skip nudge to avoid Enter loss.
-    # Exception: shogun — ntfy must be delivered immediately regardless of busy state.
+    # shogun+ntfy always bypasses this guard (handled by the early return above
+    # for the non-ntfy case; here shogun simply never matches this branch).
     if agent_is_busy && [[ "$AGENT_ID" != "shogun" ]]; then
         local busy_cli_wakeup
         busy_cli_wakeup=$(get_effective_cli_type)
@@ -1071,6 +1088,7 @@ send_wakeup() {
 # Addresses the "echo last tool call" cursor position bug and stale input.
 send_wakeup_with_escape() {
     local unread_count="$1"
+    local has_ntfy="${2:-0}"
     local nudge="inbox${unread_count}"
     local effective_cli
     effective_cli=$(get_effective_cli_type)
@@ -1079,7 +1097,7 @@ send_wakeup_with_escape() {
     # Safety: never send Escape escalation to shogun. It can wipe the Lord's input.
     if [ "$AGENT_ID" = "shogun" ]; then
         echo "[$(date)] [SKIP] shogun: suppressing Escape escalation; sending plain nudge" >&2
-        send_wakeup "$unread_count"
+        send_wakeup "$unread_count" "$has_ntfy"
         return 0
     fi
 
@@ -1087,7 +1105,7 @@ send_wakeup_with_escape() {
     # Phase 2 の Escape エスカレーションは無効化し、通常 nudge のみに落とす。
     if [[ "$effective_cli" == "codex" ]]; then
         echo "[$(date)] [SKIP] codex: suppressing Escape escalation for $AGENT_ID; sending plain nudge" >&2
-        send_wakeup "$unread_count"
+        send_wakeup "$unread_count" "$has_ntfy"
         return 0
     fi
 
@@ -1095,7 +1113,7 @@ send_wakeup_with_escape() {
     # Escape送信は処理中のturnを中断させるため有害。Phase 2は通常nudgeに落とす。
     if [[ "$effective_cli" == "claude" ]]; then
         echo "[$(date)] [SKIP] claude: suppressing Escape escalation for $AGENT_ID (Stop hook handles delivery); sending plain nudge" >&2
-        send_wakeup "$unread_count"
+        send_wakeup "$unread_count" "$has_ntfy"
         return 0
     fi
 
@@ -1240,14 +1258,32 @@ for s in data.get('specials', []):
     local has_task_assigned
     has_task_assigned=$(echo "$info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('has_task_assigned') else 0)" 2>/dev/null)
 
+    # cmd_768: Check if unread messages include an ntfy_received (Lord's phone → shogun).
+    # Only this case may bypass the busy guard below for shogun.
+    local has_ntfy
+    has_ntfy=$(echo "$info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('has_ntfy') else 0)" 2>/dev/null)
+
     if [ "$normal_count" -gt 0 ] 2>/dev/null; then
         local now
         now=$(date +%s)
 
+        # cmd_768 v2: shogun + non-ntfy normal message → no nudge, ever (busy or
+        # idle). v1 only guarded the busy branch below, so an idle shogun — the
+        # exact moment the Lord is at the keyboard — still fell through to the
+        # escalation logic and got send-keys. Bail out before any busy/idle
+        # branching. The Lord picks up normal reports by reading the inbox at
+        # the top of his own turn (Stop hook / session-start), not via nudge.
+        if [[ "$AGENT_ID" == "shogun" ]] && [[ "$has_ntfy" != "1" ]]; then
+            echo "[$(date)] [SKIP] shogun: normal (non-ntfy) message — no nudge, regardless of busy state" >&2
+            FIRST_UNREAD_SEEN=$now
+            return 0
+        fi
+
         # When the agent is busy/thinking, do NOT escalate. Interrupting with Escape or /clear
         # can terminate the current thought. Also pause the escalation timer while busy so we
         # don't immediately jump to Phase 2/3 once it becomes idle.
-        # Exception: shogun — ntfy must be delivered immediately.
+        # shogun+ntfy always bypasses this guard (handled by the early return above
+        # for the non-ntfy case; shogun never matches this branch otherwise).
         # Safety net: if busy detection persists for >5 min, assume false-busy (stale flag)
         # and force-create idle flag to allow nudge delivery.
         if agent_is_busy && [[ "$AGENT_ID" != "shogun" ]]; then
@@ -1319,7 +1355,7 @@ for s in data.get('specials', []):
             if disable_normal_nudge; then
                 echo "[$(date)] [SKIP] disable_normal_nudge=1, no normal nudge for $AGENT_ID" >&2
             else
-                send_wakeup "$normal_count"
+                send_wakeup "$normal_count" "$has_ntfy"
             fi
             return 0
         fi
@@ -1332,12 +1368,12 @@ for s in data.get('specials', []):
             if disable_normal_nudge; then
                 echo "[$(date)] [SKIP] disable_normal_nudge=1, deferring to escalation-only path" >&2
             else
-                send_wakeup "$normal_count"
+                send_wakeup "$normal_count" "$has_ntfy"
             fi
         elif [ "$age" -lt "$ESCALATE_PHASE2" ]; then
             # Phase 2 (2-4 min): Escape + nudge
             echo "[$(date)] $normal_count unread for $AGENT_ID (${age}s — escalating: Escape+nudge)" >&2
-            send_wakeup_with_escape "$normal_count"
+            send_wakeup_with_escape "$normal_count" "$has_ntfy"
         else
             # Phase 3 (4+ min): /clear (throttled to once per 5 min)
             if [ "$LAST_CLEAR_TS" -lt "$((now - ESCALATE_COOLDOWN))" ]; then
@@ -1347,12 +1383,12 @@ for s in data.get('specials', []):
                     # Codex /clear -> /new は会話を切ってしまうため、安全側に倒す。
                     echo "[$(date)] ESCALATION Phase 3: $AGENT_ID unresponsive for ${age}s, but cli=codex — skipping /clear." >&2
                     FIRST_UNREAD_SEEN=$now  # Reset timer (no destructive action)
-                    send_wakeup "$normal_count"
+                    send_wakeup "$normal_count" "$has_ntfy"
                 elif [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ] || [ "$AGENT_ID" = "gunshi2" ]; then
                     # Command-layer agents (karo/gunshi/gunshi2/shogun): suppress /clear even in Phase 3
                     echo "[$(date)] [SKIP] ESCALATION Phase 3: $AGENT_ID suppressed (command-layer agent, ${age}s). Using Escape+nudge." >&2
                     FIRST_UNREAD_SEEN=$now  # Reset timer
-                    send_wakeup_with_escape "$normal_count"
+                    send_wakeup_with_escape "$normal_count" "$has_ntfy"
                 else
                     # cmd_760 fix1(b): confirm via pane ground truth immediately before
                     # the destructive /clear send. If busy, defer WITHOUT resetting the
@@ -1379,7 +1415,7 @@ for s in data.get('specials', []):
             else
                 # Cooldown active — fall back to Escape+nudge
                 echo "[$(date)] $normal_count unread for $AGENT_ID (${age}s — /clear cooldown, using Escape+nudge)" >&2
-                send_wakeup_with_escape "$normal_count"
+                send_wakeup_with_escape "$normal_count" "$has_ntfy"
             fi
         fi
     else
