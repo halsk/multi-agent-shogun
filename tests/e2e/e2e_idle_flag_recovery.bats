@@ -95,31 +95,42 @@ wait_for_log() {
     rm -rf "$flag_dir"
 }
 
-# ═══ E2E-010-B: stale busy recovery forces idle flag ═══
+# ═══ E2E-010-B: stale busy recovery forces idle flag (claude stuck-flag scenario) ═══
+#
+# ★subtask_e2e010b_fix_test_scenario (gunshi design evaluation, 甲 recommendation):
+# this test originally exercised the stale-busy-recovery safety net with
+# cli="copilot", but that machinery only ever matters for claude. agent_is_busy()
+# is flag-based for claude (busy = idle flag file ABSENT) and pane-based for
+# every other CLI (agent_is_busy_check() against the live tmux pane) — see
+# scripts/inbox_watcher.sh lines ~944-950. The safety net exists specifically
+# to recover from claude's create-only idle-flag deadlock: the flag can get
+# stuck reporting "busy" for good after a bug, even though the pane itself has
+# long since gone idle. For non-claude CLIs, agent_is_busy() re-reads the real
+# pane every cycle, so there is no "stuck flag" state to recover from in the
+# first place — testing this path with copilot was checking the wrong CLI.
+# The real scenario: idle flag file is simply missing (claude "busy" per
+# flag), the pane has actually been idle the whole time, and unread messages
+# have been sitting for >5 minutes (FIRST_UNREAD_SEEN pre-set stale below).
 
-@test "E2E-010-B: stale busy recovery forces idle flag creation" {
+@test "E2E-010-B: stale busy recovery forces idle flag creation (claude stuck-flag scenario)" {
     local ashigaru1_pane
     ashigaru1_pane=$(pane_target 1)
     local flag_dir log_file watcher_pid first_unread_seen
 
     flag_dir="$(mktemp -d "/tmp/e2e_idle_flags_stale_XXXXXX")"
     local ashigaru_idle_flag="$flag_dir/shogun_idle_ashigaru1"
+    # Note: $ashigaru_idle_flag is never created here — the whole point of
+    # this scenario is that the idle flag is (and stays) absent, so
+    # agent_is_busy() reports "busy" per the flag while the pane is idle.
     first_unread_seen=$(( $(date +%s) - 420 ))
 
-    # E2E-010-A (which runs before this test in the same file) launches its
-    # watcher with cli="claude", which leaves @agent_cli="claude" set on this
-    # pane (setup_e2e_session's default). This test wants "copilot" — without
-    # resetting the option, get_effective_cli_type() finds the stale "claude"
-    # pane value, logs a CLI-drift warning, and uses "claude" instead of the
-    # "copilot" arg below. That sends this test down the claude Stop-hook
-    # branch ("... but agent is busy (claude) — Stop hook will deliver"),
-    # which never reaches the stale-busy-recovery code this test targets —
-    # confirmed via the actual CI log ("[WARN] CLI drift detected for
-    # ashigaru1: arg=copilot, pane=claude. Using pane value.").
-    tmux set-option -p -t "$ashigaru1_pane" @agent_cli "copilot"
-
-    # Start mock in busy state before unread messages arrive.
-    send_to_pane "$ashigaru1_pane" "busy_hold 12"
+    tmux set-option -p -t "$ashigaru1_pane" @agent_cli "claude"
+    # Reset the pane's visible screen so no leftover text from an earlier
+    # test (e.g. E2E-010-A's own /clear cycle) can be misread as busy by
+    # agent_is_busy_check()'s broad keyword fallback (see E2E-009-B fix in
+    # this same file's git history for why `clear-history` alone is not
+    # enough — it doesn't touch the visible screen, only scrollback).
+    tmux send-keys -R -t "$ashigaru1_pane" 2>/dev/null || true
     sleep 1
 
     cp "$PROJECT_ROOT/tests/e2e/fixtures/task_ashigaru1_basic.yaml" \
@@ -132,12 +143,18 @@ wait_for_log() {
     watcher_pid=$(
         IDLE_FLAG_DIR="$flag_dir" \
         FIRST_UNREAD_SEEN="$first_unread_seen" \
-        bash "$E2E_QUEUE/scripts/inbox_watcher.sh" "ashigaru1" "$ashigaru1_pane" "copilot" \
+        bash "$E2E_QUEUE/scripts/inbox_watcher.sh" "ashigaru1" "$ashigaru1_pane" "claude" \
             > "$log_file" 2>&1 &
         echo $!
     )
 
     run wait_for_log "$log_file" "forcing idle flag"
+    if [ "$status" -ne 0 ]; then
+        dump_pane_for_debug "$ashigaru1_pane" "ashigaru1-claude-010B"
+        echo "=== Watcher log ($log_file) ===" >&2
+        cat "$log_file" >&2 2>/dev/null || true
+        echo "=== End watcher log ===" >&2
+    fi
     assert_success
 
     run wait_for_file_within "$ashigaru_idle_flag" 10

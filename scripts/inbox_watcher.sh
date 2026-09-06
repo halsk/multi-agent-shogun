@@ -1338,6 +1338,18 @@ for s in data.get('specials', []):
                     echo "[$(date)] $normal_count unread for $AGENT_ID but agent is busy (claude) — Stop hook will deliver" >&2
                 else
                     # Codex/Copilot/Kimi: No Stop hook. Pause escalation timer while busy.
+                    # NOTE (subtask_e2e010b_first_unread_seen_design, gunshi 2026-09-06):
+                    # this unconditional reset (vs. the claude branch's "only if 0" above)
+                    # is intentionally left as-is, not an oversight. FIRST_UNREAD_SEEN plays
+                    # two roles here — (A) unread-staleness tracking for the safety net
+                    # above, (B) this escalation-timer pause — and this branch only ever
+                    # needs (B): agent_is_busy() is pane-based (not flag-based) for every
+                    # non-claude CLI, so there is no "stuck flag while pane is idle" state
+                    # for the safety net to recover from on this path in the first place
+                    # (entry here requires pane-busy; the safety net's own fire condition
+                    # requires pane-idle — structurally unreachable together). Non-claude
+                    # agents instead rely on pane-based self-correction each cycle, plus
+                    # cmd_771's stall_watchdog.sh as an external CLI-agnostic backstop.
                     FIRST_UNREAD_SEEN=$now
                     echo "[$(date)] $normal_count unread for $AGENT_ID but agent is busy ($busy_cli) — pausing escalation timer" >&2
                 fi
