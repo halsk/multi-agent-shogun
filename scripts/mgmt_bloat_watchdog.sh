@@ -251,6 +251,19 @@ check_layer3() {
 # ── テスト用source ガード ────────────────────────────────────────────────────
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
+# ── flock 単一起動(stall_watchdog.shと同じ作法) ─────────────────────────────
+# 実行が長引いて次のtickと重なった場合、state.yaml への並行read-modify-write
+# (cooldown/streak破損・二重通知)を防ぐ。dry-runでも state_dir 自体は
+# 副作用として作られるが、state.yaml(cooldown本体)はstate_setのdry-run
+# ガードで別途守られている。
+mkdir -p "$STATE_DIR"
+LOCK_FILE="$STATE_DIR/.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    log "already running (lock held) — exiting"
+    exit 0
+fi
+
 # ── メイン実行 ──────────────────────────────────────────────────────────────
 check_layer4
 check_layer3

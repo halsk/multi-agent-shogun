@@ -257,3 +257,26 @@ JSON
 
     rm -rf "$root"
 }
+
+@test "T-MBW-011: 実行が重なった場合、後発は何もせずexit 0で退く(flock単一起動)" {
+    local root
+    root="$(mktemp -d "/tmp/mbw_XXXXXX")"
+    build_tmp_project "$root"
+
+    python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*45000))"
+
+    mkdir -p "$root/queue/mgmt_bloat_watchdog"
+    # 先行プロセスが lock を保持しているのを模擬する(watchdog本体と同じ
+    # STATE_DIR/.lock を flock -w で掴んだまま長時間居座らせる)。
+    exec 8>"$root/queue/mgmt_bloat_watchdog/.lock"
+    flock -x 8
+
+    run run_watchdog "$root"
+    [ "$status" -eq 0 ]
+    [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "0" ]
+    [ "$(ntfy_call_count "$root")" = "0" ]
+
+    flock -u 8
+    exec 8>&-
+    rm -rf "$root"
+}
