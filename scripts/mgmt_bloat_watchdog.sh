@@ -258,10 +258,16 @@ check_layer3() {
 # ガードで別途守られている。
 mkdir -p "$STATE_DIR"
 LOCK_FILE="$STATE_DIR/.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    log "already running (lock held) — exiting"
-    exit 0
+if command -v flock &>/dev/null; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        log "already running (lock held) — exiting"
+        exit 0
+    fi
+else
+    _ld="${LOCK_FILE}.d"; _i=0
+    while ! mkdir "$_ld" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); [ $_i -ge 300 ] && { log "already running (lock held) — exiting"; exit 0; }; done
+    trap "rmdir '$_ld' 2>/dev/null" EXIT
 fi
 
 # ── メイン実行 ──────────────────────────────────────────────────────────────

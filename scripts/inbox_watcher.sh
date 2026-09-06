@@ -255,8 +255,12 @@ maybe_nudge_idle() {
     local idle_age=0
     if [ -f "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" ]; then
         local flag_mtime
-        flag_mtime=$(stat -f %m "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || \
-                     stat -c %Y "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || echo "$now")
+        # -c(GNU)を先に試す。逆順だとGNU stat上で-fは「フォーマット指定」
+        # ではなく「ファイルシステム情報表示」を意味し、失敗時にstdoutへ
+        # 無関係な情報が漏れてflag_mtimeが汚染され、後続の算術式が壊れる
+        # (lib/ledger_mismatch_detect.shで実際に踏んだ・cmd_766教訓)。
+        flag_mtime=$(stat -c %Y "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || \
+                     stat -f %m "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || echo "$now")
         idle_age=$((now - flag_mtime))
     fi
 

@@ -32,12 +32,24 @@ log() {
     echo "[$ts] $*" | tee -a "$LOG_FILE"
 }
 
-# ── flock 単一起動 (slim_yaml.sh 自身の queue lock とは別に、ジョブ自体の多重起動防止) ──
+# ── 単一起動ガード (slim_yaml.sh 自身の queue lock とは別に、ジョブ自体の多重起動防止) ──
+# flock が無い環境(macOSはutil-linuxのflockを標準搭載しない)では
+# mkdir ベースのロックにフォールバックする。「flock: command not found」を
+# 「ロック取得済み」と誤認して黙って no-op する事故があった(macOS CI実測)。
 LOCK_FILE="/tmp/yaml_slim_weekly.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo "[yaml_slim_weekly] already running (lock held). exiting." >&2
-    exit 0
+if command -v flock &>/dev/null; then
+    exec 9>"$LOCK_FILE"
+    if ! flock -n 9; then
+        echo "[yaml_slim_weekly] already running (lock held). exiting." >&2
+        exit 0
+    fi
+else
+    LOCK_DIR="${LOCK_FILE}.d"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        echo "[yaml_slim_weekly] already running (lock held). exiting." >&2
+        exit 0
+    fi
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 fi
 
 log "[START] yaml_slim_weekly dry_run=$DRY_RUN"

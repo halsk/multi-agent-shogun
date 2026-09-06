@@ -77,7 +77,11 @@ now_date()  { date '+%Y-%m-%d'; }
 
 file_mtime_epoch() {
     local f="$1"
-    stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null || echo 0
+    # -c(GNU)を先に試す。逆順だとGNU stat上で-fは「フォーマット指定」
+    # ではなく「ファイルシステム情報表示」を意味し、失敗時にstdoutへ
+    # 無関係な情報が漏れて呼び出し元の算術式を壊す
+    # (lib/ledger_mismatch_detect.shで実際に踏んだ・cmd_766教訓)。
+    stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null || echo 0
 }
 
 iso_to_epoch() {
@@ -239,10 +243,16 @@ fi
 
 # ── flock 単一起動 ────────────────────────────────────────────────────────────
 LOCK_FILE="/tmp/console_stall_watchdog.lock"
-exec 8>"$LOCK_FILE"
-if ! flock -n 8; then
-    echo "[console_stall_watchdog] already running (lock held). exiting." >&2
-    exit 0
+if command -v flock &>/dev/null; then
+    exec 8>"$LOCK_FILE"
+    if ! flock -n 8; then
+        echo "[console_stall_watchdog] already running (lock held). exiting." >&2
+        exit 0
+    fi
+else
+    _ld="${LOCK_FILE}.d"; _i=0
+    while ! mkdir "$_ld" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); [ $_i -ge 300 ] && { echo "[console_stall_watchdog] already running (lock held). exiting." >&2; exit 0; }; done
+    trap "rmdir '$_ld' 2>/dev/null" EXIT
 fi
 
 # ── cmd_767 第一層(心拍): 本ジョブ自身の実行(生死)を last-run.json に記録する。
