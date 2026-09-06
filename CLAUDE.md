@@ -394,6 +394,16 @@ When processing large datasets (30+ items requiring individual web search, API c
 
 - Do NOT add Co-Authored-By lines to commits ⚡ hooks で強制
 
+# GitHub Actions
+
+このリポジトリの `.github/workflows/test.yml` は、リポジトリ単位の Actions 権限が
+明示的に許可されるまで一度も実行されない(`state: active` と表示されても run が
+0件のまま無音で死んでいる)。CI が緑/赤いずれかの結果を返すことを定期的に実測で
+確認せよ——`gh api repos/{owner}/{repo}/actions/workflows/{file}/runs` の
+`total_count` が増えているかで判定できる。「ローカルの bats 報告」だけを根拠に
+main へ merge するのは、CI が機能しているかを確かめるまでの暫定運用であり、
+恒久的な代替にしてはならない。
+
 # Claude Code Hooks
 
 `scripts/hooks/guard.sh` は Claude Code の PreToolUse hook として動作し、以下のルールを自動強制する。
