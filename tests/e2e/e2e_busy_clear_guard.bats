@@ -102,6 +102,21 @@ wait_for_log() {
 
     touch "$idle_flag"
 
+    # E2E-009-A's busy_hold echoes "Working on task (Ns • esc to interrupt)"
+    # into the pane once per held second. agent_is_busy_check()'s broad
+    # keyword fallback (Working|Thinking|...) scans the bottom 5 VISIBLE
+    # lines, not just the last one, so that text is still inside the
+    # capture-pane window here even though the mock has already returned
+    # to its idle prompt — a false "still busy" read from leftover screen
+    # content, not a real busy state (same class of issue lib/agent_status.sh's
+    # T-BUSY-008 fix addressed for the 'esc to' check, but the keyword
+    # fallback below it isn't restricted to the last line). `clear-history`
+    # only frees scrollback *above* the visible screen and does not touch
+    # it (verified: capture-pane still returned the old lines after
+    # clear-history alone) — `send-keys -R` actually resets the terminal's
+    # visible screen, which is what's needed here.
+    tmux send-keys -R -t "$ashigaru1_pane" 2>/dev/null || true
+
     cp "$PROJECT_ROOT/tests/e2e/fixtures/task_ashigaru1_basic.yaml" \
         "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
