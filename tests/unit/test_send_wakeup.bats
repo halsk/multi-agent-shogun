@@ -607,6 +607,86 @@ MOCK
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
+# --- T-CODEX-016: send_wakeup for codex trusts Enter, skips echo-confirmation retry ---
+# cmd_777(上流D区分決着)実測確認で発見: Codexはsend-keys後の自分の入力を
+# transcriptへecho backする。旧ロジックはcapture-paneでnudgeテキストを
+# 探して「まだ残っている=送信失敗」と誤判定し、無駄なC-u+再送を最大2回
+# 繰り返していた(進行中のCodexのターンを妨害しうる)。
+
+@test "T-CODEX-016: send_wakeup for codex returns after first attempt even if pane echoes the nudge text" {
+    run bash -c '
+        MOCK_PANE_CLI="codex"
+        MOCK_CAPTURE_PANE="inbox4"
+        source "'"$TEST_HARNESS"'"
+        CLI_TYPE="codex"
+        send_wakeup 4
+    '
+    [ "$status" -eq 0 ]
+
+    # nudge + Enter は一度だけ送られる(echoを誤検知してリトライしない)
+    [ "$(grep -c "send-keys.*inbox4" "$MOCK_LOG")" -eq 1 ]
+    ! grep -q "WARNING: nudge text still visible" <<< "$output"
+}
+
+@test "T-CODEX-017: send_wakeup for claude still retries when nudge text is visible (unchanged)" {
+    run bash -c '
+        MOCK_PANE_CLI="claude"
+        MOCK_CAPTURE_PANE="inbox4"
+        source "'"$TEST_HARNESS"'"
+        CLI_TYPE="claude"
+        send_wakeup 4
+    '
+    [ "$status" -eq 0 ]
+
+    # claude経路は従来どおりecho確認で残存検知しリトライする(regression guard)
+    [ "$(grep -c "send-keys.*inbox4" "$MOCK_LOG")" -gt 1 ]
+}
+
+# --- T-NUDGE-001: reset_nudge_throttle clears throttle state on full-read ---
+# cmd_777(上流D区分決着)実測確認で発見: should_throttle_nudge は
+# (LAST_NUDGE_COUNT, LAST_NUDGE_TS) のペアで判定するため、unread=0まで
+# 処理し終えた後、後続の別バッチがたまたま同じ件数でcooldown窓内に届くと
+# 誤って抑止されてしまう。reset_nudge_throttle を呼べばこの穴を塞げる。
+
+@test "T-NUDGE-001: reset_nudge_throttle clears LAST_NUDGE_TS/LAST_NUDGE_COUNT" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        LAST_NUDGE_COUNT="3"
+        LAST_NUDGE_TS=$(date +%s)
+        reset_nudge_throttle
+        echo "COUNT=[$LAST_NUDGE_COUNT] TS=[$LAST_NUDGE_TS]"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"COUNT=[] TS=[0]"* ]]
+}
+
+@test "T-NUDGE-002: without reset, a later batch with the same count is wrongly throttled within cooldown" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        LAST_NUDGE_COUNT="3"
+        LAST_NUDGE_TS=$(date +%s)
+        # New unrelated batch of unread=3 arrives moments later — same count,
+        # still inside the 60s cooldown window.
+        should_throttle_nudge 3
+        echo "RESULT=$?"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"RESULT=0"* ]]
+}
+
+@test "T-NUDGE-003: after reset_nudge_throttle, a same-count batch within the old window is NOT throttled" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        LAST_NUDGE_COUNT="3"
+        LAST_NUDGE_TS=$(date +%s)
+        reset_nudge_throttle
+        should_throttle_nudge 3
+        echo "RESULT=$?"
+    '
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"RESULT=1"* ]]
+}
+
 # --- T-CODEX-009: invalid model_switch payload is rejected ---
 
 @test "T-CODEX-009: normalize_special_command rejects invalid model_switch payload" {

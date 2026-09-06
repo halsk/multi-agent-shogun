@@ -128,6 +128,16 @@ NUDGE_COOLDOWN_SEC=${NUDGE_COOLDOWN_SEC:-60}
 # Codex は「思考中に入力が入ると即拾う」挙動があり、思考がループすることがあるため長めにする。
 NUDGE_COOLDOWN_SEC_CODEX=${NUDGE_COOLDOWN_SEC_CODEX:-300}
 
+# should_throttle_nudge() keys throttling on (count, timestamp) — not a single
+# global cooldown gate. Without a reset, a later unrelated batch that happens
+# to share the same unread_count as the previous (now fully-read) batch gets
+# silently swallowed if it lands within the old cooldown window. Call this
+# whenever unread reaches 0 (fully processed) so the next batch always nudges.
+reset_nudge_throttle() {
+    LAST_NUDGE_TS=0
+    LAST_NUDGE_COUNT=""
+}
+
 # ─── Context reset tracking ───
 # Tracks whether we've sent /new or /clear for the current task_assigned batch.
 # Resets to 0 when all messages are read (FIRST_UNREAD_SEEN → 0).
@@ -1065,6 +1075,15 @@ send_wakeup() {
         sleep 0.3
         timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
         sleep 0.5
+        if [[ "$effective_cli_for_nudge" == "codex" ]]; then
+            # Codex echoes the submitted line back into its own transcript after
+            # Enter. The capture-pane confirmation below would match that echo
+            # and treat a successful send as "still stuck in the input field",
+            # forcing a pointless C-u+retry that can interrupt a turn Codex
+            # just started. Trust that Enter was delivered for Codex.
+            echo "[$(date)] Wake-up sent to $AGENT_ID (${unread_count} unread, attempt $((attempt+1)), cli=codex)" >&2
+            return 0
+        fi
         # 送信確認: capture-pane でプロンプトにnudgeテキストが残っていないか確認
         local pane_content
         pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | tail -5 || echo "")
@@ -1179,6 +1198,7 @@ process_unread() {
         fi
         FIRST_UNREAD_SEEN=0
         NEW_CONTEXT_SENT=0
+        reset_nudge_throttle
         # Ensure idle flag exists (fast-path recovery)
         touch "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || true
         if ! agent_is_busy; then
@@ -1429,6 +1449,7 @@ for s in data.get('specials', []):
         fi
         FIRST_UNREAD_SEEN=0
         NEW_CONTEXT_SENT=0
+        reset_nudge_throttle
         # Ensure idle flag exists when all messages are read.
         # Recovers from stop_hook_inbox.sh flag loss during block cycles.
         touch "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || true
