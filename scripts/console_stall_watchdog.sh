@@ -102,7 +102,11 @@ state_set() {
     local field="$1" value="$2"
     [[ -f "$STATE_FILE" ]] || printf 'created: %s\n' "$(now_date)" > "$STATE_FILE"
     if grep -qE "^${field}:" "$STATE_FILE" 2>/dev/null; then
-        sed -i '' "s|^${field}:.*|${field}: ${value}|" "$STATE_FILE"
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _tmp
+        _tmp=$(mktemp)
+        sed "s|^${field}:.*|${field}: ${value}|" "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
     else
         printf '%s: %s\n' "$field" "$value" >> "$STATE_FILE"
     fi
@@ -200,9 +204,13 @@ notify_dashboard() {
     fi
     dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '## 🚨 要対応' "$dashboard"; then
-        sed -i '' "/## 🚨 要対応/a\\
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/## 🚨 要対応/a\\
 $entry
-" "$dashboard"
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%b\n' "$entry" >> "$dashboard"
     fi
