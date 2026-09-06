@@ -21,6 +21,11 @@
 #       (impure・ネットワークアクセスあり)。PRが1件も無ければ "0|0"。
 #       matched_run_epoch は直近PRに紐付くworkflow runが見つかった場合の
 #       run created_at epoch、見つからなければ 0。
+#       ★gh api呼び出し自体が失敗(認証切れ・レート制限・ネットワーク断等)
+#       した場合は "-1|-1" を返す——"0|0"(PRが1件も無い正常な空)と区別し、
+#       gh自体の不調をok扱いのまま握り潰さない(この検知の目的そのものが
+#       「黙って死んでいる」を見つけることなので、検知器自身が黙って死ぬのは
+#       本末転倒)。
 #
 #   ci_heartbeat_judge <pr_created_epoch> <matched_run_epoch> <grace_sec> <now_epoch>
 #     → "<status>|<detail>" を返す。status は ok / stale のいずれか(pure関数・
@@ -41,9 +46,14 @@ ci_heartbeat_fetch() {
   local owner_repo="$1"
   local workflow_file="$2"
 
-  local pr_line pr_number pr_created_iso pr_created_epoch
+  local pr_line pr_rc pr_number pr_created_iso pr_created_epoch
   pr_line=$(gh api "repos/${owner_repo}/pulls?state=all&sort=created&direction=desc&per_page=1" \
     --jq '(.[0] // {}) | "\(.number // 0)|\(.created_at // "")"' 2>/dev/null)
+  pr_rc=$?
+  if [[ "$pr_rc" -ne 0 ]]; then
+    echo "-1|-1"
+    return
+  fi
   pr_number="${pr_line%%|*}"
   pr_created_iso="${pr_line#*|}"
   pr_created_epoch=$(_ci_iso_to_epoch "$pr_created_iso")
@@ -71,6 +81,11 @@ ci_heartbeat_judge() {
   local matched_run_epoch="$2"
   local grace_sec="$3"
   local now_epoch="$4"
+
+  if [[ "$pr_created_epoch" -eq -1 ]]; then
+    echo "stale|gh api呼び出し自体が失敗した(認証切れ・レート制限・ネットワーク断等の可能性)"
+    return
+  fi
 
   if [[ "$pr_created_epoch" -eq 0 ]]; then
     echo "ok|"

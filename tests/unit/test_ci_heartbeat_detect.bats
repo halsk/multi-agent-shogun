@@ -85,6 +85,20 @@ setup() {
   [[ "$output" == "ok|" ]]
 }
 
+# ── T-CIHB-007: gh api呼び出し自体の失敗(-1|-1)は「PRなし(0|0)」と区別し、
+# grace_secを待たず即stale扱いする(検知器自身がgh不調でok握り潰しにならない) ──
+
+@test "T-CIHB-007: stale immediately when the gh api call itself failed (-1 sentinel)" {
+  source "$LIB_FILE"
+
+  now=$(date '+%s')
+
+  run ci_heartbeat_judge -1 -1 1800 "$now"
+  [ "$status" -eq 0 ]
+  [[ "$output" == stale\|* ]]
+  [[ "$output" == *"gh api"* ]]
+}
+
 # ── T-CIHB-006: stall_watchdog.sh がこの check を実際に呼び出している(相乗り確認) ──
 
 @test "T-CIHB-006: stall_watchdog.sh sources ci_heartbeat_detect.sh and invokes the check" {
