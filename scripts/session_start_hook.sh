@@ -45,10 +45,9 @@ case "$AGENT_ID" in
 以下を順番に実行せよ (省略禁止、ユーザ応答/inbox 処理はこの後):
 
 1. \`tmux display-message -t "\$TMUX_PANE" -p '#{@agent_id}'\` で自己識別を再確認
-2. \`mcp__memory__read_graph\` でルール・嗜好・教訓を復元
-3. (shogun のみ) \`memory/MEMORY.md\` を Read
-4. \`instructions/${AGENT_ID}.md\` を最後まで必読 — persona・戦国口調・forbidden_actions 再確立 **(絶対省略禁止)**
-5. \`queue/\` 配下 (tasks/, inbox/, reports/) から state 再構築
+2. (shogun のみ) \`memory/MEMORY.md\` を Read — 永続的な cross-session memory の唯一の正 (Memory MCP / \`mcp__memory__read_graph\` は退役済み・当機体には存在せず呼び出し禁止)
+3. \`instructions/${AGENT_ID}.md\` を最後まで必読 — persona・戦国口調・forbidden_actions 再確立 **(絶対省略禁止)**
+4. \`queue/\` 配下 (tasks/, inbox/, reports/) から state 再構築
 
 **Step 1-4 完了まで inbox 処理・ユーザ応答は禁止**。inbox{N} nudge が先に届いても無視し、persona 確立を優先せよ。
 
