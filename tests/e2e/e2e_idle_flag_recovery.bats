@@ -111,6 +111,25 @@ wait_for_log() {
 # The real scenario: idle flag file is simply missing (claude "busy" per
 # flag), the pane has actually been idle the whole time, and unread messages
 # have been sitting for >5 minutes (FIRST_UNREAD_SEEN pre-set stale below).
+#
+# ★Two startup-time behaviors of inbox_watcher.sh had to be worked around to
+# reach that state at all (confirmed via real CI logs, not guessed):
+#   1. `if CLI_TYPE==claude: touch idle_flag` at the very top of the script
+#      (unconditional — "CLI starts idle").
+#   2. process_unread_once()'s own first pass: with the inbox still empty at
+#      that instant, it takes the "no unread messages" branch, which ALSO
+#      touches the idle flag AND resets FIRST_UNREAD_SEEN to 0 — silently
+#      wiping out any pre-seeded stale timestamp before the real message ever
+#      arrives, no matter how the test's own timing is arranged afterward.
+# Both fire off of the process's OWN internal state at launch, so no amount
+# of external `rm`/timing from the test can outrun them individually. The
+# combination that works: launch with a non-claude CLI_TYPE arg (skips #1,
+# which only checks the literal arg) while the pane's @agent_cli is already
+# "claude" (so get_effective_cli_type() — used everywhere else, including the
+# actual busy check — still resolves "claude"), AND have the task_assigned
+# message already sitting in the inbox before the watcher starts (so
+# process_unread_once()'s first pass finds normal_count=1 and takes the
+# busy-check branch directly, never reaching #2's reset-to-0 branch at all).
 
 @test "E2E-010-B: stale busy recovery forces idle flag creation (claude stuck-flag scenario)" {
     local ashigaru1_pane
@@ -119,6 +138,9 @@ wait_for_log() {
 
     flag_dir="$(mktemp -d "/tmp/e2e_idle_flags_stale_XXXXXX")"
     local ashigaru_idle_flag="$flag_dir/shogun_idle_ashigaru1"
+    # Note: never created in this test — the whole scenario is that it's
+    # (still) absent, simulating the create-only-flag deadlock this safety
+    # net exists to recover from.
     first_unread_seen=$(( $(date +%s) - 420 ))
 
     tmux set-option -p -t "$ashigaru1_pane" @agent_cli "claude"
@@ -133,32 +155,24 @@ wait_for_log() {
     cp "$PROJECT_ROOT/tests/e2e/fixtures/task_ashigaru1_basic.yaml" \
         "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
-    # Start the watcher WITHOUT the task_assigned message yet.
-    # inbox_watcher.sh unconditionally touches the idle flag at startup for
-    # cli=claude ("CLI starts idle") — if the task_assigned message were
-    # already queued, process_unread_once() would consume it right there
-    # via the normal send_context_reset() path (flag present = idle) before
-    # this test ever reaches the busy branch it's actually targeting.
+    # The message must exist BEFORE the watcher starts (see the header note
+    # above for why) — this is the one exception among the E2E-010/E2E-009
+    # tests where message-before-watcher is required, not incidental.
+    bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+
+    # CLI_TYPE arg deliberately NOT "claude" (see header note: skips the
+    # top-of-script auto-touch). @agent_cli="claude" above makes
+    # get_effective_cli_type() still resolve "claude" for the actual busy
+    # check — this will log a harmless CLI-drift warning, which is expected.
     log_file="/tmp/e2e_inbox_watcher_ashigaru1_stale_busy_${BASHPID}.log"
     watcher_pid=$(
         IDLE_FLAG_DIR="$flag_dir" \
         FIRST_UNREAD_SEEN="$first_unread_seen" \
-        bash "$E2E_QUEUE/scripts/inbox_watcher.sh" "ashigaru1" "$ashigaru1_pane" "claude" \
+        bash "$E2E_QUEUE/scripts/inbox_watcher.sh" "ashigaru1" "$ashigaru1_pane" "codex" \
             > "$log_file" 2>&1 &
         echo $!
     )
-
-    run wait_for_file_within "$ashigaru_idle_flag" 10
-    assert_success
-
-    # Simulate the flag going missing (the create-only-flag deadlock this
-    # safety net exists to recover from) BEFORE the unread message arrives,
-    # so agent_is_busy() reports "busy" (flag absent) from the very first
-    # read — matching the real "stuck busy while pane is actually idle" bug.
-    rm -f "$ashigaru_idle_flag"
-
-    bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
 
     run wait_for_log "$log_file" "forcing idle flag"
     if [ "$status" -ne 0 ]; then
