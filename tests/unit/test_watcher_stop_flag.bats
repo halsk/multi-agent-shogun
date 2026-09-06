@@ -108,11 +108,6 @@ teardown() {
         fi
         sleep 1
     done
-    echo "# --- T-STOP-003/004 debug ---" >&3
-    echo "# uname=$(uname -a)" >&3
-    echo "# exited=$exited" >&3
-    while IFS= read -r __l; do echo "# $__l" >&3; done < "$TEST_FLAG_DIR/watcher.log"
-
     [ "$exited" -eq 1 ]
 
     # The flag must have been consumed (rm'd) by the watcher itself, not left behind.
