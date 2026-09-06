@@ -20,6 +20,10 @@ cd "$SCRIPT_DIR"
 source "$SCRIPT_DIR/lib/agent_status.sh"
 # shellcheck source=../lib/stall_detect.sh
 source "$SCRIPT_DIR/lib/stall_detect.sh"
+# shellcheck source=../lib/ledger_mismatch_detect.sh
+# cmd_766 第一層: report done なのに台帳 cmd が pending/in_progress のまま
+# 残っている「done未遷移」を検知する(cmd_741 第二層watchdogへ相乗り・新機構は作らない)
+source "$SCRIPT_DIR/lib/ledger_mismatch_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -46,6 +50,9 @@ GRACE_P3=$((10 * 60))   # P2後+10分
 # cooldown (同一 phase 再送防止)
 COOLDOWN_P1=$((10 * 60))
 COOLDOWN_P23=$((15 * 60))
+
+# cmd_766 第一層: report done vs 台帳 pending/in_progress の許容経過時間(目安6h・gunshi設計)
+LEDGER_MISMATCH_THRESHOLD=$((6 * 60 * 60))
 
 mkdir -p "$STATE_DIR" logs
 
@@ -277,6 +284,60 @@ escalate() {
     log "[WATCH] $agent: stall=$sig elapsed=${elapsed}s phase=$phase (no action yet)"
 }
 
+# ── cmd_766 第一層: report-done-but-ledger-pending 検知 ──────────────────────
+
+notify_dashboard_ledger_mismatch() {
+    local cmd_id="$1"
+    local report_file="$2"
+    local ledger_status="$3"
+    local age="$4"
+    local ts
+    ts=$(now_iso)
+    local hours=$(( age / 3600 ))
+    local entry="- 🚨 [ledger_mismatch] ${cmd_id}: ${report_file##*/} はdone報告済だが台帳status=${ledger_status}のまま約${hours}時間経過 @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        sed -i '' "/🚨要対応/a\\
+$entry
+" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_ledger_mismatch() {
+    local cmd_id="$1"
+    local ledger_status="$2"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "ledger_mismatch: ${cmd_id} がdone報告済なのに台帳${ledger_status}のまま。是正せよ。"
+}
+
+check_ledger_mismatches() {
+    local reports_dir="$SCRIPT_DIR/queue/reports"
+    local ledger_file="$SCRIPT_DIR/queue/shogun_to_karo.yaml"
+
+    local cmd_id report_file ledger_status age
+    while IFS='|' read -r cmd_id report_file ledger_status age; do
+        [[ -z "$cmd_id" ]] && continue
+
+        local state_key="ledger_mismatch__${cmd_id}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$ledger_status" ]]; then
+            # 同一状態を既に通知済み → 再送しない(スパム防止)
+            continue
+        fi
+
+        log "[LEDGER-MISMATCH] $cmd_id: report=done ledger=$ledger_status age=${age}s"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard+ntfy for $cmd_id"
+            continue
+        fi
+        notify_dashboard_ledger_mismatch "$cmd_id" "$report_file" "$ledger_status" "$age"
+        send_ntfy_ledger_mismatch "$cmd_id" "$ledger_status"
+        state_set "$state_key" "notified_status" "$ledger_status"
+    done < <(detect_ledger_mismatches "$reports_dir" "$ledger_file" "$LEDGER_MISMATCH_THRESHOLD")
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -371,6 +432,9 @@ for agent in "${ALL_AGENTS[@]}"; do
     log "[STALL] $agent: sig=$sig elapsed=${elapsed}s hash=$current_hash"
     escalate "$agent" "$elapsed" "$sig"
 done
+
+# cmd_766 第一層: report done vs 台帳 pending/in_progress の突き合わせ(全agent scan後・1回のみ)
+check_ledger_mismatches
 
 log "[DONE] stall_watchdog scan complete"
 

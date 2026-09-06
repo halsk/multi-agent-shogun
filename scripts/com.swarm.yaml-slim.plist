@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.swarm.yaml-slim</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/hal/tools/multi-agent-shogun/scripts/yaml-slim-launcher.sh</string>
+  </array>
+  <!-- 週次: 日曜 03:00 JST (launchd はローカル時刻で解釈する。UTC 換算不要) -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>3</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <!-- 起動時は実行しない (install 直後のスパイク防止) -->
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/yaml_slim_weekly.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/yaml_slim_weekly.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <!-- HC_PING_URL_YAMLSLIM は yaml-slim-launcher.sh が Keychain から注入する。
+         Keychain キー: hc-ping-url-yaml-slim (service: keychain-secrets)
+         登録: security add-generic-password -s hc-ping-url-yaml-slim -a keychain-secrets -U -w <ping_url> -->
+  </dict>
+</dict>
+</plist>
