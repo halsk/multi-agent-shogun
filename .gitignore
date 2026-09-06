@@ -73,7 +73,6 @@
 !lib/cli_adapter.sh
 !lib/ntfy_auth.sh
 !lib/agent_status.sh
-!lib/agent_registry.sh
 !lib/branch_policy.sh
 !lib/stall_detect.sh
 !lib/console_stall_detect.sh
