@@ -117,3 +117,42 @@ epoch_of() {
   [ "$status" -eq 1 ]
   [ ! -s "$CALLS_LOG" ]
 }
+
+# ── T-DM-007: status: blockedのエージェントは放置idle大でも除外(2026-09-07
+#   将軍実測・ashigaru3の35時間放置事故を受けた設計変更) ──
+@test "T-DM-007: status:blockedは放置扱いされず発火しない" {
+  cat > "$TMP_DIR/tasks/ashigaru_blocked.yaml" <<'YAML'
+task:
+  status: blocked
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru_blocked.yaml"
+  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-008: 7名中1名だけ死んでいても(他は稼働中)個別に検知する
+#   (「最新1本のmtimeだけ見る」旧設計の穴=ashigaru3型事故の再現テスト) ──
+@test "T-DM-008: 他のエージェントが稼働中でも1名だけ放置なら個別検知する" {
+  cat > "$TMP_DIR/tasks/ashigaru_stalled.yaml" <<'YAML'
+task:
+  status: assigned
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru_stalled.yaml"
+
+  cat > "$TMP_DIR/tasks/ashigaru_active.yaml" <<'YAML'
+task:
+  status: assigned
+YAML
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru_active.yaml"
+
+  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ -s "$CALLS_LOG" ]
+  run grep -o "ashigaru_stalled" "$DEADMAN_DASHBOARD"
+  [ -n "$output" ]
+  run grep -o "ashigaru_active" "$DEADMAN_DASHBOARD"
+  [ -z "$output" ]
+}

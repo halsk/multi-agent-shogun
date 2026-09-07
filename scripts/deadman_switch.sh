@@ -16,6 +16,12 @@
 #   1403分(約23.4h)ギャップは実際のashigaru4凍結事故の期間と一致した。
 #   よって「目安40分」ではなく実測正常上限(126分)に十分な余裕を持たせた
 #   150分(2.5h)を採用する——事故発覚は24hから2.5hへ大幅短縮される。
+#
+# 設計変更(2026-09-07 23:32将軍実測・addendum反映): 当初「最新1本のmtime」
+# だけを見る設計では、7名中1名だけ死んでも他の稼働者がtask YAMLを動かし
+# 続ける限り網が鳴らなかった(ashigaru3が35時間気づかれなかった実例)。
+# ★各エージェントのtask YAMLを個別に見る★よう改める。ただし
+# status: blocked(殿/外部の手番待ち)は正しく待っているだけなので対象外。
 THRESHOLD_MIN=150
 
 set -uo pipefail
@@ -44,29 +50,33 @@ hour=$((10#$(date -r "$now_epoch" '+%H' 2>/dev/null || date -d "@$now_epoch" '+%
 # ⑦ 網自身の生存証跡(この網自身を監視する「網の網」は作らない)
 touch "$LIVENESS_FILE"
 
-latest_mtime=0
+file_count=0
+stalled=()
 for f in "$TASKS_DIR"/*.yaml; do
   [ -f "$f" ] || continue
+  file_count=$((file_count + 1))
   m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
-  [ -n "$m" ] && [ "$m" -gt "$latest_mtime" ] && latest_mtime=$m
+  [ -z "$m" ] && continue
+  status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
+  [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
+  idle=$(( (now_epoch - m) / 60 ))
+  [ "$idle" -ge "$THRESHOLD_MIN" ] && stalled+=("$(basename "$f" .yaml)(status=${status:-不明}・idle=${idle}分)")
 done
 
-if [ "$latest_mtime" -eq 0 ]; then
+if [ "$file_count" -eq 0 ]; then
   echo "[deadman_switch] $now_iso queue/tasks/*.yaml が見つからぬ。判定不能。" >> "$LOG_FILE"
   exit 1
 fi
-
-idle_min=$(( (now_epoch - latest_mtime) / 60 ))
 
 in_night=false
 if [ "$hour" -ge "$NIGHT_START_HOUR" ] || [ "$hour" -lt "$NIGHT_END_HOUR" ]; then
   in_night=true
 fi
 
-echo "[deadman_switch] $now_iso idle_min=$idle_min in_night=$in_night" >> "$LOG_FILE"
+echo "[deadman_switch] $now_iso files=$file_count stalled=${#stalled[@]} in_night=$in_night" >> "$LOG_FILE"
 
 # ⑦ 最終実行時刻をdashboard.mdへ1行出力(heartbeat行を毎回上書き・追記しない)
-heartbeat_line="<!-- deadman_switch:heartbeat --> 🕐 [deadman_switch] 最終実行 $now_iso (idle=${idle_min}分・夜間=${in_night})"
+heartbeat_line="<!-- deadman_switch:heartbeat --> 🕐 [deadman_switch] 最終実行 $now_iso (files=${file_count}・stalled=${#stalled[@]}・夜間=${in_night})"
 if [ -f "$DASHBOARD" ] && grep -q '<!-- deadman_switch:heartbeat -->' "$DASHBOARD"; then
   _hb_tmp=$(mktemp)
   awk -v line="$heartbeat_line" '{ if ($0 ~ /<!-- deadman_switch:heartbeat -->/) print line; else print }' "$DASHBOARD" > "$_hb_tmp" && mv "$_hb_tmp" "$DASHBOARD"
@@ -75,15 +85,17 @@ else
 fi
 
 # ここから先は「停止」判定時のみ(夜間は殿のお休みを妨げぬため発火しない)
-[ "$idle_min" -lt "$THRESHOLD_MIN" ] && exit 0
+[ "${#stalled[@]}" -eq 0 ] && exit 0
 $in_night && exit 0
 
+# cooldownは全体で1本(agent毎に持たず60行の縛りを優先・addendum⑤準拠)
 last_fire=0
 [ -f "$LAST_FIRE_FILE" ] && last_fire=$(cat "$LAST_FIRE_FILE" 2>/dev/null || echo 0)
 [ $(( now_epoch - last_fire )) -lt "$COOLDOWN_SEC" ] && exit 0
 
-msg="🚨【死者確認スイッチ】queue/tasks/*.yamlが${idle_min}分間無更新。家中全体が停止している可能性 @ $now_iso"
+detail=$(IFS=', '; echo "${stalled[*]}")
+msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
 bash "$SCRIPT_DIR/scripts/ntfy.sh" "$msg"
 echo "$now_epoch" > "$LAST_FIRE_FILE"
-printf '\n- 🚨 [deadman_switch] queue/tasks/*.yamlが%s分間無更新→ntfy送信 @ %s\n' "$idle_min" "$now_iso" >> "$DASHBOARD"
-echo "[deadman_switch] $now_iso FIRED idle_min=$idle_min" >> "$LOG_FILE"
+printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中: %s→ntfy送信 @ %s\n' "$detail" "$now_iso" >> "$DASHBOARD"
+echo "[deadman_switch] $now_iso FIRED stalled=${stalled[*]}" >> "$LOG_FILE"
