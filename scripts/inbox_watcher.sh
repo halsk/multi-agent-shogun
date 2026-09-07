@@ -119,6 +119,15 @@ LAST_CLEAR_TS=${LAST_CLEAR_TS:-0}
 ESCALATE_PHASE1=${ESCALATE_PHASE1:-120}
 ESCALATE_PHASE2=${ESCALATE_PHASE2:-240}
 ESCALATE_COOLDOWN=${ESCALATE_COOLDOWN:-300}
+# cmd_778: minimum gap between two /clear|/new sends to the SAME agent.
+# send_cli_command()'s clear_command path and send_context_reset()'s
+# task_assigned path are independent send sites that both funnel through
+# LAST_CLEAR_TS — without this guard, an auto-recovery task_assigned message
+# enqueued right after a clear_command's /clear (enqueue_recovery_task_assigned,
+# always fired on clear_sent==1) reaches send_context_reset() on the very next
+# cycle and can send a SECOND /clear while the first one's effects (CLAUDE.md
+# reload, startup-prompt delivery) are still settling.
+CLEAR_RESEND_COOLDOWN_SEC=${CLEAR_RESEND_COOLDOWN_SEC:-60}
 
 # ─── Nudge throttle ───
 # Avoid spamming the same "inboxN" into the pane every timeout tick.
@@ -590,6 +599,56 @@ PY
     ) 200>"$LOCKFILE" 2>/dev/null
 }
 
+# ─── Send a reset command (/clear or /new) with residue guard + verification ───
+# cmd_778: extracted from send_cli_command()'s inline /clear handling so
+# send_context_reset() (task_assigned path) can share the SAME safety net.
+# Before this fix, send_context_reset() sent a bare tmux send-keys "$reset_cmd"
+# with no C-c/C-u prefix-clear and no accept verification — the one thing
+# send_cli_command() already had (cmd_760 fix3, for the identical residue
+# problem on this same site). If stale unsent text was still sitting in the
+# input line (e.g. a startup-prompt Enter swallowed by a still-busy pane),
+# send_context_reset()'s raw send would type "/clear" right after it and
+# submit the whole concatenated string as ONE non-slash-command turn instead
+# of a real context reset — silently failing to reset anything.
+# Returns 0 always (best-effort; logs + purges the input line if every
+# retry still shows the command text, matching send_wakeup's retry style).
+send_reset_command_verified() {
+    local actual_cmd="$1"
+    local effective_cli="$2"
+    local max_retries=2 attempt=0 sent_ok=0
+    while [ $attempt -le $max_retries ]; do
+        if [[ "$effective_cli" != "codex" ]]; then
+            timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
+            sleep 0.5
+        fi
+        timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+        sleep 0.3
+        timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
+        sleep 1.0
+        timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+        sleep 0.5
+        # Check ONLY the last non-blank line, not a multi-line tail window.
+        # Claude Code legitimately echoes "> /clear" into scrollback history
+        # once the command IS accepted — scanning several lines would match
+        # that echo and cause a false "still queued" retry on every single
+        # successful /clear (the same T-BUSY-008 class of bug lib/agent_status.sh
+        # already had to fix once for busy detection).
+        local pane_content
+        pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 || echo "")
+        if echo "$pane_content" | grep -qF "$actual_cmd"; then
+            echo "[$(date)] WARNING: $actual_cmd text still visible in pane, retrying (attempt $((attempt+1)))" >&2
+            attempt=$((attempt+1))
+            continue
+        fi
+        sent_ok=1
+        break
+    done
+    if [ "$sent_ok" -eq 0 ]; then
+        echo "[$(date)] WARNING: $actual_cmd may not have been accepted after $max_retries retries for $AGENT_ID — purging input line defensively" >&2
+        timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+    fi
+}
+
 # ─── Send CLI command via pty direct write ───
 # For /clear and /model only. These are CLI commands, not conversation messages.
 # CLI_TYPE別分岐: claude→そのまま, codex→/clear対応・/modelスキップ,
@@ -628,6 +687,19 @@ send_cli_command() {
     if [[ "$cmd" == "/clear" ]] && agent_is_busy_confirmed; then
         echo "[$(date)] [SKIP] Agent is busy (confirmed via pane) — /clear deferred to next cycle (agent=$AGENT_ID)" >&2
         return 0
+    fi
+
+    # cmd_778: explicit cooldown guard, same choke point, same CLEAR_RESEND_COOLDOWN_SEC
+    # as send_context_reset()'s guard. Previously this path relied only on the
+    # implicit 30s "assume busy" window inside agent_is_busy_confirmed() above —
+    # correct but indirect, and easy to weaken by accident if that window ever
+    # changes for unrelated reasons. Make the intent explicit here too.
+    if [[ "$cmd" == "/clear" ]] && [ "${LAST_CLEAR_TS:-0}" -gt 0 ]; then
+        local since_clear=$(( $(date +%s) - LAST_CLEAR_TS ))
+        if [ "$since_clear" -lt "$CLEAR_RESEND_COOLDOWN_SEC" ]; then
+            echo "[$(date)] [SKIP] /clear sent ${since_clear}s ago — cooldown active (${CLEAR_RESEND_COOLDOWN_SEC}s), deferring (agent=$AGENT_ID)" >&2
+            return 0
+        fi
     fi
 
     # CLI別コマンド変換
@@ -685,44 +757,12 @@ send_cli_command() {
     echo "[$(date)] [SEND-KEYS] Sending CLI command to $AGENT_ID ($effective_cli): $actual_cmd" >&2
 
     if [[ "$actual_cmd" == "/clear" || "$actual_cmd" == "/new" ]]; then
-        # cmd_760 fix3 (9/5残滓/clear事故対策): 送信前に必ずC-uで入力欄を
-        # 空にし(前サイクルの残滓が上積みされるのを防ぐ)、送信後は
-        # send_wakeup と同じ capture-pane 確認+リトライで実際に受理された
-        # (=入力欄からコマンド文字列が消えた)ことを検証する。未検証のまま
-        # 次サイクルへ進むと、Enter取りこぼしが入力欄に残留し、後続の
-        # 無関係な操作をきっかけに遅延発火する(9/5型の温床)。
-        local clear_max_retries=2 clear_attempt=0 clear_sent_ok=0
-        while [ $clear_attempt -le $clear_max_retries ]; do
-            if [[ "$effective_cli" != "codex" ]]; then
-                timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
-                sleep 0.5
-            fi
-            timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
-            sleep 0.3
-            timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
-            sleep 1.0
-            timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
-            sleep 0.5
-            # Check ONLY the last non-blank line, not a multi-line tail window.
-            # Claude Code legitimately echoes "> /clear" into scrollback history
-            # once the command IS accepted — scanning several lines would match
-            # that echo and cause a false "still queued" retry on every single
-            # successful /clear (the same T-BUSY-008 class of bug lib/agent_status.sh
-            # already had to fix once for busy detection).
-            local clear_pane_content
-            clear_pane_content=$(timeout 3 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 || echo "")
-            if echo "$clear_pane_content" | grep -qF "$actual_cmd"; then
-                echo "[$(date)] WARNING: $actual_cmd text still visible in pane, retrying (attempt $((clear_attempt+1)))" >&2
-                clear_attempt=$((clear_attempt+1))
-                continue
-            fi
-            clear_sent_ok=1
-            break
-        done
-        if [ "$clear_sent_ok" -eq 0 ]; then
-            echo "[$(date)] WARNING: $actual_cmd may not have been accepted after $clear_max_retries retries for $AGENT_ID — purging input line defensively" >&2
-            timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
-        fi
+        # cmd_760 fix3 (9/5残滓/clear事故対策) / cmd_778 (共有化): 送信前に
+        # 必ずC-uで入力欄を空にし、送信後はcapture-pane確認+リトライで
+        # 実際に受理されたことを検証する。send_context_reset()もこの
+        # 同じ関数を呼ぶ(以前は独自の無検証raw送信を持っており、それが
+        # cmd_778の二重/clear破損の一因だった)。
+        send_reset_command_verified "$actual_cmd" "$effective_cli"
     else
         # Clear stale input first, then send command (text and Enter separated for Codex TUI)
         # Codex CLI: C-c when idle causes CLI to exit — skip it
@@ -755,7 +795,7 @@ send_cli_command() {
 send_startup_prompt() {
     # Poll until agent becomes idle (prompt ready) instead of fixed sleep.
     # Max 15s (3 attempts × 5s). If still busy after 15s, proceed anyway.
-    local attempt
+    local attempt sent_while_uncertain=0
     for attempt in 1 2 3; do
         sleep 5
         if ! agent_is_busy; then
@@ -766,6 +806,17 @@ send_startup_prompt() {
     done
     if agent_is_busy; then
         echo "[$(date)] [STARTUP] $AGENT_ID still busy after 15s — proceeding with startup prompt anyway" >&2
+        # cmd_778: this is the exact defect the 2026-09-06 24h stall traced back
+        # to — the poll's 15s bound is structurally shorter than the 30s
+        # /clear cooldown baked into agent_is_busy() (see that function's
+        # comment), so a poll running shortly after a /clear can NEVER observe
+        # real idle within its window and always ends up here. We keep the
+        # short bound (extending it would delay every normal /clear→startup
+        # handoff by up to 30s, including the many already-idle cases the
+        # existing e2e suite times tightly) but mark this send as "uncertain"
+        # so the Enter can be given a safety-net retry below instead of
+        # silently trusting a single keystroke into an unverified pane.
+        sent_while_uncertain=1
     fi
 
     local startup_prompt=""
@@ -784,6 +835,21 @@ send_startup_prompt() {
     timeout 5 tmux send-keys -l -t "$PANE_TARGET" "$startup_prompt" 2>/dev/null || true
     sleep 0.3
     timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    if [ "$sent_while_uncertain" -eq 1 ]; then
+        # cmd_778: only retry the Enter when we sent into an unconfirmed-busy
+        # pane (see comment above) — never on the normal confirmed-idle path,
+        # to avoid an extra blind keystroke landing on an unrelated UI state
+        # (e.g. a permission prompt) once a real turn is already underway.
+        # The prompt text is long and wraps across pane lines, so it can't be
+        # verified with the single-line grep send_reset_command_verified uses
+        # for a short "/clear" — a second Enter after a short settle delay is
+        # a cheap, best-effort second chance instead: a no-op if the first
+        # already registered, a real second chance if it was swallowed by a
+        # pane still finishing a CLAUDE.md reload.
+        echo "[$(date)] [STARTUP] $AGENT_ID: prompt sent into unconfirmed-busy pane — retrying Enter once as a safety net" >&2
+        sleep 1.5
+        timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    fi
     STARTUP_PROMPT_SENT=1
 }
 
@@ -803,6 +869,26 @@ send_context_reset() {
     if [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ] || [ "$AGENT_ID" = "gunshi2" ]; then
         echo "[$(date)] [SKIP] $AGENT_ID: suppressing context reset (command-layer agent)" >&2
         return 0
+    fi
+
+    # cmd_778: cooldown guard against a second independent /clear|/new landing
+    # on top of one that was just sent (via send_cli_command's clear_command
+    # path, or a previous call here). Real incident (2026-09-06 22:47-22:48,
+    # ashigaru4): a clear_command's /clear always enqueues an auto-recovery
+    # task_assigned message (enqueue_recovery_task_assigned), which reaches
+    # THIS function on the very next cycle — with no shared cooldown, that
+    # guarantees a second reset fires ~30-60s after the first, while its
+    # CLAUDE.md reload / startup-prompt delivery may still be settling.
+    # Return 1 (not sent) so the caller does not mark NEW_CONTEXT_SENT and
+    # retries once the cooldown has elapsed, same "defer, don't skip forever"
+    # contract as the busy-confirmed guard below.
+    if [ "${LAST_CLEAR_TS:-0}" -gt 0 ]; then
+        local now_since_clear
+        now_since_clear=$(( $(date +%s) - LAST_CLEAR_TS ))
+        if [ "$now_since_clear" -lt "$CLEAR_RESEND_COOLDOWN_SEC" ]; then
+            echo "[$(date)] [SKIP] $AGENT_ID: /clear sent ${now_since_clear}s ago — cooldown active (${CLEAR_RESEND_COOLDOWN_SEC}s), deferring context reset to next cycle" >&2
+            return 1
+        fi
     fi
 
     # cmd_760 fix1(b)/fix4: send_context_reset is a THIRD destructive /clear|/new
@@ -846,36 +932,24 @@ send_context_reset() {
         return 0
     fi
 
-    # Non-Codex CLIs: send /clear and wait for idle
-    # Send the command (text and Enter separated for TUI compatibility)
-    timeout 5 tmux send-keys -t "$PANE_TARGET" "$reset_cmd" 2>/dev/null || true
-    # Longer gap for /clear — CLI prompt rendering needs time
-    sleep 1.0
-    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    # Non-Codex CLIs: send /clear via the shared verified-send helper (cmd_778
+    # — previously a bare, unverified tmux send-keys; see send_reset_command_verified
+    # comment for why that was the actual corruption vector behind the
+    # 2026-09-06 double-/clear incident).
+    send_reset_command_verified "$reset_cmd" "$effective_cli"
     # Mark /clear timestamp so agent_is_busy() treats it as busy during processing
     if [[ "$reset_cmd" == "/clear" ]]; then
         LAST_CLEAR_TS=$(date +%s)
-    fi
-
-    # Poll until agent becomes idle (prompt ready) instead of fixed sleep.
-    # Max 15s (3 attempts × 5s). If still busy after 15s, proceed anyway.
-    local attempt
-    for attempt in 1 2 3; do
-        sleep 5
-        if ! agent_is_busy; then
-            echo "[$(date)] [CONTEXT-RESET] $AGENT_ID idle after ${attempt}×5s — ready for nudge" >&2
-            break
-        fi
-        echo "[$(date)] [CONTEXT-RESET] $AGENT_ID still busy after ${attempt}×5s — retrying" >&2
-    done
-    if agent_is_busy; then
-        echo "[$(date)] [CONTEXT-RESET] $AGENT_ID still busy after 15s — proceeding anyway" >&2
     fi
 
     # Claude: send startup prompt so agent re-runs Session Start after /clear.
     # Without this, /clear resets context but the agent is left at a blank
     # prompt with no submitted turn — nothing re-reads the task YAML (the
     # asymmetry vs. the codex branch above, which already calls this).
+    # cmd_778: no separate idle-poll here anymore — send_startup_prompt()
+    # already polls for idle itself (same as the codex branch above never
+    # had a redundant pre-poll either); the old code polled here AND again
+    # inside send_startup_prompt, doubling the wait for no benefit.
     if [[ "$effective_cli" == "claude" ]]; then
         send_startup_prompt
     fi
