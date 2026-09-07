@@ -7,10 +7,12 @@
 # ★独立性の実証: 本テストはinbox_watcher/stall_watchdog/heartbeat_detect等の
 # 既存検知機構を一切source/呼び出ししていないことをgrepで確認する(T-DM-000)。
 #
-# DEADMAN_TASKS_DIR/DASHBOARD/STATE_DIR/LOG_FILE/LIVENESS_FILE/NOW_EPOCHの
-# 差し替え口を使い、production queue/tasks・dashboard.md・/tmp/deadman-last-run
-# を一切汚さず隔離実行する。curlはPATH先頭のモックで差し替え、実ntfy送信は
-# 行わない(実際の到達確認はashigaru7がHTTP 200を手動で実測済み・report参照)。
+# DEADMAN_TASKS_DIR/DASHBOARD/STATE_DIR/LOG_FILE/LIVENESS_FILE/NTFY_SCRIPT/
+# NOW_EPOCHの差し替え口を使い、production queue/tasks・dashboard.md・
+# /tmp/deadman-last-run・実ntfy送信を一切汚さず隔離実行する。ntfy.shは呼出を
+# 記録するだけのスタブに差し替える(config/settings.yamlはgitignore対象で
+# CI checkoutに存在せず、実ntfy.shはcurl到達前にexit 1するため)。実際の
+# 到達確認はashigaru7がHTTP 200を手動で実測済み・report参照。
 
 setup() {
   export PROJECT_ROOT
@@ -21,26 +23,29 @@ setup() {
   TMP_DIR="$(mktemp -d "$BATS_TMPDIR/deadman.XXXXXX")"
   mkdir -p "$TMP_DIR/tasks" "$TMP_DIR/state"
 
-  export MOCK_BIN
-  MOCK_BIN="$(mktemp -d "$BATS_TMPDIR/deadman_mock_bin.XXXXXX")"
   export CALLS_LOG
-  CALLS_LOG="$(mktemp "$BATS_TMPDIR/deadman_curl_calls.XXXXXX")"
-  cat > "${MOCK_BIN}/curl" << MOCK_CURL
+  CALLS_LOG="$(mktemp "$BATS_TMPDIR/deadman_ntfy_calls.XXXXXX")"
+  # ntfy.shスタブ(既存のtest_mgmt_bloat_watchdog.bats慣習に倣う): 実curl/実
+  # config/settings.yamlに一切触れず、呼び出しを記録するだけ。config/settings.yaml
+  # はgitignore対象でCI checkoutに存在しないため、実ntfy.shを経由するとntfy_topic
+  # 未設定でcurl到達前にexit 1する(CI ubuntu-latest/macos-latest両方で実測)。
+  export NTFY_STUB="$TMP_DIR/ntfy_stub.sh"
+  cat > "$NTFY_STUB" << STUB
 #!/usr/bin/env bash
-echo "CURL_CALLED: \$*" >> "${CALLS_LOG}"
-exit 0
-MOCK_CURL
-  chmod +x "${MOCK_BIN}/curl"
+echo "NTFY_CALLED: \$*" >> "${CALLS_LOG}"
+STUB
+  chmod +x "$NTFY_STUB"
 
   export DEADMAN_TASKS_DIR="$TMP_DIR/tasks"
   export DEADMAN_DASHBOARD="$TMP_DIR/dashboard.md"
   export DEADMAN_STATE_DIR="$TMP_DIR/state"
   export DEADMAN_LOG_FILE="$TMP_DIR/log.log"
   export DEADMAN_LIVENESS_FILE="$TMP_DIR/liveness"
+  export DEADMAN_NTFY_SCRIPT="$NTFY_STUB"
 }
 
 teardown() {
-  rm -rf "$TMP_DIR" "$MOCK_BIN" "$CALLS_LOG" 2>/dev/null || true
+  rm -rf "$TMP_DIR" "$CALLS_LOG" 2>/dev/null || true
 }
 
 epoch_of() {
@@ -59,7 +64,7 @@ epoch_of() {
 # ── T-DM-001: idle小(working中)・昼間 → 発火しない ──
 @test "T-DM-001: idleが閾値未満なら誤報しない" {
   touch -t 202609081400.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:05:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:05:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ ! -s "$CALLS_LOG" ]
@@ -68,7 +73,7 @@ epoch_of() {
 # ── T-DM-002: idle大・昼間 → 発火する(ntfy呼出) ──
 @test "T-DM-002: idleが閾値超・昼間なら発火してntfyを呼ぶ" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -s "$CALLS_LOG" ]
@@ -79,7 +84,7 @@ epoch_of() {
 # ── T-DM-003: idle大・夜間(22-8時) → 発火しない ──
 @test "T-DM-003: idle大でも夜間は発火しない" {
   touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ ! -s "$CALLS_LOG" ]
@@ -90,7 +95,7 @@ epoch_of() {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   mkdir -p "$DEADMAN_STATE_DIR"
   echo "$(epoch_of "2026-09-08 13:50:00")" > "$DEADMAN_STATE_DIR/last_fire_epoch.txt"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$CALLS_LOG" ]
 }
@@ -98,14 +103,14 @@ epoch_of() {
 # ── T-DM-005: 網自身の生存証跡(liveness touch + dashboard heartbeat行) ──
 @test "T-DM-005: 毎回liveness fileをtouchしdashboard heartbeat行を更新する" {
   touch -t 202609081400.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:05:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:05:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$DEADMAN_LIVENESS_FILE" ]
   run grep -c "deadman_switch:heartbeat" "$DEADMAN_DASHBOARD"
   [ "$output" -eq 1 ]
 
   # 2回目実行 → heartbeat行は追記でなく上書き(1行のまま)
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:10:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:10:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   run grep -c "deadman_switch:heartbeat" "$DEADMAN_DASHBOARD"
   [ "$output" -eq 1 ]
@@ -113,7 +118,7 @@ epoch_of() {
 
 # ── T-DM-006: queue/tasks/*.yamlが1件も無ければ判定不能で終了する ──
 @test "T-DM-006: tasksディレクトリが空なら判定不能でexit 1" {
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 1 ]
   [ ! -s "$CALLS_LOG" ]
 }
@@ -126,7 +131,7 @@ task:
   status: blocked
 YAML
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru8.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ ! -s "$CALLS_LOG" ]
@@ -147,7 +152,7 @@ task:
 YAML
   touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru8.yaml"
 
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -s "$CALLS_LOG" ]
@@ -167,7 +172,7 @@ task:
 YAML
   touch -t 202001010000.00 "$TMP_DIR/tasks/gunshi_cmd624_design.yaml"
   touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ ! -s "$CALLS_LOG" ]

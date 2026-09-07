@@ -36,6 +36,7 @@ DASHBOARD="${DEADMAN_DASHBOARD:-$SCRIPT_DIR/dashboard.md}"
 STATE_DIR="${DEADMAN_STATE_DIR:-$SCRIPT_DIR/queue/deadman_switch}"
 LOG_FILE="${DEADMAN_LOG_FILE:-$SCRIPT_DIR/logs/deadman_switch.log}"
 LIVENESS_FILE="${DEADMAN_LIVENESS_FILE:-/tmp/deadman-last-run}"
+NTFY_SCRIPT="${DEADMAN_NTFY_SCRIPT:-$SCRIPT_DIR/scripts/ntfy.sh}"
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
 COOLDOWN_SEC=$((2 * 60 * 60))   # 1回/2時間
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
@@ -107,7 +108,7 @@ last_fire=0
 
 detail=$(IFS=', '; echo "${stalled[*]}")
 msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
-bash "$SCRIPT_DIR/scripts/ntfy.sh" "$msg"
+bash "$NTFY_SCRIPT" "$msg"
 echo "$now_epoch" > "$LAST_FIRE_FILE"
 printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中: %s→ntfy送信 @ %s\n' "$detail" "$now_iso" >> "$DASHBOARD"
 echo "[deadman_switch] $now_iso FIRED stalled=${stalled[*]}" >> "$LOG_FILE"
