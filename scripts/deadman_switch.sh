@@ -54,13 +54,21 @@ file_count=0
 stalled=()
 for f in "$TASKS_DIR"/*.yaml; do
   [ -f "$f" ] || continue
+  agent="$(basename "$f" .yaml)"
+  # 実測で発見(2026-09-07): queue/tasks/にはgunshi_cmd624_design.yaml等
+  # エージェント名でないファイルも混在し、真の実働エージェントに絞らねば
+  # 何ヶ月も前のファイルが毎回誤検知される。既知の実働名のみ対象とする
+  case "$agent" in
+    ashigaru[0-9]|gunshi|gunshi2|karo|shogun) ;;
+    *) continue ;;
+  esac
   file_count=$((file_count + 1))
   m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
   [ -z "$m" ] && continue
   status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
   idle=$(( (now_epoch - m) / 60 ))
-  [ "$idle" -ge "$THRESHOLD_MIN" ] && stalled+=("$(basename "$f" .yaml)(status=${status:-不明}・idle=${idle}分)")
+  [ "$idle" -ge "$THRESHOLD_MIN" ] && stalled+=("${agent}(status=${status:-不明}・idle=${idle}分)")
 done
 
 if [ "$file_count" -eq 0 ]; then

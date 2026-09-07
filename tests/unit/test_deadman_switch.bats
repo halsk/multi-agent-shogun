@@ -121,11 +121,11 @@ epoch_of() {
 # ── T-DM-007: status: blockedのエージェントは放置idle大でも除外(2026-09-07
 #   将軍実測・ashigaru3の35時間放置事故を受けた設計変更) ──
 @test "T-DM-007: status:blockedは放置扱いされず発火しない" {
-  cat > "$TMP_DIR/tasks/ashigaru_blocked.yaml" <<'YAML'
+  cat > "$TMP_DIR/tasks/ashigaru8.yaml" <<'YAML'
 task:
   status: blocked
 YAML
-  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru_blocked.yaml"
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru8.yaml"
   PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
@@ -135,24 +135,40 @@ YAML
 # ── T-DM-008: 7名中1名だけ死んでいても(他は稼働中)個別に検知する
 #   (「最新1本のmtimeだけ見る」旧設計の穴=ashigaru3型事故の再現テスト) ──
 @test "T-DM-008: 他のエージェントが稼働中でも1名だけ放置なら個別検知する" {
-  cat > "$TMP_DIR/tasks/ashigaru_stalled.yaml" <<'YAML'
+  cat > "$TMP_DIR/tasks/ashigaru9.yaml" <<'YAML'
 task:
   status: assigned
 YAML
-  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru_stalled.yaml"
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru9.yaml"
 
-  cat > "$TMP_DIR/tasks/ashigaru_active.yaml" <<'YAML'
+  cat > "$TMP_DIR/tasks/ashigaru8.yaml" <<'YAML'
 task:
   status: assigned
 YAML
-  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru_active.yaml"
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru8.yaml"
 
   PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -s "$CALLS_LOG" ]
-  run grep -o "ashigaru_stalled" "$DEADMAN_DASHBOARD"
+  run grep -o "ashigaru9" "$DEADMAN_DASHBOARD"
   [ -n "$output" ]
-  run grep -o "ashigaru_active" "$DEADMAN_DASHBOARD"
+  run grep -o "ashigaru8" "$DEADMAN_DASHBOARD"
   [ -z "$output" ]
+}
+
+# ── T-DM-009: エージェント名でないファイル(実測で発見: queue/tasks/には
+#   gunshi_cmd624_design.yaml等が混在し、何ヶ月も前のmtimeのまま)は
+#   判定対象から除外する ──
+@test "T-DM-009: エージェント名パターンに合わないファイルは対象外" {
+  cat > "$TMP_DIR/tasks/gunshi_cmd624_design.yaml" <<'YAML'
+task:
+  title: old design doc
+YAML
+  touch -t 202001010000.00 "$TMP_DIR/tasks/gunshi_cmd624_design.yaml"
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  PATH="${MOCK_BIN}:${PATH}" DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
 }
