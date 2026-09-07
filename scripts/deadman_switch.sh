@@ -63,7 +63,11 @@ for f in "$TASKS_DIR"/*.yaml; do
     *) continue ;;
   esac
   file_count=$((file_count + 1))
-  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null) || continue
+  # ★GNUのstat -fはBSDと意味が違う(ファイルシステム情報表示・%mはmount pointとして
+  # 解釈され、%mを渡しても exit 0 で複数行の無関係な出力を返す=フォールバックが
+  # 発火しない罠)。GNU形式(-c %Y)を先に試し、macOSではillegal optionで正しく
+  # 失敗してBSD形式(-f %m)へフォールバックする順序にする(CI ubuntu-latestで実測)。
+  m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || continue
   [ -z "$m" ] && continue
   status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
