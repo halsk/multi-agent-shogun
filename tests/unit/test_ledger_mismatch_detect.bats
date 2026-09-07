@@ -348,3 +348,53 @@ seed_inbox() {
 @test "T-3WM-007: stall_watchdog.sh invokes detect_three_way_mismatch via check_three_way_mismatch" {
   grep -qE "check_three_way_mismatch|detect_three_way_mismatch" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_778②やり直し: 実データ(queue/reports/ashigaru2_report.yaml等)実測で
+# 発覚した「最新エントリ特定」の再発防止。旧実装はエントリ境界を
+# report:/report_*:/worker_id:/task_id: というヘッダー行パターンで検出
+# していたが、report_to:/report_command: というありふれたフィールド名が
+# たまたま "report_" で始まるだけで誤ってヘッダー扱いされ、真に最後の
+# エントリのstatus/parent_cmdが範囲外に追い出され空文字になっていた
+# (実データ実測: ashigaru2はstatus/parent_cmdとも空文字、ashigaru5も
+# 同様に空文字だった)。
+
+@test "T-3WM-008: does not let a 'report_to:' field inside the newest entry be mistaken for an entry header (ashigaru2 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru_x_report.yaml" $'report_774_legend_fix_complete:\n  task_id: subtask_old\n  parent_cmd: cmd_774\n  status: done\n  timestamp: "2026-09-06T10:00:00"\n\ntask_id: subtask_new_entry\nparent_cmd: cmd_900\nstatus: in_progress\nreport_to: karo\n\nsummary: |\n  newest entry, not done yet\n'
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_x_report.yaml" "status")" = "in_progress" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_x_report.yaml" "parent_cmd")" = "cmd_900" ]
+}
+
+@test "T-3WM-009: does not let a 'report_command:' field inside the newest entry be mistaken for an entry header (ashigaru5 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru_y_report.yaml" $'worker_id: ashigaru_y\ntask_id: subtask_old\nparent_cmd: cmd_777\nstatus: done\ntimestamp: "2026-09-05T10:00:00"\n\nreport_command: |\n  bash scripts/inbox_write.sh karo "old report" report_received ashigaru_y\n'
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_y_report.yaml" "status")" = "done" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_y_report.yaml" "parent_cmd")" = "cmd_777" ]
+}
+
+# ashigaru2の実report yaml(queue/reports/・gitignore対象で本テストからは
+# 参照できない)を実測した際の実際の構造を模したフィクスチャ。
+# 複数の`report_<name>:`ブロック(旧形式)の後に、列0のフラットな
+# エントリ(task_id:/parent_cmd:/status:/report_to:)が複数回追記され、
+# 最後のエントリのstatusは厳密な"done"でなく"done_pending_karo_merge_decision"
+# である、という本日実際に踏んだ実データの形をそのまま再現する。
+
+@test "T-3WM-010: correctly resolves the latest entry in a mixed nested+flat multi-entry accumulated report (ashigaru2 shape repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru2_report.yaml" $'report_774_legend_fix_complete:\n  task_id: subtask_774\n  parent_cmd: cmd_774\n  status: done\n  timestamp: "2026-09-06T16:50:00+09:00"\n\ntask_id: subtask_e2e010b_first_attempt\nparent_cmd: cmd_766\nstatus: done_pending_karo_merge_decision\nreport_to: karo\n\ntask_id: subtask_e2e010b_fix_test_scenario\nparent_cmd: cmd_766\nstatus: done_pending_karo_merge_decision\nreport_to: karo\n\nsummary: |\n  latest entry, awaiting karo merge decision\n' 7
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru2_report.yaml" "status")" = "done_pending_karo_merge_decision" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru2_report.yaml" "parent_cmd")" = "cmd_766" ]
+
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n'
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  # report_status が厳密に "done" ではない(done_pending_karo_merge_decision)ため
+  # 本検知の対象外(型どおり)。ashigaru2 という行自体が出ないことを確認する。
+  [[ "$output" != *"ashigaru2|"* ]]
+}

@@ -33,7 +33,24 @@ ledger_cmd_status() {
     ' "$ledger_file"
 }
 
-# report yaml の先頭階層にある "parent_cmd:" / "status:" を1行抽出する
+# report yaml の「最新エントリ」にある "parent_cmd:" / "status:" 等を
+# 1行抽出する。列0(フラット型)・2スペース字下げ("report:"配下)の
+# どちらの前提にも対応する(cmd_778②やり直しの主眼——旧実装は列0固定で
+# ネスト型を常に空文字扱いしていた)。
+#
+# ★report yaml は agent ごとに実際の書式が割れており(cmd_778②実データ
+# 実測)、1ファイルに何十エントリも時系列で追記蓄積されることがある
+# (古い形式・新しい形式が混在することも)。「エントリの開始行」を
+# ヘッダー行パターンで検出しようとすると、report_to:/report_command:
+# のようなありふれたフィールド名がたまたま "report_" で始まるだけで
+# 誤ってヘッダー扱いされ、真に最後のエントリより後ろにあるはずの
+# status: 等を範囲外に追い出してしまう(実データで実際に踏んだ実例:
+# ashigaru2/5の実report yamlでこれによりstatus/parent_cmdが空文字に
+# なった)。そこで「エントリ境界を特定してから範囲内を探す」のではなく、
+# 単に該当フィールドのファイル内最後の出現行を直接採る(head→tailに
+# するだけ)。追記型ログでは同一フィールドの最後の出現 = 最新エントリの
+# 値、という前提のほうがヘッダー検出より単純かつ頑健(実7エージェント分
+# のreport yamlで実測確認済み)。
 #
 # ★grep 単体を "{ ... || true; }" で包む: 呼び出し元 (stall_watchdog.sh) は
 # set -euo pipefail 下で動く。フィールドが存在せず grep が非0で終わると、
@@ -44,8 +61,8 @@ ledger_cmd_status() {
 # 単体テストはbats run経由でset -eの影響を受けず気づけなかった)。
 _lmd_report_field() {
     local file="$1" field="$2"
-    { grep -E "^${field}:" "$file" 2>/dev/null || true; } | head -1 \
-        | sed -E "s/^${field}:[[:space:]]*//" \
+    { grep -E "^(  )?${field}:" "$file" 2>/dev/null || true; } | tail -1 \
+        | sed -E "s/^[[:space:]]*${field}:[[:space:]]*//" \
         | tr -d '"' | tr -d "'"
 }
 
