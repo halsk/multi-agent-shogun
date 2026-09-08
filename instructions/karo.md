@@ -374,6 +374,28 @@ task:
   timestamp: "2026-01-25T12:00:00"
 ```
 
+### touches_files(RACE-001機械検知の必須フィールド・cmd_778)
+
+worktree 外の**共有/gitignoreファイル**(queue/・config/・projects/配下、
+main tree直編集ファイル等)へ書き込む task は、起票時に `touches_files:` へ
+そのパスを列挙せよ。tracked ファイルの worktree 内編集(branch分離でPRが守る)
+は列挙不要。触れる共有ファイルが無い純解析タスク等は `touches_files: []` と明示せよ。
+
+```yaml
+task:
+  task_id: subtask_xxx
+  status: assigned
+  touches_files:
+    - queue/tasks/gunshi2.yaml
+    - config/settings.yaml
+```
+
+- stall_watchdog が、2つ以上の稼働中(assigned/in_progress)task の
+  touches_files に同一ファイルが現れたら dashboard 🚨 [file_collision/RACE-001]
+  を上げる(=同一ファイルへの並行割当を機械で弾く)。
+- 並行稼働(active≥2)時に touches_files 未宣言の task があると、それ自体が
+  dashboard 🚨 [touches_files未宣言] として炙り出される——書き忘れは機械が拾う。
+
 ## "Wake = Full Scan" Pattern
 
 Claude Code cannot "wait". Prompt-wait = stopped.
