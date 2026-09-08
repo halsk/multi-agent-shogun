@@ -38,6 +38,11 @@ THRESHOLD_MIN=150
 # 発火しない(新規の「家老が動いたか」判定は作らず、agent一覧の突き合わせ
 # だけで実現する・将軍の明記事項)。夜間はこのエスカレーション自体を
 # 発火しない(★夜間は家老のみ・殿は絶対に起こさない、を維持)。
+#
+# ★手動実行時の注意(cmd_784): デバッグ等で手動実行する場合は
+# DEADMAN_LOG_FILE を明示的に指定し、本番 logs/deadman_switch.log を
+# 汚染しないこと(例: DEADMAN_LOG_FILE=/tmp/deadman_test.log bash scripts/deadman_switch.sh)。
+# 未指定の手動実行が本番ログへ旧形式・偽装時刻の行を混入させた実例あり(2026-09-08)。
 
 set -uo pipefail
 
