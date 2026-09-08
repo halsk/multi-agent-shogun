@@ -22,6 +22,10 @@ project: <project-id>
 assigned_to: ashigaru<N>
 status: assigned          # assigned → work → done / blocked / failed
 
+# RACE-001機械検知の必須フィールド(cmd_778)— worktree外の共有/gitignoreファイル
+# (queue/・config/・projects/配下等)へ書き込む場合はそのパスを列挙。無ければ []
+touches_files: []
+
 # 作業ディレクトリ — git worktree 必須
 target_path: /home/hal/workspace/<repo>-wt<N>
 
