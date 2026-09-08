@@ -98,7 +98,7 @@ resolve_pane() {
         ashigaru6)  echo "multiagent:agents.$((pane_base + 6))" ;;
         ashigaru7)  echo "multiagent:agents.$((pane_base + 7))" ;;
         gunshi)     echo "multiagent:agents.$((pane_base + 8))" ;;
-        gunshi2)    echo "multiagent:agents.$((pane_base + 9))" ;;
+        # gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
         *)
             log "ERROR: Unknown agent_id: $agent_id"
             return 1
