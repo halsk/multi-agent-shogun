@@ -427,3 +427,131 @@ seed_inbox() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"gunshi|cmd_738|"* ]]
 }
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_778 相乗り: RACE-001(同一ファイルへの複数task並行割当)の機械検知
+# detect_file_collisions / detect_undeclared_touches_files
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-FC-001: 2つのactive taskが同一ファイルをtouches_filesに持つ → 衝突検出
+#   (本日のgunshi2.yaml並行割当事故の再現) ──
+@test "T-FC-001: flags a file listed in touches_files of two active tasks (gunshi2.yaml repro)" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - queue/tasks/gunshi2.yaml\n    - scripts/deadman_switch.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru7.yaml" $'task:\n  status: assigned\n  touches_files:\n    - queue/tasks/gunshi2.yaml\n    - config/settings.yaml\n'
+
+  run detect_file_collisions "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"queue/tasks/gunshi2.yaml|"* ]]
+  [[ "$output" == *"ashigaru1"* ]]
+  [[ "$output" == *"ashigaru7"* ]]
+  # 各taskが1件しか触れぬファイルは衝突扱いしない
+  [[ "$output" != *"scripts/deadman_switch.sh|"* ]]
+  [[ "$output" != *"config/settings.yaml|"* ]]
+}
+
+# ── T-FC-002: 別々のファイルに触れる2 task → 衝突なし ──
+@test "T-FC-002: does not flag when active tasks touch different files" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - scripts/a.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - scripts/b.sh\n'
+
+  run detect_file_collisions "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-FC-003: 同一ファイルでも片方がdone/blocked(非active) → 衝突なし
+#   (RACE=同時編集の問題ゆえactiveのみ対象) ──
+@test "T-FC-003: does not flag when one of the two tasks is not active (done/blocked)" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - shared/x.yaml\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: done\n  touches_files:\n    - shared/x.yaml\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  status: blocked\n  touches_files:\n    - shared/x.yaml\n'
+
+  run detect_file_collisions "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-FC-004: 3 taskのうち2つだけが同一ファイル共有 → その2つを列挙 ──
+@test "T-FC-004: with three active tasks, flags only the file shared by two of them" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: assigned\n  touches_files:\n    - queue/dashboard.md\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n  touches_files:\n    - queue/dashboard.md\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  status: assigned\n  touches_files:\n    - scripts/only_me.sh\n'
+
+  run detect_file_collisions "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"queue/dashboard.md|"* ]]
+  [[ "$output" != *"scripts/only_me.sh|"* ]]
+}
+
+# ── T-FC-005: stall_watchdog.sh が check_file_collisions を呼ぶ ──
+@test "T-FC-005: stall_watchdog.sh invokes detect_file_collisions via check_file_collisions" {
+  grep -qE "check_file_collisions" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+  grep -qE "detect_file_collisions" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}
+
+# ── T-UTF-001: active 2件以上でtouches_files未宣言のtaskがある → 炙り出す
+#   (書き忘れを機械が拾う=将軍の必須要件) ──
+@test "T-UTF-001: flags an active task missing touches_files when >=2 tasks are active" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - scripts/a.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n'
+
+  run detect_undeclared_touches_files "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru2|assigned"* ]]
+  [[ "$output" != *"ashigaru1|"* ]]
+}
+
+# ── T-UTF-002: active が1件だけなら未宣言でも炙り出さない(衝突不能ゆえ無音) ──
+@test "T-UTF-002: does not flag a single active task missing touches_files (no collision possible)" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: done\n'
+
+  run detect_undeclared_touches_files "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-UTF-003: active 2件が両方touches_filesを宣言 → 炙り出しなし ──
+@test "T-UTF-003: does not flag when all active tasks declare touches_files" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - scripts/a.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n  touches_files:\n    - scripts/b.sh\n'
+
+  run detect_undeclared_touches_files "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-UTF-004: 非active(done/blocked)のtouches_files未宣言は対象外 ──
+@test "T-UTF-004: does not flag non-active tasks missing touches_files" {
+  source "$LIB_FILE"
+
+  seed_task "$TMP_DIR/tasks" "ashigaru1.yaml" $'task:\n  status: in_progress\n  touches_files:\n    - scripts/a.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n  touches_files:\n    - scripts/b.sh\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  status: blocked\n'
+  seed_task "$TMP_DIR/tasks" "ashigaru4.yaml" $'task:\n  status: done\n'
+
+  run detect_undeclared_touches_files "$TMP_DIR/tasks"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru3|"* ]]
+  [[ "$output" != *"ashigaru4|"* ]]
+}
+
+# ── T-UTF-005: stall_watchdog.sh が check_undeclared_touches_files を呼ぶ ──
+@test "T-UTF-005: stall_watchdog.sh invokes detect_undeclared_touches_files via check_undeclared_touches_files" {
+  grep -qE "check_undeclared_touches_files" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+  grep -qE "detect_undeclared_touches_files" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}

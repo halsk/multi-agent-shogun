@@ -598,6 +598,98 @@ check_three_way_mismatch() {
     done < <(detect_three_way_mismatch "$reports_dir" "$tasks_dir" "$karo_inbox" "$THREE_WAY_MISMATCH_THRESHOLD")
 }
 
+# ── cmd_778 相乗り: RACE-001(同一ファイルへの複数task並行割当)の機械検知 ──────
+#
+# 出力は既存パターンに揃え dashboard 🚨(karo/gunshi向け)+ state dedup
+# (queue/stall_watchdog/配下yaml)のみ。ntfy(殿の端末)は発火させない——
+# RACE-001 は家老が起票を正すべき調整事項であり殿を煩わせる緊急事ではないため
+# (task④の出力指定=「stall_watchdog配下yaml+dashboard🚨」に厳密準拠)。
+
+notify_dashboard_file_collision() {
+    local path="$1"
+    local agents="$2"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [file_collision/RACE-001] ${path} が複数の稼働中taskで同時に触られる割当になっている: ${agents} @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓)。一時ファイル経由へ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+check_file_collisions() {
+    local tasks_dir="$SCRIPT_DIR/queue/tasks"
+
+    local path agents
+    while IFS='|' read -r path agents; do
+        [[ -z "$path" ]] && continue
+
+        local state_key="file_collision__${path//\//_}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$agents" ]]; then
+            continue
+        fi
+
+        log "[FILE-COLLISION] $path: $agents"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard for collision on $path"
+            continue
+        fi
+        notify_dashboard_file_collision "$path" "$agents"
+        state_set "$state_key" "notified_status" "$agents"
+    done < <(detect_file_collisions "$tasks_dir")
+}
+
+notify_dashboard_undeclared_touches() {
+    local agent="$1"
+    local status="$2"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [touches_files未宣言/RACE-001] ${agent}(status=${status})が並行稼働中なのにtouches_filesを宣言していない(衝突検知の盲点)。task YAMLへ触れるファイルを列挙せよ @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+check_undeclared_touches_files() {
+    local tasks_dir="$SCRIPT_DIR/queue/tasks"
+
+    local agent status
+    while IFS='|' read -r agent status; do
+        [[ -z "$agent" ]] && continue
+
+        local state_key="undeclared_touches__${agent}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$status" ]]; then
+            continue
+        fi
+
+        log "[UNDECLARED-TOUCHES] $agent: status=$status"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard for undeclared touches_files: $agent"
+            continue
+        fi
+        notify_dashboard_undeclared_touches "$agent" "$status"
+        state_set "$state_key" "notified_status" "$status"
+    done < <(detect_undeclared_touches_files "$tasks_dir")
+}
+
 # ── cmd_771 fix_c 相乗り: 孤児cmd(idle足軽+台帳の未完了cmdが誰にも
 # 割り当てられていない状態)の検知 ────────────────────────────────────────────
 
@@ -975,6 +1067,10 @@ check_orphan_cmds
 
 # cmd_778②(型h)相乗り: report・task YAML・inboxの三面食い違いの検知
 check_three_way_mismatch
+
+# cmd_778 相乗り: RACE-001(同一ファイルへの複数task並行割当)の機械検知
+check_file_collisions
+check_undeclared_touches_files
 
 # cmd_767 第一層(心拍) 相乗り: 定期ジョブが黙って死んでいないかの検知
 check_heartbeats
