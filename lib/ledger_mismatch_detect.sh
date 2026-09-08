@@ -348,3 +348,133 @@ detect_three_way_mismatch() {
         fi
     done
 }
+
+# ── cmd_778 相乗り: RACE-001(同一ファイルへの複数 task 並行割当)を機械検知 ──────
+#
+# 将軍ご指摘(2026-09-08)。本日、家老が ashigaru1 と ashigaru7 へ同一ファイル
+# (queue/tasks/gunshi2.yaml)に触れうる作業を並行割当した(結果は偶然無害)。
+# 将軍裁定=「これも『規律で直すな』の対象。同一ファイルへの並行割当は機械で
+# 弾けるはず。cmd_778 の三面照合へ相乗りさせよ。新設するな」。
+#
+# 設計(なぜこの形か):
+#   - 主signal は task YAML の明示フィールド `touches_files:`(2字下げkey+リスト)。
+#     家老が起票時に「この task が worktree 外の共有/gitignore ファイルへ書き込む
+#     もの」を列挙する。tracked ファイルの編集は git worktree(必須ルール)が
+#     branch 分離で守るため、真の RACE 面は queue/・config/・projects/ 等の
+#     共有/gitignore ファイルと main tree 直編集である——そこを列挙対象とする。
+#   - 自由記述からのパス抽出(案b)は採らない: 全 task YAML の定型文
+#     (report_command の `scripts/inbox_write.sh`・target_path のリポジ root 等)が
+#     全 task に共通で現れ、overlap 判定が誤検知だらけになるため(将軍も b の
+#     誤検知リスクを明記)。
+#   - 「書き忘れ」対策(将軍の必須要件)は detect_undeclared_touches_files で、
+#     『気をつける』でなく機械で拾う——active task が 2 件以上(=衝突が物理的に
+#     起こりうる並行稼働窓)のときに限り、touches_files 未宣言の active task 自体を
+#     炙り出す。単独稼働時は衝突不能ゆえ無音(過検知抑制)。
+#
+# active task = status が assigned / in_progress のもの(done/cancelled/blocked/
+# idle 等は「今まさに編集中」ではないため対象外——RACE は同時編集の問題)。
+#
+# 提供関数:
+#   detect_file_collisions <tasks_dir>
+#     → 各行 "path|agent1,agent2,..." で、2 つ以上の active task の
+#       touches_files に現れるファイルを列挙(衝突)
+#   detect_undeclared_touches_files <tasks_dir>
+#     → 各行 "agent|status" で、並行稼働(active>=2)中に touches_files を
+#       宣言していない active task を列挙(書き忘れ検知)
+
+# 2 字下げの YAML リストフィールド(key: の次行以降の "- item")の各要素を
+# 1 行ずつ返す。key より深いインデントの "- " 行を要素とみなし、それ以外の
+# 行(次の同/浅インデントの key や列0行)が来たら打ち切る。
+_lmd_task_list_field() {
+    local file="$1" field="$2"
+    [[ -f "$file" ]] || return 0
+
+    awk -v field="$field" '
+        $0 ~ "^  " field ":[[:space:]]*$" { cap = 1; next }
+        cap {
+            if ($0 ~ /^[[:space:]]+-[[:space:]]/) {
+                item = $0
+                sub(/^[[:space:]]+-[[:space:]]*/, "", item)
+                gsub(/["'"'"']/, "", item)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", item)
+                if (item != "") print item
+                next
+            }
+            cap = 0
+        }
+    ' "$file"
+}
+
+# task YAML の 2 字下げ key が存在するか(値の有無は問わない)。存在=0。
+_lmd_task_has_field() {
+    local file="$1" field="$2"
+    [[ -f "$file" ]] || return 1
+    grep -qE "^  ${field}:" "$file"
+}
+
+# active(assigned/in_progress)な worker task YAML を列挙する共通ヘルパ。
+# 既存の detect_blocked_reason_gaps 等に倣い ashigaru*/gunshi* を対象とする。
+_lmd_active_task_files() {
+    local tasks_dir="$1"
+    local f status
+    for f in "$tasks_dir"/ashigaru*.yaml "$tasks_dir"/gunshi*.yaml; do
+        [[ -f "$f" ]] || continue
+        status=$(_lmd_task_field "$f" "status")
+        [[ "$status" == "assigned" || "$status" == "in_progress" ]] || continue
+        printf '%s\n' "$f"
+    done
+}
+
+detect_file_collisions() {
+    local tasks_dir="$1"
+    [[ -d "$tasks_dir" ]] || return 0
+
+    local f agent p pairs=""
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        agent="${f##*/}"; agent="${agent%.yaml}"
+        while IFS= read -r p; do
+            [[ -z "$p" ]] && continue
+            pairs+="${p}"$'\t'"${agent}"$'\n'
+        done < <(_lmd_task_list_field "$f" "touches_files")
+    done < <(_lmd_active_task_files "$tasks_dir")
+
+    [[ -z "$pairs" ]] && return 0
+
+    printf '%s' "$pairs" | awk -F'\t' '
+        NF == 2 {
+            path = $1; agent = $2
+            key = path SUBSEP agent
+            if (!(key in seen)) {
+                seen[key] = 1
+                count[path]++
+                agents[path] = (path in agents) ? agents[path] "," agent : agent
+            }
+        }
+        END {
+            for (p in count) if (count[p] >= 2) print p "|" agents[p]
+        }
+    '
+}
+
+detect_undeclared_touches_files() {
+    local tasks_dir="$1"
+    [[ -d "$tasks_dir" ]] || return 0
+
+    local f active=()
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        active+=("$f")
+    done < <(_lmd_active_task_files "$tasks_dir")
+
+    # 衝突は active >= 2 の並行稼働窓でのみ起こりうる。単独/無稼働は無音。
+    [[ "${#active[@]}" -ge 2 ]] || return 0
+
+    local agent status
+    for f in "${active[@]}"; do
+        _lmd_task_has_field "$f" "touches_files" && continue
+        agent="${f##*/}"; agent="${agent%.yaml}"
+        status=$(_lmd_task_field "$f" "status")
+        printf '%s|%s\n' "$agent" "$status"
+    done
+}
