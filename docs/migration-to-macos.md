@@ -551,7 +551,7 @@ tmux capture-pane -t multiagent:agents.1 -p | tail -10
 cd ~/tools/multi-agent-shogun
 claude  # 新 session
 # 内部で: tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}' が正しく返る
-# memory MCP read_graph が機能する
+# memory/MEMORY.md が正しく読み込まれる (memory MCP read_graph は退役済み・存在しない)
 ```
 
 **Phase 7 完了**: 全 acceptance check pass、システム稼働。
