@@ -150,6 +150,8 @@
 !scripts/com.swarm.yaml-slim.plist
 !scripts/mgmt_bloat_watchdog.sh
 !scripts/stall_watchdog_report.sh
+!scripts/deadman_switch.sh
+!scripts/com.swarm.deadman.plist
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/
