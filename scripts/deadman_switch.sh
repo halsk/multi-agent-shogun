@@ -23,6 +23,12 @@
 # ★各エージェントのtask YAMLを個別に見る★よう改める。ただし
 # status: blocked(殿/外部の手番待ち)は正しく待っているだけなので対象外。
 THRESHOLD_MIN=150
+#
+# 夜間ルーティング追加(cmd_781・殿ご裁可 2026-09-08): 9/7 23:30〜9/8 07:51に
+# 家中8名全員が停止した実例を受け、「殿は夜間打たれぬ(現状維持)」と
+# 「家中が夜間に止まる(理由なし)」は別問題と切り分けた。停止検知時は
+# 昼夜問わず★家老inbox★へ通知する(既存inbox_write.shをそのまま使う・
+# 新規機構は作らない)。殿へのntfyは従来どおり夜間は発火させない。
 
 set -uo pipefail
 
@@ -37,8 +43,11 @@ STATE_DIR="${DEADMAN_STATE_DIR:-$SCRIPT_DIR/queue/deadman_switch}"
 LOG_FILE="${DEADMAN_LOG_FILE:-$SCRIPT_DIR/logs/deadman_switch.log}"
 LIVENESS_FILE="${DEADMAN_LIVENESS_FILE:-/tmp/deadman-last-run}"
 NTFY_SCRIPT="${DEADMAN_NTFY_SCRIPT:-$SCRIPT_DIR/scripts/ntfy.sh}"
+INBOX_WRITE_SCRIPT="${DEADMAN_INBOX_WRITE_SCRIPT:-$SCRIPT_DIR/scripts/inbox_write.sh}"
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
-COOLDOWN_SEC=$((2 * 60 * 60))   # 1回/2時間
+KARO_LAST_FIRE_FILE="$STATE_DIR/karo_last_fire_epoch.txt"   # 殿宛cooldownとは別名(混線防止)
+COOLDOWN_SEC=$((2 * 60 * 60))   # 殿宛: 1回/2時間
+KARO_COOLDOWN_SEC=$((30 * 60))  # 家老宛: 1回/30分(家老は起きたらすぐ気づくべき・殿宛より短く)
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
 NIGHT_END_HOUR=8
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
@@ -97,8 +106,26 @@ else
   printf '\n%s\n' "$heartbeat_line" >> "$DASHBOARD"
 fi
 
-# ここから先は「停止」判定時のみ(夜間は殿のお休みを妨げぬため発火しない)
+# ここから先は「停止」判定時のみ
 [ "${#stalled[@]}" -eq 0 ] && exit 0
+
+detail=$(IFS=', '; echo "${stalled[*]}")
+
+# 家老inboxへの通知(昼夜問わず・独立cooldown。夜間は「軽い作業のみ回せ」を明記)
+karo_last_fire=0
+[ -f "$KARO_LAST_FIRE_FILE" ] && karo_last_fire=$(cat "$KARO_LAST_FIRE_FILE" 2>/dev/null || echo 0)
+if [ $(( now_epoch - karo_last_fire )) -ge "$KARO_COOLDOWN_SEC" ]; then
+  if $in_night; then
+    karo_msg="🚨【死者確認スイッチ・夜間】status:blocked以外で放置中: ${detail} @ $now_iso ★夜間である。軽い作業のみ回せ★"
+  else
+    karo_msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
+  fi
+  bash "$INBOX_WRITE_SCRIPT" karo "$karo_msg" task_assigned deadman_switch
+  echo "$now_epoch" > "$KARO_LAST_FIRE_FILE"
+  echo "[deadman_switch] $now_iso KARO_NOTIFIED stalled=${stalled[*]} in_night=$in_night" >> "$LOG_FILE"
+fi
+
+# 殿へのntfyは夜間は引き続き発火しない(殿のお休みを妨げぬため・現状維持)
 $in_night && exit 0
 
 # cooldownは全体で1本(agent毎に持たず60行の縛りを優先・addendum⑤準拠)
@@ -106,7 +133,6 @@ last_fire=0
 [ -f "$LAST_FIRE_FILE" ] && last_fire=$(cat "$LAST_FIRE_FILE" 2>/dev/null || echo 0)
 [ $(( now_epoch - last_fire )) -lt "$COOLDOWN_SEC" ] && exit 0
 
-detail=$(IFS=', '; echo "${stalled[*]}")
 msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
 bash "$NTFY_SCRIPT" "$msg"
 echo "$now_epoch" > "$LAST_FIRE_FILE"
