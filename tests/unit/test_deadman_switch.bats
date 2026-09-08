@@ -84,10 +84,19 @@ epoch_of() {
   [ ! -s "$CALLS_LOG" ]
 }
 
-# ── T-DM-002: idle大・昼間 → 発火する(ntfy呼出) ──
-@test "T-DM-002: idleが閾値超・昼間なら発火してntfyを呼ぶ" {
+# ── T-DM-002: idle大・昼間 → 家老通知の15分後、同一agentが停止中なら殿宛ntfyが
+#   発火する(cmd_783『殿は最後の砦』により1回の実行では発火しない) ──
+@test "T-DM-002: idleが閾値超・昼間は家老通知→15分後に殿宛ntfyが発火する" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  # 1回目: 家老通知のみ。殿はまだ起こさぬ
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
+  [ -f "$DEADMAN_STATE_DIR/karo_notified_agents.txt" ]
+
+  # 2回目: 15分経過・同一agentがまだ停止中 → 殿宛ntfy発火
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -s "$CALLS_LOG" ]
@@ -104,11 +113,17 @@ epoch_of() {
   [ ! -s "$CALLS_LOG" ]
 }
 
-# ── T-DM-004: cooldown内の再発火は抑止される ──
+# ── T-DM-004: cooldown内の再発火は抑止される(殿宛エスカレーション条件は
+#   満たした状態にした上で、cooldownそのものが独立して効くことを確認する) ──
 @test "T-DM-004: cooldown(2h)以内は再発火しない" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   mkdir -p "$DEADMAN_STATE_DIR"
   echo "$(epoch_of "2026-09-08 13:50:00")" > "$DEADMAN_STATE_DIR/last_fire_epoch.txt"
+  # 家老通知記録は15分以上前(エスカレーション条件を満たす)にしておく。
+  # karo_last_fire_epochは30分cooldown内(直近)に設定し、本テスト実行中に
+  # 家老再通知でこの記録が上書きされ条件が変わらぬようにする
+  echo "$(epoch_of "2026-09-08 13:30:00"),ashigaru1" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
+  echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$CALLS_LOG" ]
@@ -168,6 +183,11 @@ YAML
 
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -s "$CALLS_LOG" ]
   run grep -o "ashigaru9" "$DEADMAN_DASHBOARD"
@@ -208,13 +228,18 @@ YAML
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
 }
 
-# ── T-DM-011: 昼間+停止検知 → 家老inboxへも殿へのntfyも両方飛ぶ(従来どおり) ──
+# ── T-DM-011: 昼間+停止検知 → 家老inbox・殿へのntfy双方が機能する(15分の
+#   エスカレーション猶予を経て。cmd_783是正後の挙動) ──
 @test "T-DM-011: 昼間の停止検知時は家老inbox・殿へのntfy双方が機能する" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ -s "$CALLS_LOG" ]
   [ -s "$KARO_CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$CALLS_LOG" ]
   run grep -c "軽い作業のみ" "$KARO_CALLS_LOG"
   [ "$output" -eq 0 ]
   [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
@@ -222,15 +247,18 @@ YAML
 }
 
 # ── T-DM-012: 家老宛cooldown(30分)以内の再発火は抑止される。殿宛cooldown(2h)
-#   とは独立した状態ファイルで管理されている(状態ファイル名が別であることも実証) ──
+#   とは独立した状態ファイルで管理されている(状態ファイル名が別であることも実証)。
+#   殿宛エスカレーション条件(15分経過+同一agent停止中)は別途満たしておく ──
 @test "T-DM-012: 家老宛cooldown(30分)以内は再通知しない・殿宛cooldownとは独立" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   mkdir -p "$DEADMAN_STATE_DIR"
   echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  echo "$(epoch_of "2026-09-08 13:30:00"),ashigaru1" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$KARO_CALLS_LOG" ]
-  # 殿宛cooldownは別状態ファイルゆえ影響を受けず、通常どおり発火する
+  # 殿宛cooldownは別状態ファイルゆえ影響を受けず、エスカレーション条件が
+  # 揃っていれば通常どおり発火する
   [ -s "$CALLS_LOG" ]
 }
 
@@ -243,4 +271,58 @@ YAML
   [ "$status" -eq 0 ]
   [ -s "$KARO_CALLS_LOG" ]
   [ ! -s "$CALLS_LOG" ]
+}
+
+# ── cmd_783【殿は最後の砦】追加テスト ──
+
+# ── T-DM-014: 家老通知から15分未満は殿宛ntfyが発火しない ──
+@test "T-DM-014: 家老通知から15分未満は殿宛ntfyが発火しない" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 13:50:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  echo "$(epoch_of "2026-09-08 13:50:00"),ashigaru1" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-015: 15分経過後でも、記録されたagentが解消済み(現在の停止一覧に
+#   含まれない)なら殿宛ntfyは発火しない ──
+@test "T-DM-015: 15分経過後でも記録agentが解消済みなら殿宛ntfyは発火しない" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  echo "$(epoch_of "2026-09-08 13:30:00"),ashigaru1" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-016: 夜間は、家老通知から15分経過し同一agentが停止中でも殿宛ntfyは
+#   発火しない(★夜間は家老のみ・殿は絶対に起こさない、を維持) ──
+@test "T-DM-016: 夜間は15分経過・同一agent停止中でも殿宛ntfyは発火しない" {
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 22:40:00"),ashigaru1" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-017: gunshi2は実在しないpane(2026-09-05将軍確認済み)ゆえ停止検知の
+#   対象から除外される ──
+@test "T-DM-017: gunshi2は停止検知の対象から除外される" {
+  cat > "$TMP_DIR/tasks/gunshi2.yaml" <<'YAML'
+task:
+  status: assigned
+YAML
+  touch -t 202001010000.00 "$TMP_DIR/tasks/gunshi2.yaml"
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+  run grep -o "gunshi2" "$DEADMAN_DASHBOARD"
+  [ -z "$output" ]
 }

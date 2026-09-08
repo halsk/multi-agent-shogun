@@ -29,6 +29,15 @@ THRESHOLD_MIN=150
 # 「家中が夜間に止まる(理由なし)」は別問題と切り分けた。停止検知時は
 # 昼夜問わず★家老inbox★へ通知する(既存inbox_write.shをそのまま使う・
 # 新規機構は作らない)。殿へのntfyは従来どおり夜間は発火させない。
+#
+# 「殿は最後の砦」是正(cmd_783・殿ご裁可 2026-09-08): 昼間、家老通知の
+# 直後に殿宛cooldownが並行して進み、家老の対応を待たずに殿へ飛ぶ設計を
+# 改める。殿宛ntfyは「家老通知から15分(LORD_ESCALATION_WAIT_SEC)経っても
+# 該当agentの停止が解消されていない場合」に限り発火する。家老が対応し
+# 解消済みなら次回実行時に該当agentが停止リストから消え、自然に殿宛は
+# 発火しない(新規の「家老が動いたか」判定は作らず、agent一覧の突き合わせ
+# だけで実現する・将軍の明記事項)。夜間はこのエスカレーション自体を
+# 発火しない(★夜間は家老のみ・殿は絶対に起こさない、を維持)。
 
 set -uo pipefail
 
@@ -46,8 +55,10 @@ NTFY_SCRIPT="${DEADMAN_NTFY_SCRIPT:-$SCRIPT_DIR/scripts/ntfy.sh}"
 INBOX_WRITE_SCRIPT="${DEADMAN_INBOX_WRITE_SCRIPT:-$SCRIPT_DIR/scripts/inbox_write.sh}"
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
 KARO_LAST_FIRE_FILE="$STATE_DIR/karo_last_fire_epoch.txt"   # 殿宛cooldownとは別名(混線防止)
+KARO_NOTIFIED_AGENTS_FILE="$STATE_DIR/karo_notified_agents.txt"  # cmd_783: 家老通知時刻+停止agent一覧のスナップショット
 COOLDOWN_SEC=$((2 * 60 * 60))   # 殿宛: 1回/2時間
 KARO_COOLDOWN_SEC=$((30 * 60))  # 家老宛: 1回/30分(家老は起きたらすぐ気づくべき・殿宛より短く)
+LORD_ESCALATION_WAIT_SEC=$((15 * 60))  # cmd_783: 家老通知から殿宛エスカレーションまでの猶予
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
 NIGHT_END_HOUR=8
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
@@ -62,14 +73,18 @@ touch "$LIVENESS_FILE"
 
 file_count=0
 stalled=()
+stalled_agents=()  # cmd_783: 殿宛エスカレーション比較用の素のagent名一覧(detail文言を含まぬ)
 for f in "$TASKS_DIR"/*.yaml; do
   [ -f "$f" ] || continue
   agent="$(basename "$f" .yaml)"
   # 実測で発見(2026-09-07): queue/tasks/にはgunshi_cmd624_design.yaml等
   # エージェント名でないファイルも混在し、真の実働エージェントに絞らねば
-  # 何ヶ月も前のファイルが毎回誤検知される。既知の実働名のみ対象とする
+  # 何ヶ月も前のファイルが毎回誤検知される。既知の実働名のみ対象とする。
+  # ★gunshi2は実在しないpane(2026-09-05将軍確認済み・cmd_754で誤検知の
+  # 元凶となった)ゆえ対象から除外する。旧gunshi2.yaml(完結済み実績)は
+  # 削除でなくqueue/archive/へ退避済み(cmd_783)。
   case "$agent" in
-    ashigaru[0-9]|gunshi|gunshi2|karo|shogun) ;;
+    ashigaru[0-9]|gunshi|karo|shogun) ;;
     *) continue ;;
   esac
   file_count=$((file_count + 1))
@@ -82,7 +97,10 @@ for f in "$TASKS_DIR"/*.yaml; do
   status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
   idle=$(( (now_epoch - m) / 60 ))
-  [ "$idle" -ge "$THRESHOLD_MIN" ] && stalled+=("${agent}(status=${status:-不明}・idle=${idle}分)")
+  if [ "$idle" -ge "$THRESHOLD_MIN" ]; then
+    stalled+=("${agent}(status=${status:-不明}・idle=${idle}分)")
+    stalled_agents+=("$agent")
+  fi
 done
 
 if [ "$file_count" -eq 0 ]; then
@@ -122,11 +140,33 @@ if [ $(( now_epoch - karo_last_fire )) -ge "$KARO_COOLDOWN_SEC" ]; then
   fi
   bash "$INBOX_WRITE_SCRIPT" karo "$karo_msg" task_assigned deadman_switch
   echo "$now_epoch" > "$KARO_LAST_FIRE_FILE"
+  # cmd_783: 殿宛エスカレーション判定用に、この通知時点の停止agent一覧を記録
+  printf '%s,%s\n' "$now_epoch" "$(IFS=,; echo "${stalled_agents[*]}")" > "$KARO_NOTIFIED_AGENTS_FILE"
   echo "[deadman_switch] $now_iso KARO_NOTIFIED stalled=${stalled[*]} in_night=$in_night" >> "$LOG_FILE"
 fi
 
 # 殿へのntfyは夜間は引き続き発火しない(殿のお休みを妨げぬため・現状維持)
 $in_night && exit 0
+
+# cmd_783【殿は最後の砦】: 家老通知から15分経ってもなお同一agentが停止中の
+# 場合に限り殿宛エスカレーションへ進む。記録が無い(まだ家老通知1回目)か
+# 15分未満、あるいは記録済みagentが全員解消済みなら、殿は起こさない。
+lord_escalate=false
+if [ -f "$KARO_NOTIFIED_AGENTS_FILE" ]; then
+  IFS=',' read -r karo_notify_epoch karo_notify_agents_csv < "$KARO_NOTIFIED_AGENTS_FILE"
+  if [ -n "${karo_notify_epoch:-}" ] && [ $(( now_epoch - karo_notify_epoch )) -ge "$LORD_ESCALATION_WAIT_SEC" ]; then
+    IFS=',' read -ra karo_notify_agents <<< "$karo_notify_agents_csv"
+    for na in "${karo_notify_agents[@]}"; do
+      for sa in "${stalled_agents[@]}"; do
+        if [ "$na" = "$sa" ]; then
+          lord_escalate=true
+          break 2
+        fi
+      done
+    done
+  fi
+fi
+$lord_escalate || exit 0
 
 # cooldownは全体で1本(agent毎に持たず60行の縛りを優先・addendum⑤準拠)
 last_fire=0
