@@ -52,18 +52,39 @@ ledger_cmd_status() {
 # 値、という前提のほうがヘッダー検出より単純かつ頑健(実7エージェント分
 # のreport yamlで実測確認済み)。
 #
-# ★grep 単体を "{ ... || true; }" で包む: 呼び出し元 (stall_watchdog.sh) は
-# set -euo pipefail 下で動く。フィールドが存在せず grep が非0で終わると、
-# pipefail 下ではパイプライン全体が非0を返し、それを command substitution
-# で受ける代入文(例: report_status=$(_lmd_report_field ...))がそのまま
-# set -e を発動させ、呼び出し元ループがそのファイルで無言のまま止まる
-# (cmd_778②実装時に実データ(report:配下ネスト形式のreport)で実際に踏んだ・
-# 単体テストはbats run経由でset -eの影響を受けず気づけなかった)。
+# ★grep単体+tail -1の "^(  )?status:" は、instructions/gunshi.mdが必須と
+# 定めるreportフッター "north_star_alignment:\n  status: aligned|..." の
+# ような、エントリ本体でない付随ブロック配下の同名フィールドも無差別に
+# 拾ってしまう(cmd_778②follow-up是正——軍師が実データ実行で発見:
+# gunshi_report.yamlのtop-level status(done)ではなく、フッターの
+# north_star_alignment.status(aligned)を誤取得していた)。
+# そこでawkで「列0(インデント無し)の行が現れたら新しいブロックの開始」
+# とみなし、それが north_star_alignment: のような既知の付随ブロックなら
+# 次の列0行が現れるまでの間は候補から除外する状態機械にした。
+# entry本体(列0のフラットfield、または"report:"配下2字下げの旧nested
+# 形式)は従来どおり素通りする——除外対象は既知の付随ブロック名のみ。
+#
+# ★grep単体を "{ ... || true; }" で包んでいた理由(pipefail対策)はawk化に
+# より不要になった: awkはフィールド不在でも0で終了するため、呼び出し元
+# (stall_watchdog.sh, set -euo pipefail下)のset -e発動を心配しなくてよい。
 _lmd_report_field() {
     local file="$1" field="$2"
-    { grep -E "^(  )?${field}:" "$file" 2>/dev/null || true; } | tail -1 \
-        | sed -E "s/^[[:space:]]*${field}:[[:space:]]*//" \
-        | tr -d '"' | tr -d "'"
+    [[ -f "$file" ]] || return 0
+
+    awk -v field="$field" '
+        /^[^[:space:]]/ {
+            in_excluded = ($0 ~ /^north_star_alignment:/) ? 1 : 0
+        }
+        in_excluded { next }
+        $0 ~ "^(  )?" field ":" {
+            line = $0
+            sub("^(  )?" field ":[[:space:]]*", "", line)
+            gsub(/["'"'"']/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            val = line
+        }
+        END { print val }
+    ' "$file"
 }
 
 _lmd_file_mtime_epoch() {

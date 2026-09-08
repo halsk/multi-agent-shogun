@@ -398,3 +398,32 @@ seed_inbox() {
   # 本検知の対象外(型どおり)。ashigaru2 という行自体が出ないことを確認する。
   [[ "$output" != *"ashigaru2|"* ]]
 }
+
+# ── cmd_778②follow-up: instructions/gunshi.md が必須と定める報告フッター
+# "north_star_alignment:\n  status: aligned" の nested status を、entry
+# 本体の top-level status と混同しない再発防止(軍師が実データ実行で発見:
+# gunshi_report.yaml の top-level status(done) ではなく north_star_alignment
+# .status(aligned) を誤取得していた)。旧実装(grep単体+tail -1)は「ファイル内
+# 最後に出現した"status:"行」を無差別に採るため、north_star_alignment.status
+# がフッターとして最後に来ると、そちらを report_status として誤採用し、
+# その結果 `[[ "$report_status" != "done" ]] && continue` により本来
+# 検知すべき mismatch を静かに見逃す(偽陰性)危険があった。
+
+@test "T-3WM-011: does not let a north_star_alignment footer's nested status be mistaken for the entry's top-level status (gunshi_report.yaml shape repro)" {
+  source "$LIB_FILE"
+
+  seed_report "gunshi_report.yaml" $'worker_id: gunshi\ntask_id: subtask_738_pr156_133_134_recheck\nparent_cmd: cmd_738\ntimestamp: "2026-09-08T01:20:00"\nstatus: done\nresult:\n  tests_status: all_pass\n\nskill_candidate:\n  found: false\n\nnorth_star_alignment:\n  status: aligned\n  reason: "..."\n  risks_to_north_star:\n    - "..."\n' 7
+
+  # 中間抽出値そのものを確認する: report_status/parent_cmd が north_star_alignment
+  # 配下ではなく entry 本体(top-level)から取れていること。
+  [ "$(_lmd_report_field "$TMP_DIR/reports/gunshi_report.yaml" "status")" = "done" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/gunshi_report.yaml" "parent_cmd")" = "cmd_738" ]
+
+  # task YAML 側を意図的に未完了のまま(assigned)にして三面食い違いを作る。
+  # report_status を正しく"done"と読めていなければ、この mismatch はそもそも
+  # 判定対象に入らず(偽陰性で)出力されない。
+  seed_task "$TMP_DIR/tasks" "gunshi.yaml" $'task:\n  status: assigned\n'
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gunshi|cmd_738|"* ]]
+}
