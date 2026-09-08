@@ -185,7 +185,7 @@ get_instruction_file() {
         shogun)    role="shogun" ;;
         karo)      role="karo" ;;
         gunshi)    role="gunshi" ;;
-        gunshi2)   role="gunshi2" ;;
+        # gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
         ashigaru*) role="ashigaru" ;;
         *)
             echo "" >&2
