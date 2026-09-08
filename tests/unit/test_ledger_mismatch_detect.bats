@@ -247,3 +247,183 @@ seed_task() {
 @test "T-ORPHAN-005: stall_watchdog.sh invokes detect_orphan_cmds via check_orphan_cmds" {
   grep -qE "check_orphan_cmds|detect_orphan_cmds" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_778② (型h): report・task YAML・inboxの三面食い違い検知。
+# 個別の型(a〜g)を列挙するのでなく「三面が一致しているか」という一つの
+# 不変条件で見る。本日 ashigaru6 が実際に踏んだ事例
+# (report=done / task YAML=assigned / 家老inbox=通知0件・7〜12時間)の再現を含む。
+
+seed_inbox() {
+  local content="$1"
+  printf '%s\n' "$content" > "$TMP_DIR/inbox_karo.yaml"
+}
+
+# ── T-3WM-001: report=done・task=assigned・inbox無音(本日の実例再現) → 検知 ──
+
+@test "T-3WM-001: flags report=done/task=assigned/inbox-silent (ashigaru6 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru6_report.yaml" $'worker_id: ashigaru6\nparent_cmd: cmd_738\ntimestamp: "2026-09-06T10:49:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru6.yaml" $'task:\n  status: assigned\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_1\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru6|cmd_738|"* ]]
+  [[ "$output" == *"|assigned|0|"* ]]
+}
+
+# ── T-3WM-002: task=done かつ inboxにreport以降のfrom:{agent}あり → 検知しない(正常系) ──
+
+@test "T-3WM-002: does not flag when task is done and inbox has a from-agent entry after report" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru2_report.yaml" $'worker_id: ashigaru2\nparent_cmd: cmd_800\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: done\n'
+  seed_inbox $'messages:\n- content: 完了報告\n  from: ashigaru2\n  id: msg_2\n  read: true\n  timestamp: "2026-09-06T10:05:00"\n  type: report_received\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru2"* ]]
+}
+
+# ── T-3WM-003: task=doneだがinboxにreport以降のfrom:{agent}なし → 検知される(inbox面のみ食い違い) ──
+
+@test "T-3WM-003: flags when task is done but no matching inbox entry exists after the report" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru3_report.yaml" $'worker_id: ashigaru3\nparent_cmd: cmd_801\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru3.yaml" $'task:\n  status: done\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_3\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru3|cmd_801|"* ]]
+  [[ "$output" == *"|done|0|"* ]]
+}
+
+# ── T-3WM-004: report=done経過時間が閾値未満 → 検知しない(即時誤検知防止) ──
+
+@test "T-3WM-004: does not flag before threshold elapses" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru4_report.yaml" $'worker_id: ashigaru4\nparent_cmd: cmd_802\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 0
+  seed_task "$TMP_DIR/tasks" "ashigaru4.yaml" $'task:\n  status: assigned\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_4\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru4"* ]]
+}
+
+# ── T-3WM-005: reportがdoneでない → 検知しない ──
+
+@test "T-3WM-005: does not flag when report itself is not done" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru5_report.yaml" $'worker_id: ashigaru5\nparent_cmd: cmd_803\ntimestamp: "2026-09-06T10:00:00"\nstatus: in_progress\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru5.yaml" $'task:\n  status: assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru5"* ]]
+}
+
+# ── T-3WM-006: task・inbox両面とも整合 → 両面ともOKなら検知しない(健全系の再確認) ──
+
+@test "T-3WM-006: does not flag when both task and inbox faces are consistent" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru7_report.yaml" $'worker_id: ashigaru7\nparent_cmd: cmd_804\ntimestamp: "2026-09-06T08:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru7.yaml" $'task:\n  status: cancelled\n'
+  seed_inbox $'messages:\n- content: 完了報告\n  from: ashigaru7\n  id: msg_7\n  read: false\n  timestamp: "2026-09-06T08:10:00"\n  type: report_received\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru7"* ]]
+}
+
+# ── T-3WM-007: stall_watchdog.sh がこの check を実際に呼び出している(相乗り確認) ──
+
+@test "T-3WM-007: stall_watchdog.sh invokes detect_three_way_mismatch via check_three_way_mismatch" {
+  grep -qE "check_three_way_mismatch|detect_three_way_mismatch" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}
+
+# ── cmd_778②やり直し: 実データ(queue/reports/ashigaru2_report.yaml等)実測で
+# 発覚した「最新エントリ特定」の再発防止。旧実装はエントリ境界を
+# report:/report_*:/worker_id:/task_id: というヘッダー行パターンで検出
+# していたが、report_to:/report_command: というありふれたフィールド名が
+# たまたま "report_" で始まるだけで誤ってヘッダー扱いされ、真に最後の
+# エントリのstatus/parent_cmdが範囲外に追い出され空文字になっていた
+# (実データ実測: ashigaru2はstatus/parent_cmdとも空文字、ashigaru5も
+# 同様に空文字だった)。
+
+@test "T-3WM-008: does not let a 'report_to:' field inside the newest entry be mistaken for an entry header (ashigaru2 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru_x_report.yaml" $'report_774_legend_fix_complete:\n  task_id: subtask_old\n  parent_cmd: cmd_774\n  status: done\n  timestamp: "2026-09-06T10:00:00"\n\ntask_id: subtask_new_entry\nparent_cmd: cmd_900\nstatus: in_progress\nreport_to: karo\n\nsummary: |\n  newest entry, not done yet\n'
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_x_report.yaml" "status")" = "in_progress" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_x_report.yaml" "parent_cmd")" = "cmd_900" ]
+}
+
+@test "T-3WM-009: does not let a 'report_command:' field inside the newest entry be mistaken for an entry header (ashigaru5 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru_y_report.yaml" $'worker_id: ashigaru_y\ntask_id: subtask_old\nparent_cmd: cmd_777\nstatus: done\ntimestamp: "2026-09-05T10:00:00"\n\nreport_command: |\n  bash scripts/inbox_write.sh karo "old report" report_received ashigaru_y\n'
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_y_report.yaml" "status")" = "done" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru_y_report.yaml" "parent_cmd")" = "cmd_777" ]
+}
+
+# ashigaru2の実report yaml(queue/reports/・gitignore対象で本テストからは
+# 参照できない)を実測した際の実際の構造を模したフィクスチャ。
+# 複数の`report_<name>:`ブロック(旧形式)の後に、列0のフラットな
+# エントリ(task_id:/parent_cmd:/status:/report_to:)が複数回追記され、
+# 最後のエントリのstatusは厳密な"done"でなく"done_pending_karo_merge_decision"
+# である、という本日実際に踏んだ実データの形をそのまま再現する。
+
+@test "T-3WM-010: correctly resolves the latest entry in a mixed nested+flat multi-entry accumulated report (ashigaru2 shape repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru2_report.yaml" $'report_774_legend_fix_complete:\n  task_id: subtask_774\n  parent_cmd: cmd_774\n  status: done\n  timestamp: "2026-09-06T16:50:00+09:00"\n\ntask_id: subtask_e2e010b_first_attempt\nparent_cmd: cmd_766\nstatus: done_pending_karo_merge_decision\nreport_to: karo\n\ntask_id: subtask_e2e010b_fix_test_scenario\nparent_cmd: cmd_766\nstatus: done_pending_karo_merge_decision\nreport_to: karo\n\nsummary: |\n  latest entry, awaiting karo merge decision\n' 7
+
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru2_report.yaml" "status")" = "done_pending_karo_merge_decision" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/ashigaru2_report.yaml" "parent_cmd")" = "cmd_766" ]
+
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  status: assigned\n'
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  # report_status が厳密に "done" ではない(done_pending_karo_merge_decision)ため
+  # 本検知の対象外(型どおり)。ashigaru2 という行自体が出ないことを確認する。
+  [[ "$output" != *"ashigaru2|"* ]]
+}
+
+# ── cmd_778②follow-up: instructions/gunshi.md が必須と定める報告フッター
+# "north_star_alignment:\n  status: aligned" の nested status を、entry
+# 本体の top-level status と混同しない再発防止(軍師が実データ実行で発見:
+# gunshi_report.yaml の top-level status(done) ではなく north_star_alignment
+# .status(aligned) を誤取得していた)。旧実装(grep単体+tail -1)は「ファイル内
+# 最後に出現した"status:"行」を無差別に採るため、north_star_alignment.status
+# がフッターとして最後に来ると、そちらを report_status として誤採用し、
+# その結果 `[[ "$report_status" != "done" ]] && continue` により本来
+# 検知すべき mismatch を静かに見逃す(偽陰性)危険があった。
+
+@test "T-3WM-011: does not let a north_star_alignment footer's nested status be mistaken for the entry's top-level status (gunshi_report.yaml shape repro)" {
+  source "$LIB_FILE"
+
+  seed_report "gunshi_report.yaml" $'worker_id: gunshi\ntask_id: subtask_738_pr156_133_134_recheck\nparent_cmd: cmd_738\ntimestamp: "2026-09-08T01:20:00"\nstatus: done\nresult:\n  tests_status: all_pass\n\nskill_candidate:\n  found: false\n\nnorth_star_alignment:\n  status: aligned\n  reason: "..."\n  risks_to_north_star:\n    - "..."\n' 7
+
+  # 中間抽出値そのものを確認する: report_status/parent_cmd が north_star_alignment
+  # 配下ではなく entry 本体(top-level)から取れていること。
+  [ "$(_lmd_report_field "$TMP_DIR/reports/gunshi_report.yaml" "status")" = "done" ]
+  [ "$(_lmd_report_field "$TMP_DIR/reports/gunshi_report.yaml" "parent_cmd")" = "cmd_738" ]
+
+  # task YAML 側を意図的に未完了のまま(assigned)にして三面食い違いを作る。
+  # report_status を正しく"done"と読めていなければ、この mismatch はそもそも
+  # 判定対象に入らず(偽陰性で)出力されない。
+  seed_task "$TMP_DIR/tasks" "gunshi.yaml" $'task:\n  status: assigned\n'
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gunshi|cmd_738|"* ]]
+}

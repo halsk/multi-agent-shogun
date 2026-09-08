@@ -68,6 +68,11 @@ COOLDOWN_P23=$((15 * 60))
 # cmd_766 第一層: report done vs 台帳 pending/in_progress の許容経過時間(目安6h・gunshi設計)
 LEDGER_MISMATCH_THRESHOLD=$((6 * 60 * 60))
 
+# cmd_778②(型h): report・task YAML・inboxの三面食い違いの許容経過時間。
+# 個別型を列挙せず不変条件で見る検知のため、既存detect_ledger_mismatchesの
+# デフォルト(6h)に倣う
+THREE_WAY_MISMATCH_THRESHOLD=$((6 * 60 * 60))
+
 # cmd_771 fix_e: human attach中(E4)の抑止上限。これを超えたら
 # 「attachしたまま放置」とみなし通知する(gunshi設計目安=1時間)
 E4_SUPPRESS_LIMIT=$((60 * 60))
@@ -525,6 +530,73 @@ check_blocked_reason_gaps() {
     done < <(detect_blocked_reason_gaps "$tasks_dir")
 }
 
+# ── cmd_778②(型h)相乗り: report・task YAML・inboxの三面食い違い検知 ────────
+# 殿ご裁可(2026-09-06)。型を列挙するのでなく「三面が一致しているか」という
+# 一つの不変条件で見る(a〜gのように継ぎ足すやり方は限界に来ていた)。
+# 本日 ashigaru6 の report(status: done)・task YAML(status: assigned)・
+# 家老inbox(通知0件)が7〜12時間食い違ったまま放置された実例への対応。
+
+notify_dashboard_three_way_mismatch() {
+    local agent="$1"
+    local parent_cmd="$2"
+    local task_status="$3"
+    local inbox_ok="$4"
+    local age="$5"
+    local ts
+    ts=$(now_iso)
+    local hours=$(( age / 3600 ))
+    local detail="task=${task_status}"
+    [[ "$inbox_ok" == "0" ]] && detail="${detail}・inbox無通知"
+    local entry="- 🚨 [three_way_mismatch] ${agent}(${parent_cmd}): reportはdone報告済だが${detail}のまま約${hours}時間経過 @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
+        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_three_way_mismatch() {
+    local agent="$1"
+    local parent_cmd="$2"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "three_way_mismatch: ${agent}(${parent_cmd})でreport/task/inboxの三面が食い違ったまま。是正せよ。"
+}
+
+check_three_way_mismatch() {
+    local reports_dir="$SCRIPT_DIR/queue/reports"
+    local tasks_dir="$SCRIPT_DIR/queue/tasks"
+    local karo_inbox="$SCRIPT_DIR/queue/inbox/karo.yaml"
+
+    local agent parent_cmd report_file task_status inbox_ok age
+    while IFS='|' read -r agent parent_cmd report_file task_status inbox_ok age; do
+        [[ -z "$agent" ]] && continue
+
+        local state_key="three_way_mismatch__${agent}__${parent_cmd}"
+        local notified_key="${task_status}:${inbox_ok}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" == "$notified_key" ]]; then
+            # 同一状態を既に通知済み → 再送しない(スパム防止)
+            continue
+        fi
+
+        log "[THREE-WAY-MISMATCH] $agent: parent_cmd=$parent_cmd task=$task_status inbox_ok=$inbox_ok age=${age}s"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard+ntfy for $agent/$parent_cmd"
+            continue
+        fi
+        notify_dashboard_three_way_mismatch "$agent" "$parent_cmd" "$task_status" "$inbox_ok" "$age"
+        send_ntfy_three_way_mismatch "$agent" "$parent_cmd"
+        state_set "$state_key" "notified_status" "$notified_key"
+    done < <(detect_three_way_mismatch "$reports_dir" "$tasks_dir" "$karo_inbox" "$THREE_WAY_MISMATCH_THRESHOLD")
+}
+
 # ── cmd_771 fix_c 相乗り: 孤児cmd(idle足軽+台帳の未完了cmdが誰にも
 # 割り当てられていない状態)の検知 ────────────────────────────────────────────
 
@@ -899,6 +971,9 @@ check_blocked_reason_gaps
 
 # cmd_771 fix_c 相乗り: 孤児cmd(誰にも割り当てられていない未完了cmd)の検知
 check_orphan_cmds
+
+# cmd_778②(型h)相乗り: report・task YAML・inboxの三面食い違いの検知
+check_three_way_mismatch
 
 # cmd_767 第一層(心拍) 相乗り: 定期ジョブが黙って死んでいないかの検知
 check_heartbeats
