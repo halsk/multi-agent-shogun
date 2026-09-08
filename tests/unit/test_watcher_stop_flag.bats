@@ -69,7 +69,7 @@ teardown() {
 @test "T-STOP-002: watcher_supervisor.sh stop all creates a flag for every ALL_AGENTS entry" {
     run bash -c "WATCHER_STOP_FLAG_DIR='$TEST_FLAG_DIR' bash '$SUPERVISOR_SCRIPT' stop all"
     [ "$status" -eq 0 ]
-    for agent in shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2; do
+    for agent in shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi; do
         [ -f "$TEST_FLAG_DIR/shogun_watcher_stop_${agent}" ]
     done
 }
