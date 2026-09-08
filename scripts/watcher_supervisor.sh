@@ -66,7 +66,8 @@ start_ntfy_listener_if_missing() {
     launch_ntfy_listener "$log_file"
 }
 
-ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2)
+# gunshi2は2026-09-08 cmd_784で正式に畳んだ(pane不在・設定のみ残存が誤検知の元だった)。ALL_AGENTSから除外。
+ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi)
 
 # ─── D006-safe watcher swap-in (cmd_760 item③) ───
 # D006 (kill系統無条件禁止) を破らずに、稼働中の inbox_watcher.sh に新しい
