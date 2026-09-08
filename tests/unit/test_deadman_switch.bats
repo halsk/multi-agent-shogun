@@ -8,11 +8,12 @@
 # 既存検知機構を一切source/呼び出ししていないことをgrepで確認する(T-DM-000)。
 #
 # DEADMAN_TASKS_DIR/DASHBOARD/STATE_DIR/LOG_FILE/LIVENESS_FILE/NTFY_SCRIPT/
-# NOW_EPOCHの差し替え口を使い、production queue/tasks・dashboard.md・
-# /tmp/deadman-last-run・実ntfy送信を一切汚さず隔離実行する。ntfy.shは呼出を
-# 記録するだけのスタブに差し替える(config/settings.yamlはgitignore対象で
-# CI checkoutに存在せず、実ntfy.shはcurl到達前にexit 1するため)。実際の
-# 到達確認はashigaru7がHTTP 200を手動で実測済み・report参照。
+# INBOX_WRITE_SCRIPT/NOW_EPOCHの差し替え口を使い、production queue/tasks・
+# dashboard.md・/tmp/deadman-last-run・実ntfy送信・実queue/inbox/karo.yamlを
+# 一切汚さず隔離実行する。ntfy.sh/inbox_write.shは呼出を記録するだけの
+# スタブに差し替える(config/settings.yamlはgitignore対象でCI checkoutに
+# 存在せず、実ntfy.shはcurl到達前にexit 1するため)。実際の到達確認は
+# ashigaru7がHTTP 200を手動で実測済み・report参照。
 
 setup() {
   export PROJECT_ROOT
@@ -36,16 +37,29 @@ echo "NTFY_CALLED: \$*" >> "${CALLS_LOG}"
 STUB
   chmod +x "$NTFY_STUB"
 
+  # 家老inbox通知スタブ(cmd_781): 実scripts/inbox_write.shを経由すると
+  # production queue/inbox/karo.yamlへテスト用メッセージが実際に書き込まれて
+  # しまうため、呼出を記録するだけのスタブに差し替える(ntfy_stub.shと同じ設計)
+  export KARO_CALLS_LOG
+  KARO_CALLS_LOG="$(mktemp "$BATS_TMPDIR/deadman_inbox_calls.XXXXXX")"
+  export INBOX_WRITE_STUB="$TMP_DIR/inbox_write_stub.sh"
+  cat > "$INBOX_WRITE_STUB" << STUB
+#!/usr/bin/env bash
+echo "INBOX_WRITE_CALLED: \$*" >> "${KARO_CALLS_LOG}"
+STUB
+  chmod +x "$INBOX_WRITE_STUB"
+
   export DEADMAN_TASKS_DIR="$TMP_DIR/tasks"
   export DEADMAN_DASHBOARD="$TMP_DIR/dashboard.md"
   export DEADMAN_STATE_DIR="$TMP_DIR/state"
   export DEADMAN_LOG_FILE="$TMP_DIR/log.log"
   export DEADMAN_LIVENESS_FILE="$TMP_DIR/liveness"
   export DEADMAN_NTFY_SCRIPT="$NTFY_STUB"
+  export DEADMAN_INBOX_WRITE_SCRIPT="$INBOX_WRITE_STUB"
 }
 
 teardown() {
-  rm -rf "$TMP_DIR" "$CALLS_LOG" 2>/dev/null || true
+  rm -rf "$TMP_DIR" "$CALLS_LOG" "$KARO_CALLS_LOG" 2>/dev/null || true
 }
 
 epoch_of() {
@@ -175,5 +189,58 @@ YAML
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-010: 夜間+停止検知 → 家老inboxへ通知が飛ぶ(「軽い作業のみ」文言含む)。
+#   殿へのntfyは従来どおり夜間は発火しない(cmd_781・9/7-9/8全停止事故対応) ──
+@test "T-DM-010: 夜間の停止検知時は家老inboxへ通知(軽い作業のみ文言)・殿へのntfyは飛ばない" {
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$CALLS_LOG" ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "karo" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "軽い作業のみ" "$KARO_CALLS_LOG"
+  [ "$output" -eq 1 ]
+  [ -f "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt" ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+}
+
+# ── T-DM-011: 昼間+停止検知 → 家老inboxへも殿へのntfyも両方飛ぶ(従来どおり) ──
+@test "T-DM-011: 昼間の停止検知時は家老inbox・殿へのntfy双方が機能する" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$CALLS_LOG" ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "軽い作業のみ" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+  [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ -f "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt" ]
+}
+
+# ── T-DM-012: 家老宛cooldown(30分)以内の再発火は抑止される。殿宛cooldown(2h)
+#   とは独立した状態ファイルで管理されている(状態ファイル名が別であることも実証) ──
+@test "T-DM-012: 家老宛cooldown(30分)以内は再通知しない・殿宛cooldownとは独立" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+  # 殿宛cooldownは別状態ファイルゆえ影響を受けず、通常どおり発火する
+  [ -s "$CALLS_LOG" ]
+}
+
+# ── T-DM-013: 家老宛cooldownが切れていれば夜間でも再度通知される ──
+@test "T-DM-013: 家老宛cooldown経過後は夜間でも再通知される" {
+  touch -t 202609080300.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 22:00:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
   [ ! -s "$CALLS_LOG" ]
 }
