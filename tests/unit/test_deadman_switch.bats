@@ -56,6 +56,11 @@ STUB
   export DEADMAN_LIVENESS_FILE="$TMP_DIR/liveness"
   export DEADMAN_NTFY_SCRIPT="$NTFY_STUB"
   export DEADMAN_INBOX_WRITE_SCRIPT="$INBOX_WRITE_STUB"
+  # cmd_784: 家老/将軍inbox生存信号の差し替え口。既定では存在せぬ一時パスを指し、
+  # 本番 queue/inbox/{karo,shogun}.yaml を読まぬようにする(dispatcher検知を
+  # 明示的にテストするケースのみ、各testでこの変数へ実ファイルを書く)。
+  export DEADMAN_KARO_INBOX="$TMP_DIR/karo_inbox.yaml"
+  export DEADMAN_SHOGUN_INBOX="$TMP_DIR/shogun_inbox.yaml"
 }
 
 teardown() {
@@ -249,7 +254,7 @@ YAML
 # ── T-DM-012: 家老宛cooldown(30分)以内の再発火は抑止される。殿宛cooldown(2h)
 #   とは独立した状態ファイルで管理されている(状態ファイル名が別であることも実証)。
 #   殿宛エスカレーション条件(15分経過+同一agent停止中)は別途満たしておく ──
-@test "T-DM-012: 家老宛cooldown(30分)以内は再通知しない・殿宛cooldownとは独立" {
+@test "T-DM-012: 家老宛cooldown(20分)以内は再通知しない・殿宛cooldownとは独立" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   mkdir -p "$DEADMAN_STATE_DIR"
   echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
@@ -325,4 +330,129 @@ YAML
   [ ! -s "$KARO_CALLS_LOG" ]
   run grep -o "gunshi2" "$DEADMAN_DASHBOARD"
   [ -z "$output" ]
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_784: 緊急バグ①②修正 + 家老/将軍(dispatcher)自己監視
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-018【バグ①再現・修正実証】家老へ個別通知されていない新規停止agentは
+#   殿宛エスカレーションに巻き込まれない ──
+#   snapshot=[ashigaru5](15分経過済)・現在の停止=ashigaru1+ashigaru5。
+#   殿へ飛ぶのはashigaru5のみで、家老通知を経ていないashigaru1は含まれない。
+@test "T-DM-018: 殿宛エスカレーションはkaro_notify_agentsとの交差集合のみ(新規停止agentを巻き込まない)" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"   # 240分idle(新規停止)
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru5.yaml"   # 240分idle(通知済)
+  mkdir -p "$DEADMAN_STATE_DIR"
+  # 家老宛cooldown内(10分前)にしてkaro再通知をskip→旧snapshotを温存させる
+  echo "$(epoch_of "2026-09-08 13:50:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
+  # snapshot: 20分前にashigaru5のみを家老通知済(15分経過条件を満たす)
+  echo "$(epoch_of "2026-09-08 13:40:00"),ashigaru5" > "$DEADMAN_STATE_DIR/karo_notified_agents.txt"
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # 家老は再通知されない(cooldown内)
+  [ ! -s "$KARO_CALLS_LOG" ]
+  # 殿へは発火する
+  [ -s "$CALLS_LOG" ]
+  # ★核心: 殿宛msgにはashigaru5のみ・ashigaru1は含まれない
+  run grep -c "ashigaru5" "$CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "ashigaru1" "$CALLS_LOG"
+  [ "$output" -eq 0 ]
+}
+
+# ── T-DM-019【バグ②修正実証】家老宛cooldownは20分(30分ではない) ──
+#   前回家老通知から25分経過 → 20分ルールなら再通知される・30分ルールなら
+#   まだブロックされる。再通知されることで20分であることを実証する。
+@test "T-DM-019: 家老宛cooldownは20分(前回通知から25分経過で再通知される)" {
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  mkdir -p "$DEADMAN_STATE_DIR"
+  echo "$(epoch_of "2026-09-08 13:35:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"  # 25分前
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]   # 25分>20分ゆえ再通知される(30分なら来ない)
+}
+
+# ── T-DM-020【家老生存監視】家老inboxに閾値超の未読滞留 → 家老停止を検知 ──
+@test "T-DM-020: 家老inboxの未読が閾値超に滞留すると家老停止として検知する" {
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"   # 足軽は正常(1分idle)
+  cat > "$DEADMAN_KARO_INBOX" <<'YAML'
+messages:
+- content: test
+  from: shogun
+  id: x1
+  read: false
+  timestamp: '2026-09-08T11:00:00'
+  type: task_assigned
+YAML
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "未読滞留" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "karo" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-021【idle区別】家老inboxに未読が無ければ(手番待ちでなく正常idle)検知しない ──
+@test "T-DM-021: 家老inboxに未読が無ければ家老停止として検知しない" {
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$DEADMAN_KARO_INBOX" <<'YAML'
+messages:
+- content: test
+  from: shogun
+  id: x1
+  read: true
+  timestamp: '2026-09-08T11:00:00'
+  type: task_assigned
+YAML
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+}
+
+# ── T-DM-022【将軍生存監視】将軍inboxに閾値超の未読滞留 → 将軍停止を検知 ──
+@test "T-DM-022: 将軍inboxの未読が閾値超に滞留すると将軍停止として検知する" {
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$DEADMAN_SHOGUN_INBOX" <<'YAML'
+messages:
+- content: test
+  from: karo
+  id: s1
+  read: false
+  timestamp: '2026-09-08T11:00:00'
+  type: task_assigned
+YAML
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "shogun" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-023【dispatcher→殿の最後の砦】家老停止が15分後も未解消なら殿へ発火 ──
+@test "T-DM-023: 家老停止が家老通知15分後も未解消なら殿宛ntfyが最後の砦として発火する" {
+  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$DEADMAN_KARO_INBOX" <<'YAML'
+messages:
+- content: test
+  from: shogun
+  id: x1
+  read: false
+  timestamp: '2026-09-08T11:00:00'
+  type: task_assigned
+YAML
+  # 1回目: 家老通知のみ(snapshotに karo を記録)
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
+  # 2回目: 16分後・家老はまだ停止(未読滞留のまま) → 殿へ発火
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$CALLS_LOG" ]
+  run grep -c "karo" "$CALLS_LOG"
+  [ "$output" -ge 1 ]
 }

@@ -43,6 +43,18 @@ THRESHOLD_MIN=150
 # DEADMAN_LOG_FILE を明示的に指定し、本番 logs/deadman_switch.log を
 # 汚染しないこと(例: DEADMAN_LOG_FILE=/tmp/deadman_test.log bash scripts/deadman_switch.sh)。
 # 未指定の手動実行が本番ログへ旧形式・偽装時刻の行を混入させた実例あり(2026-09-08)。
+#
+# 家老/将軍自身の生存監視(cmd_784・殿ご裁可 2026-09-08): 家老・将軍は
+# dispatcherでありtask YAMLを持たぬため、mtimeベースの本網からは不可視
+# だった(本日の24h停止=家老が詰まった/8h停止=将軍が眠った、の当事者
+# 自身が全検知網から見えていなかった)。代わりに「自分のinbox(queue/inbox/
+# {karo,shogun}.yaml)に未読(read:false)が閾値以上滞留しているか」を生存信号
+# とする——生きたdispatcherは即座にinboxを処理しread:trueにする。未読ゼロ
+# (手番なし)なら正常なidleゆえ対象外(「詰まった」と「手番待ち」の機械的
+# 区別)。検知後は既存の stalled 網へそのまま積み、家老通知→15分→殿ntfyの
+# 最後の砦を再利用する(新規経路は作らない)。★独立性の掟との整合: これは
+# 既存の検知スクリプト(inbox_watcher等)への依存ではなく、mailboxデータを
+# task YAMLと同様に直接読むだけであり、判定を他機構へ委ねてはいない。
 
 set -uo pipefail
 
@@ -58,15 +70,45 @@ LOG_FILE="${DEADMAN_LOG_FILE:-$SCRIPT_DIR/logs/deadman_switch.log}"
 LIVENESS_FILE="${DEADMAN_LIVENESS_FILE:-/tmp/deadman-last-run}"
 NTFY_SCRIPT="${DEADMAN_NTFY_SCRIPT:-$SCRIPT_DIR/scripts/ntfy.sh}"
 INBOX_WRITE_SCRIPT="${DEADMAN_INBOX_WRITE_SCRIPT:-$SCRIPT_DIR/scripts/inbox_write.sh}"
+KARO_INBOX="${DEADMAN_KARO_INBOX:-$SCRIPT_DIR/queue/inbox/karo.yaml}"      # cmd_784: 家老の生存信号
+SHOGUN_INBOX="${DEADMAN_SHOGUN_INBOX:-$SCRIPT_DIR/queue/inbox/shogun.yaml}" # cmd_784: 将軍の生存信号
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
 KARO_LAST_FIRE_FILE="$STATE_DIR/karo_last_fire_epoch.txt"   # 殿宛cooldownとは別名(混線防止)
 KARO_NOTIFIED_AGENTS_FILE="$STATE_DIR/karo_notified_agents.txt"  # cmd_783: 家老通知時刻+停止agent一覧のスナップショット
 COOLDOWN_SEC=$((2 * 60 * 60))   # 殿宛: 1回/2時間
-KARO_COOLDOWN_SEC=$((30 * 60))  # 家老宛: 1回/30分(家老は起きたらすぐ気づくべき・殿宛より短く)
+KARO_COOLDOWN_SEC=$((20 * 60))  # 家老宛: 1回/20分(cmd_783受入条件。cmd_784バグ②修正: 従前の30分はcmd_783受入条件との食い違いだった)
 LORD_ESCALATION_WAIT_SEC=$((15 * 60))  # cmd_783: 家老通知から殿宛エスカレーションまでの猶予
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
 NIGHT_END_HOUR=8
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+
+# cmd_784: inbox(mailbox)の最古の未読(read:false)エントリのtimestampをepochで返す
+# (未読が無ければ何も出力しない=手番待ちでなく正常idle)。家老/将軍の生存信号に用いる。
+# ★read行はtimestamp行より前(entry内はcontent,from,id,read,timestamp,typeの
+# アルファベット順)ゆえ、timestamp行に達した時点でread値は確定している。
+oldest_unread_epoch() {
+  local inbox="$1"
+  [ -f "$inbox" ] || return 0
+  local tss
+  tss=$(awk '
+    /^- content:/ { r=""; }
+    /^  read:/ { v=$0; sub(/^  read:[[:space:]]*/,"",v); gsub(/[[:space:]]/,"",v); r=v }
+    /^  timestamp:/ {
+      v=$0; sub(/^  timestamp:[[:space:]]*/,"",v); gsub(/[\047"[:space:]]/,"",v);
+      if (r=="false" && v!="") print v
+    }
+  ' "$inbox")
+  [ -z "$tss" ] && return 0
+  local ts e min=""
+  while IFS= read -r ts; do
+    [ -z "$ts" ] && continue
+    e=$(date -j -f '%Y-%m-%dT%H:%M:%S' "${ts%%+*}" +%s 2>/dev/null || date -d "$ts" +%s 2>/dev/null)
+    [ -z "$e" ] && continue
+    if [ -z "$min" ] || [ "$e" -lt "$min" ]; then min="$e"; fi
+  done <<< "$tss"
+  [ -n "$min" ] && echo "$min"
+  return 0
+}
 
 # DEADMAN_NOW_EPOCH: 誤報/夜間の再現テスト用の時刻偽装(未設定時は実時計)
 now_epoch="${DEADMAN_NOW_EPOCH:-$(date +%s)}"
@@ -108,8 +150,33 @@ for f in "$TASKS_DIR"/*.yaml; do
   fi
 done
 
-if [ "$file_count" -eq 0 ]; then
-  echo "[deadman_switch] $now_iso queue/tasks/*.yaml が見つからぬ。判定不能。" >> "$LOG_FILE"
+# ── cmd_784: 家老/将軍(dispatcher)の生存判定を stalled 網へ相乗りさせる ──
+# task YAMLループと同じ stalled/stalled_agents 配列へ積むだけで、以降の家老通知・
+# 殿へのエスカレーション・cooldown・夜間抑止の全機構を再利用する(新規経路は
+# 作らない)。閾値は task YAML mtime 判定と同じ THRESHOLD_MIN を共用する。
+# 家老が詰まっている場合、家老宛通知は本人に届かぬが害はなく(未読が積まれる
+# のみ)、15分後の殿宛エスカレーションが最後の砦として機能する。将軍が詰まって
+# いる場合も、まず家老へ通知され(家老が生きていれば殿へ人手で促せる)、最終的に
+# 殿宛ntfyが最後の砦となる。夜間は既存方針どおり殿を起こさない。
+for dispatcher in karo shogun; do
+  case "$dispatcher" in
+    karo)   d_inbox="$KARO_INBOX" ;;
+    shogun) d_inbox="$SHOGUN_INBOX" ;;
+    *)      continue ;;
+  esac
+  d_oldest=$(oldest_unread_epoch "$d_inbox")
+  [ -z "$d_oldest" ] && continue   # 未読なし=手番待ちでなく正常idle=対象外
+  d_idle=$(( (now_epoch - d_oldest) / 60 ))
+  if [ "$d_idle" -ge "$THRESHOLD_MIN" ]; then
+    stalled+=("${dispatcher}(inbox未読滞留=${d_idle}分)")
+    stalled_agents+=("$dispatcher")
+  fi
+done
+
+# 判定不能ガード: task YAMLが1件も無く、かつdispatcher未読滞留も無い場合のみ
+# 「判定材料なし」で終了する(dispatcher停止だけは検知できる場合を取りこぼさない)。
+if [ "$file_count" -eq 0 ] && [ "${#stalled[@]}" -eq 0 ]; then
+  echo "[deadman_switch] $now_iso queue/tasks/*.yaml が見つからず、dispatcher未読滞留も無し。判定不能。" >> "$LOG_FILE"
   exit 1
 fi
 
@@ -156,16 +223,26 @@ $in_night && exit 0
 # cmd_783【殿は最後の砦】: 家老通知から15分経ってもなお同一agentが停止中の
 # 場合に限り殿宛エスカレーションへ進む。記録が無い(まだ家老通知1回目)か
 # 15分未満、あるいは記録済みagentが全員解消済みなら、殿は起こさない。
+# cmd_784 バグ①修正: 殿へ上げるのは「家老へ既に個別通知され(karo_notify_agents
+# に登場)、かつ15分経過し、かつ現在も停止中」の★交差集合(escalate_agents)★のみ。
+# 従前は karo_notify_agents に1人でも生存停止者がいれば lord_escalate=true とし、
+# 殿へ送る文面に ${detail}(現在の停止agent全員)を使っていたため、家老へ一度も
+# 個別通知されていない新規停止agentまで巻き込んで殿へ飛ばしていた(実測: 20:56に
+# ashigaru1が、15分経過済みのashigaru5に相乗りする形で家老通知を経ずに殿へ飛んだ)。
+# 新規停止agentは次の家老通知サイクル(snapshot更新)を経てから初めて対象になる。
 lord_escalate=false
+escalate_agents=()
 if [ -f "$KARO_NOTIFIED_AGENTS_FILE" ]; then
   IFS=',' read -r karo_notify_epoch karo_notify_agents_csv < "$KARO_NOTIFIED_AGENTS_FILE"
   if [ -n "${karo_notify_epoch:-}" ] && [ $(( now_epoch - karo_notify_epoch )) -ge "$LORD_ESCALATION_WAIT_SEC" ]; then
     IFS=',' read -ra karo_notify_agents <<< "$karo_notify_agents_csv"
     for na in "${karo_notify_agents[@]}"; do
+      [ -z "$na" ] && continue
       for sa in "${stalled_agents[@]}"; do
         if [ "$na" = "$sa" ]; then
+          escalate_agents+=("$na")
           lord_escalate=true
-          break 2
+          break
         fi
       done
     done
@@ -178,8 +255,11 @@ last_fire=0
 [ -f "$LAST_FIRE_FILE" ] && last_fire=$(cat "$LAST_FIRE_FILE" 2>/dev/null || echo 0)
 [ $(( now_epoch - last_fire )) -lt "$COOLDOWN_SEC" ] && exit 0
 
-msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
+# ★殿へ送る文面は escalate_agents(交差集合)のみを列挙する(${detail}=現在の停止
+# agent全員 を使ってはならない・バグ①の再発防止)
+escalate_detail=$(IFS=', '; echo "${escalate_agents[*]}")
+msg="🚨【死者確認スイッチ】status:blocked以外で放置中(家老通知後15分以上未解消): ${escalate_detail} @ $now_iso"
 bash "$NTFY_SCRIPT" "$msg"
 echo "$now_epoch" > "$LAST_FIRE_FILE"
-printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中: %s→ntfy送信 @ %s\n' "$detail" "$now_iso" >> "$DASHBOARD"
-echo "[deadman_switch] $now_iso FIRED stalled=${stalled[*]}" >> "$LOG_FILE"
+printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中(15分未解消): %s→ntfy送信 @ %s\n' "$escalate_detail" "$now_iso" >> "$DASHBOARD"
+echo "[deadman_switch] $now_iso FIRED escalated=${escalate_agents[*]}" >> "$LOG_FILE"
