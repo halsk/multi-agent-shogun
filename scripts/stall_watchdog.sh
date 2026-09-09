@@ -117,10 +117,19 @@ HEARTBEAT_NTFY_DELAY=$((20 * 60))
 # (check_ci_heartbeat)を1件だけ用いる。grace_secは「PRが作られてから
 # CI runが立つまでに許容する時間」(GitHub Actions側のjobキュー待ちを
 # 考慮し30分)。
+#
+# subtask_741_jobmonitor_decommission: NTFY_DELAYのみ30分→3時間に拡大。
+# 実測(2026-09-08〜09-09のlogs/stall_watchdog.log)で「同一PRの参照が
+# 数時間変わらぬ間に stale⇄recovered を20〜30分間隔で繰り返し、殿へ6回/36h
+# ntfy済み」という狼少年化を確認した。根本(fetch側の不安定さ)は未確定の
+# ため大改修はせず(判断材料はqueue/reports/subtask_741_jobmonitor_decommission_report.md
+# に記録・軍師/家老へ判断を委ねる)、殿への通知だけを一時的な揺らぎに
+# 反応させぬよう閾値のみ引き上げる(dashboard向けのGRACE_SECは変更せず
+# 家老/軍師は従来どおり速やかに気づける)。
 CI_HEARTBEAT_OWNER_REPO="halsk/multi-agent-shogun"
 CI_HEARTBEAT_WORKFLOW_FILE="test.yml"
 CI_HEARTBEAT_GRACE_SEC=$((30 * 60))
-CI_HEARTBEAT_NTFY_DELAY=$((30 * 60))
+CI_HEARTBEAT_NTFY_DELAY=$((3 * 60 * 60))
 
 # cmd_786/787 相乗り: 常駐ジョブの StandardErrorPath が非空のまま長期間
 # 触れられていないこと(=誰も確認していない疑い)の検知レジストリ。
