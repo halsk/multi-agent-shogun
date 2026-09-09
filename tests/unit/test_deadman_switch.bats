@@ -456,3 +456,92 @@ YAML
   run grep -c "karo" "$CALLS_LOG"
   [ "$output" -ge 1 ]
 }
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_785⑨: 夜間・status:done限定の家老通知間引き(3時間cooldown)
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-024【間引き実証】夜間・停止中の全員がstatus:doneなら、20分後の
+#   再実行では再通知されない(3時間cooldownへ間引かれる) ──
+@test "T-DM-024: 夜間・全員status:doneの停止は20分後に再通知されない(3時間へ間引き)" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  status: done
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  status: done
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+
+  # 1回目: 23:00 → 家老通知1件目
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 1 ]
+
+  # 2回目: 23:21(21分後・旧20分cooldownなら再通知されるはずの時刻) → 3時間へ
+  # 間引かれ再通知されない(呼び出し件数が1件のまま)
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:21:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 1 ]
+
+  # 3回目: 3時間超経過後(翌02:05) → 間引き後も再通知は生きている(呼び出し2件目)
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 02:05:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 2 ]
+  run grep -c "全員done・3時間間隔に間引き中" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-025【間引き対象外の実証】夜間でも停止中に1件でもstatus:done以外
+#   (実働中フリーズ相当)が混じれば、従来どおり20分cooldownのまま再通知される ──
+@test "T-DM-025: 夜間でもstatus:done以外が1件混じれば20分cooldownのまま再通知される" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  status: done
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  status: assigned
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 1 ]
+
+  # 21分後・混在ケースゆえ20分cooldownどおり再通知される
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:21:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 2 ]
+  run grep -c "全員done・3時間間隔に間引き中" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+}
+
+# ── T-DM-026【日中は間引かない】昼間は全員status:doneでも従来どおり20分
+#   cooldownのまま(間引きは夜間限定)──
+@test "T-DM-026: 昼間は全員status:doneでも間引かれず20分cooldownのまま再通知される" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  status: done
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 1 ]
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:21:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run wc -l < "$KARO_CALLS_LOG"
+  [ "$output" -eq 2 ]
+}

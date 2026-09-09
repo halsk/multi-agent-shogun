@@ -7,15 +7,35 @@
 # 既存機構が"見逃した"真因が未判明のまま——同じ壊れ方をする依存を作れば
 # 安全網ごと道連れに死ぬ)。判定に使う信号は queue/tasks/*.yaml の mtime のみ。
 #
-# 閾値根拠 (2026-09-07 実測・ashigaru7):
-#   queue/inbox/*.yaml 全メッセージの timestamp を集計したところ、2026-09-06の
-#   確認済み正常稼働時間帯(11:27〜22:30, 昼間)でも家中全体で最大126.4分の
-#   無通信ギャップが実在した(60.0/72.7/98.1/126.4分の4件)。queue/tasksは
-#   inboxより粗い信号(タスク再割当時のみ更新)ゆえ、正常時のギャップは
-#   これと同等かそれ以上になり得る。一方、2026-09-06 23:46→09-07 23:10の
-#   1403分(約23.4h)ギャップは実際のashigaru4凍結事故の期間と一致した。
-#   よって「目安40分」ではなく実測正常上限(126分)に十分な余裕を持たせた
-#   150分(2.5h)を採用する——事故発覚は24hから2.5hへ大幅短縮される。
+# 閾値根拠 (2026-09-07 実測・ashigaru7、2026-09-09 ashigaru4が根拠を是正):
+#   当初、queue/inbox/*.yaml全メッセージのtimestampから求めた「家中全体の
+#   正常時最大無通信ギャップ126.4分」に24分のマージンを足しただけの150分を
+#   採用していたが、これは信号の種類を取り違えた転用だった——inboxのギャップは
+#   「メッセージのやり取り(雑談・報告・割当連絡)がどれだけ空くか」という
+#   ★会話頻度★の指標であり、queue/tasksのmtimeは「taskの割当・完了という
+#   境界イベントの間隔」という★作業所要時間★の指標である。queue/tasksが
+#   inboxより粗いのは事実だが、その粗さの正体は会話頻度の違いではなく、
+#   worktree+TDD+PR一式のL4級タスクは1件で1〜数時間かかりうるという設計上の
+#   性質そのものであり、inbox実測値をそのまま流用しても正しい安全マージンには
+#   ならない(2026-09-09 ashigaru4実測)。
+#   ★実際に何を検知したいかで閾値の妥当性を評価し直した:
+#   (a) status:done(作業完了・次割当待ち)のidleは「家老の割当対応がどれだけ
+#       遅れているか」を表し、これはinboxの会話頻度に近い性質を持つ——実際
+#       2026-09-09昼(健全稼働中)にstatus:doneのidleが133〜164分に達する事例が
+#       観測されており、150分は「次割当が遅い」を過不足なく拾えている
+#       (通知後、家老が数分で次taskを割り当て解消する挙動も同日ログで確認済み)。
+#   (b) status:assigned(作業中)のidleは上記のとおり作業所要時間そのものに
+#       依存し、150分超は正常な長時間タスクとも実際の凍結事故とも見分けが
+#       付かない。過去ログで150分超のassigned idleが観測された事例は、いずれも
+#       既知の凍結事故(ashigaru3の35h放置・ashigaru4の24h凍結等)の期間内に
+#       収まっており、「凍結でない正常な長時間タスクがこの閾値で誤検知された」
+#       という実例は見つからなかった。
+#   結論: 150分という★値★を裏付ける実測は(a)(b)いずれからも得られており、
+#   変更の必要は無いと判断した(誤検知を増やす方向の短縮は特に避けるべき、との
+#   task指示に沿う)。ただし根拠の★説明★は誤りだったため本コメントで是正する。
+#   将来、status:assignedの長時間タスクで誤検知の実例が出た場合はstatus別に
+#   閾値を分離する設計変更を検討せよ(現時点ではその実例が無く、複雑化を
+#   避けるため見送る)。
 #
 # 設計変更(2026-09-07 23:32将軍実測・addendum反映): 当初「最新1本のmtime」
 # だけを見る設計では、7名中1名だけ死んでも他の稼働者がtask YAMLを動かし
@@ -74,9 +94,16 @@ KARO_INBOX="${DEADMAN_KARO_INBOX:-$SCRIPT_DIR/queue/inbox/karo.yaml}"      # cmd
 SHOGUN_INBOX="${DEADMAN_SHOGUN_INBOX:-$SCRIPT_DIR/queue/inbox/shogun.yaml}" # cmd_784: 将軍の生存信号
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
 KARO_LAST_FIRE_FILE="$STATE_DIR/karo_last_fire_epoch.txt"   # 殿宛cooldownとは別名(混線防止)
+KARO_NIGHT_DONE_LAST_FIRE_FILE="$STATE_DIR/karo_night_done_last_fire_epoch.txt"  # cmd_785⑨: 夜間・全員done停止専用cooldown
 KARO_NOTIFIED_AGENTS_FILE="$STATE_DIR/karo_notified_agents.txt"  # cmd_783: 家老通知時刻+停止agent一覧のスナップショット
 COOLDOWN_SEC=$((2 * 60 * 60))   # 殿宛: 1回/2時間
 KARO_COOLDOWN_SEC=$((20 * 60))  # 家老宛: 1回/20分(cmd_783受入条件。cmd_784バグ②修正: 従前の30分はcmd_783受入条件との食い違いだった)
+# cmd_785⑨: 夜間、停止中の全員がstatus:done(実働中フリーズが1件も混在しない)場合に限る
+# 間引き用cooldown。3時間という値は本リポでの直近の同種是正(cmd_741・CI心拍ntfyの
+# 狼少年化対策で30分→3時間)に倣う。status:assigned等が1件でも混在する場合はこの間引きを
+# 適用せず、従来どおりKARO_COOLDOWN_SEC(20分)を維持する(実働中フリーズの検知速度を
+# 落とさないため——2026-09-06のashigaru4 24h凍結のような事故は夜間にも起こりうる)。
+NIGHT_DONE_COOLDOWN_SEC=$((3 * 60 * 60))
 LORD_ESCALATION_WAIT_SEC=$((15 * 60))  # cmd_783: 家老通知から殿宛エスカレーションまでの猶予
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
 NIGHT_END_HOUR=8
@@ -121,6 +148,7 @@ touch "$LIVENESS_FILE"
 file_count=0
 stalled=()
 stalled_agents=()  # cmd_783: 殿宛エスカレーション比較用の素のagent名一覧(detail文言を含まぬ)
+stalled_statuses=()  # cmd_785⑨: 夜間done間引き判定用(dispatcher停止は"dispatcher"を積む)
 for f in "$TASKS_DIR"/*.yaml; do
   [ -f "$f" ] || continue
   agent="$(basename "$f" .yaml)"
@@ -147,6 +175,7 @@ for f in "$TASKS_DIR"/*.yaml; do
   if [ "$idle" -ge "$THRESHOLD_MIN" ]; then
     stalled+=("${agent}(status=${status:-不明}・idle=${idle}分)")
     stalled_agents+=("$agent")
+    stalled_statuses+=("${status:-不明}")
   fi
 done
 
@@ -170,6 +199,7 @@ for dispatcher in karo shogun; do
   if [ "$d_idle" -ge "$THRESHOLD_MIN" ]; then
     stalled+=("${dispatcher}(inbox未読滞留=${d_idle}分)")
     stalled_agents+=("$dispatcher")
+    stalled_statuses+=("dispatcher")  # cmd_785⑨: done扱いしない(実働中フリーズ相当として速い cadence を維持)
   fi
 done
 
@@ -201,17 +231,40 @@ fi
 
 detail=$(IFS=', '; echo "${stalled[*]}")
 
+# cmd_785⑨: 停止中の全員がstatus:done(dispatcher停止・status:assigned等の実働中
+# フリーズが1件も混在しない)かどうかを判定する。夜間はこの場合のみcooldownを
+# 20分→3時間へ間引く——「doneのまま放置」の検知価値(cmd_771)は保ったまま、深夜に
+# 同じ顔ぶれを20分毎に連打するノイズだけを削る(2026-09-09未明の実測: 8エージェント
+# 全員status=doneのまま20分毎に6時間以上連打が続いていた)。1件でもstatus:assigned等が
+# 混じれば「done除外」にはならず、従来どおり20分cooldownのまま速く家老へ知らせる
+# (実働中フリーズは夜間にも起こりうるため——2026-09-06 ashigaru4 24h凍結の教訓)。
+all_done_stall=true
+for st in "${stalled_statuses[@]}"; do
+  if [ "$st" != "done" ]; then
+    all_done_stall=false
+    break
+  fi
+done
+
+karo_cooldown_sec="$KARO_COOLDOWN_SEC"
+karo_last_fire_file="$KARO_LAST_FIRE_FILE"
+if $in_night && $all_done_stall; then
+  karo_cooldown_sec="$NIGHT_DONE_COOLDOWN_SEC"
+  karo_last_fire_file="$KARO_NIGHT_DONE_LAST_FIRE_FILE"
+fi
+
 # 家老inboxへの通知(昼夜問わず・独立cooldown。夜間は「軽い作業のみ回せ」を明記)
 karo_last_fire=0
-[ -f "$KARO_LAST_FIRE_FILE" ] && karo_last_fire=$(cat "$KARO_LAST_FIRE_FILE" 2>/dev/null || echo 0)
-if [ $(( now_epoch - karo_last_fire )) -ge "$KARO_COOLDOWN_SEC" ]; then
+[ -f "$karo_last_fire_file" ] && karo_last_fire=$(cat "$karo_last_fire_file" 2>/dev/null || echo 0)
+if [ $(( now_epoch - karo_last_fire )) -ge "$karo_cooldown_sec" ]; then
   if $in_night; then
     karo_msg="🚨【死者確認スイッチ・夜間】status:blocked以外で放置中: ${detail} @ $now_iso ★夜間である。軽い作業のみ回せ★"
+    $all_done_stall && karo_msg="${karo_msg}(全員done・3時間間隔に間引き中)"
   else
     karo_msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
   fi
   bash "$INBOX_WRITE_SCRIPT" karo "$karo_msg" task_assigned deadman_switch
-  echo "$now_epoch" > "$KARO_LAST_FIRE_FILE"
+  echo "$now_epoch" > "$karo_last_fire_file"
   # cmd_783: 殿宛エスカレーション判定用に、この通知時点の停止agent一覧を記録
   printf '%s,%s\n' "$now_epoch" "$(IFS=,; echo "${stalled_agents[*]}")" > "$KARO_NOTIFIED_AGENTS_FILE"
   echo "[deadman_switch] $now_iso KARO_NOTIFIED stalled=${stalled[*]} in_night=$in_night" >> "$LOG_FILE"
