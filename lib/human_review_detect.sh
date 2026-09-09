@@ -47,12 +47,16 @@
 #     完了・PR#216でmerge済み)。state!=OPENは検知しない(誤報防止・
 #     acceptance_criteria⑤どおり)。yuiseki氏のAPPROVEDレビュー本文中の
 #     「150箇所404」の指摘はレビュー本体(body)にのみ存在し、body本文の
-#     解析は本taskの射程外(cmd_790側の課題)——PR#195はこの理由からも
+#     解析は本taskの射程外・cmd_789自身の次段課題(別Issueで追跡)である
+#     ——★cmd_790はdevblog限定(S-A)に確定しておりdocs.geolonia.comを
+#     永久に扱わないため、cmd_790へ委ねると誰も拾わぬ孤児になる
+#     (gunshi QC 2026-09-09指摘・是正済み)。PR#195はこの理由からも
 #     本libでは検知できない/しない設計である。
 #
 # ★★★body本文(review body・inline commentの文面)は一切読まない。
 # 読むのは isResolved / state / author.login / createdAt / commit日時のみ
-# (メタデータ)。「PRレビュー本文への射程拡大は次段の課題」という制約は守る。
+# (メタデータ)。PRレビュー本文への射程拡大はcmd_789自身の次段課題であり
+# (別Issueで追跡・cmd_790はdevblog限定のため対象外)、その制約は守る。
 #
 # ★単独の新規監視機構は作らず、既存 scripts/stall_watchdog.sh
 # (lib/stale_errlog_detect.sh 等と同じ相乗り作法)へ相乗りする前提の
@@ -113,7 +117,8 @@ fetch_pr_review_data() {
 # 誰かが追加で書き込んだか)はログインに依存せず判定できる。
 # ★既知の限界(過剰設計を避けるため受容する簡略化・報告に明記):
 # 同一reviewerが応答なしに連続して2件目を書き込んだだけの場合も
-# 「応答あり」と誤判定しうる。cmd_790側でのより精密な設計を妨げない。
+# 「応答あり」と誤判定しうる。cmd_789自身(全リポ対象ゆえcmd_790=devblog
+# 限定の範囲外)でのより精密な設計を妨げない。
 parse_thread_ball_holders() {
   local json="$1"
   local allowlist="$2"
