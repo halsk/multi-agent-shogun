@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
 #
 # tests/unit/test_human_review_detect.bats
+bats_require_minimum_version 1.5.0
 #
 # cmd_789相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘を検知し、
 # 「差し戻し中/resolve待ち/済」の3状態・手番(ball-holder)を判定する純関数の
@@ -226,6 +227,129 @@ setup() {
     "https://github.com/geolonia/somewhere/pull/1" "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+# ── T-HREV-015: parse_review_body_mentions — body非空の人間reviewを
+# 対応済み判定なしで列挙する(2026-09-10拡張・PR#31実例=殿の05:45コメント) ──
+
+@test "T-HREV-015: parse_review_body_mentions lists a non-empty human review body without any resolved judgement" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+    {"author":{"login":"halsk"},"state":"COMMENTED","body":"文字ばかりで読みにくいので、適切に画像を入れたり、構造化した図を入れて(細かすぎないように)","createdAt":"2026-09-09T05:45:11Z"}
+  ]}}}}}'
+
+  run parse_review_body_mentions "$json" "$BOTS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "review本文あり|halsk氏|2026-09-09T05:45:11Z" ]]
+}
+
+# ── T-HREV-016: parse_review_body_mentions — 空白のみのbodyは空扱い(除外) ──
+
+@test "T-HREV-016: parse_review_body_mentions treats a whitespace-only body as empty" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+    {"author":{"login":"halsk"},"state":"COMMENTED","body":"   \n\t  ","createdAt":"2026-09-09T05:45:11Z"}
+  ]}}}}}'
+
+  run parse_review_body_mentions "$json" "$BOTS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-017: parse_review_body_mentions — bodyがnullの場合も除外 ──
+
+@test "T-HREV-017: parse_review_body_mentions excludes a null body" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+    {"author":{"login":"halsk"},"state":"COMMENTED","body":null,"createdAt":"2026-09-09T05:45:11Z"}
+  ]}}}}}'
+
+  run parse_review_body_mentions "$json" "$BOTS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-018: parse_review_body_mentions — bot発のreview bodyは(非空でも)除外 ──
+
+@test "T-HREV-018: parse_review_body_mentions never counts a bot even with a non-empty body" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
+    {"author":{"login":"coderabbitai"},"state":"COMMENTED","body":"some suggestion","createdAt":"2026-08-25T02:19:15Z"}
+  ]}}}}}'
+
+  run parse_review_body_mentions "$json" "$BOTS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-019: check_pagination_shortfall — fetch件数がtotalCountを下回れば警告 ──
+
+@test "T-HREV-019: check_pagination_shortfall warns when fetched nodes fall short of totalCount" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":5,"nodes":[{},{}]},"reviews":{"totalCount":3,"nodes":[{}]}}}}}'
+
+  run check_pagination_shortfall "$json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "reviewThreads: fetched 2/5, reviews: fetched 1/3" ]]
+}
+
+# ── T-HREV-020: check_pagination_shortfall — fetch件数がtotalCountと一致すれば空 ──
+
+@test "T-HREV-020: check_pagination_shortfall returns empty when fetched nodes match totalCount" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"reviewThreads":{"totalCount":2,"nodes":[{},{}]},"reviews":{"totalCount":1,"nodes":[{}]}}}}}'
+
+  run check_pagination_shortfall "$json"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-021: detect_review_ball_holders_for_pr — review本文カテゴリが
+# 既存の差し戻し中/resolve待ちと並列にbreakdownへ混ざり、既存判定へは
+# 非干渉であること(PR#131実例を拡張したフィクスチャ) ──
+
+@test "T-HREV-021: detect_review_ball_holders_for_pr mixes review-body-present category alongside existing categories without altering them" {
+  source "$LIB_FILE"
+
+  fetch_pr_review_data() {
+    echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","reviewDecision":"CHANGES_REQUESTED","commits":{"nodes":[{"commit":{"committedDate":"2026-08-20T00:00:00Z"}}]},"reviewThreads":{"totalCount":2,"nodes":[
+      {"isResolved":false,"comments":{"nodes":[{"author":{"login":"halsk"},"createdAt":"2026-06-27T06:19:54Z"}]}},
+      {"isResolved":true,"comments":{"nodes":[{"author":{"login":"coderabbitai"},"createdAt":"2026-08-21T06:52:50Z"}]}}
+    ]},"reviews":{"totalCount":2,"nodes":[
+      {"author":{"login":"coderabbitai"},"state":"COMMENTED","body":null,"createdAt":"2026-08-21T06:52:50Z"},
+      {"author":{"login":"yuiseki"},"state":"CHANGES_REQUESTED","body":"直してください","createdAt":"2026-08-25T00:32:44Z"}
+    ]}}}}}'
+  }
+
+  run detect_review_ball_holders_for_pr "geolonia" "geonicdb-console" 131 \
+    "https://github.com/geolonia/geonicdb-console/pull/131" "$BOTS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "https://github.com/geolonia/geonicdb-console/pull/131|3|2026-06-27T06:19:54Z|差し戻し中(足軽)x2,review本文あり(yuiseki氏)x1" ]]
+}
+
+# ── T-HREV-022: detect_review_ball_holders_for_pr — totalCount不足時は
+# 標準エラー出力へ警告を出す(戻り値=stdoutは変えない) ──
+
+@test "T-HREV-022: detect_review_ball_holders_for_pr emits a pagination warning to stderr without altering stdout" {
+  source "$LIB_FILE"
+
+  fetch_pr_review_data() {
+    echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","reviewDecision":null,"commits":{"nodes":[]},"reviewThreads":{"totalCount":5,"nodes":[]},"reviews":{"totalCount":3,"nodes":[]}}}}}'
+  }
+
+  run --separate-stderr detect_review_ball_holders_for_pr "geolonia" "somewhere" 1 \
+    "https://github.com/geolonia/somewhere/pull/1" "$BOTS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  [[ "$stderr" == *"totalCount不足"* ]]
+  [[ "$stderr" == *"reviewThreads: fetched 0/5"* ]]
+  [[ "$stderr" == *"reviews: fetched 0/3"* ]]
 }
 
 # ── T-HREV-014: stall_watchdog.sh がこの check を実際に呼び出している(相乗り確認) ──
