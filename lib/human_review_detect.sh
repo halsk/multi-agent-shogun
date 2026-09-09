@@ -53,10 +53,19 @@
 #     (gunshi QC 2026-09-09指摘・是正済み)。PR#195はこの理由からも
 #     本libでは検知できない/しない設計である。
 #
-# ★★★body本文(review body・inline commentの文面)は一切読まない。
-# 読むのは isResolved / state / author.login / createdAt / commit日時のみ
-# (メタデータ)。PRレビュー本文への射程拡大はcmd_789自身の次段課題であり
-# (別Issueで追跡・cmd_790はdevblog限定のため対象外)、その制約は守る。
+# ★★★★cmd_789拡張(2026-09-10・殿ご裁定): geonicdb-devblog PR#31にて
+# 殿が2026-09-09T05:45:11Zに投稿したreviewコメント(state=COMMENTED)が
+# 上記の2つの穴——①GraphQLクエリがreview bodyを取得していない
+# ②parse_review_ball_holdersはCHANGES_REQUESTEDのみ対象——の両方に
+# 落ちて誰にも拾われなかった。殿ご裁定(2026-09-10T07:36):
+# 「わざわざ別フラグとか持たせなくていい。複雑になる。今後私はインライン
+# で書くようにするから」——review body由来の指摘に対して「対応済みか」を
+# 機械が判定する仕組み(resolve相当の状態管理)は作らない。
+# ただし検知そのもの(同じGraphQLクエリで取れる・費用ほぼゼロ)は残す
+# ——殿以外の人間(yuiseki氏等)は引き続きreview bodyで指摘を書くため
+# (実例: PR#131のCHANGES_REQUESTEDはreview body経由)。
+# → parse_review_body_mentions が body非空のreviewを対応済み判定なしで
+#   ただ列挙する(「済」状態は無く、常に breakdown へ出続ける——設計どおり)。
 #
 # ★単独の新規監視機構は作らず、既存 scripts/stall_watchdog.sh
 # (lib/stale_errlog_detect.sh 等と同じ相乗り作法)へ相乗りする前提の
@@ -82,15 +91,27 @@
 #       かつbot allowlist外の場合、直近commit日時と比較し
 #       "<status>|<turn_label>|<changed_at>" で列挙。
 #
+#   parse_review_body_mentions <json> <bot_allowlist_csv>
+#     → pure。bodyが非空(空白のみも空扱い)かつbot allowlist外のreviewを
+#       対応済み判定なしで "review本文あり|<author>氏|<createdAt>" と
+#       列挙する(2026-09-10拡張・殿ご裁定によりresolve相当の状態管理は
+#       作らない——ただ日付を添えて出すだけ)。
+#
 #   summarize_ball_holders <lines>
 #     → pure。"<count>|<oldest_changed_at>|<breakdown>" を返す。0件なら
 #       "0||"。breakdownは "差し戻し中(足軽)x2,resolve待ち(yuiseki氏)x1"
 #       のように状態×手番でグループ化した内訳。
 #
+#   check_pagination_shortfall <json>
+#     → pure。reviewThreads/reviewsのfetch件数がtotalCountを下回る場合
+#       (=ページネーション取りこぼし)、警告文字列を返す。無ければ空文字。
+#       自動ページネーションは実装しない(殿「複雑にするな」の趣旨)。
+#
 #   detect_review_ball_holders_for_pr <owner> <repo> <pr_number> <pr_url> <bot_allowlist_csv>
 #     → fetch+parse+summarizeを結合した実行用ラッパー。
 #       state!=OPENなら常に空文字(merged/closedの誤検知防止)。
 #       件数>0の場合のみ "<pr_url>|<count>|<oldest_changed_at>|<breakdown>" を返す。
+#       totalCount不足を検知した場合は標準エラー出力へ警告を出す(戻り値は変えない)。
 
 fetch_open_prs() {
   local owner_repo="$1"
@@ -104,7 +125,7 @@ fetch_pr_review_data() {
   local pr_number="$3"
 
   local query
-  query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){state reviewDecision reviewThreads(first:100){nodes{isResolved comments(first:20){nodes{author{login} createdAt}}}} reviews(last:30){nodes{author{login} state createdAt}} commits(last:1){nodes{commit{committedDate}}}}}}'
+  query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){state reviewDecision reviewThreads(first:100){totalCount nodes{isResolved comments(first:20){nodes{author{login} createdAt}}}} reviews(last:50){totalCount nodes{author{login} state body createdAt}} commits(last:1){nodes{commit{committedDate}}}}}}'
 
   gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null
 }
@@ -173,6 +194,30 @@ parse_review_ball_holders() {
   ' 2>/dev/null
 }
 
+# body本文が非空(空白のみも空扱い)のreviewを、対応済み判定なしでただ
+# 列挙する(2026-09-10拡張・殿ご裁定)。既存のCHANGES_REQUESTED限定判定
+# (parse_review_ball_holders)とは独立——同じreviewがstate問わず
+# body非空なら二重に出ることもある(意図どおり・添加のみで既存判定へは
+# 一切手を入れない)。
+parse_review_body_mentions() {
+  local json="$1"
+  local allowlist="$2"
+
+  [[ -z "$json" ]] && return
+
+  local bots_jq
+  bots_jq=$(printf '%s' "$allowlist" | jq -R 'split(",")')
+
+  printf '%s' "$json" | jq -r --argjson bots "$bots_jq" '
+    (.data.repository.pullRequest.reviews.nodes // [])[]
+    | select(.author != null)
+    | (.author.login) as $login
+    | select(($bots | index($login)) == null)
+    | select((.body // "") | test("\\S"))
+    | "review本文あり|\($login)氏|\(.createdAt)"
+  ' 2>/dev/null
+}
+
 summarize_ball_holders() {
   local items="$1"
   local count=0
@@ -213,6 +258,34 @@ summarize_ball_holders() {
   echo "${count}|${oldest}|${breakdown}"
 }
 
+# ④totalCount安全策: fetchしたnodes件数がtotalCountを下回る場合
+# (=first/last指定によるページネーションで取りこぼしている場合)、
+# 警告文字列を返す(将軍実測の教訓「全件を見たと言う前にtotalCountを
+# 確かめよ」の再発防止)。自動ページネーション実装までは行わない
+# (殿「複雑にするな」の趣旨・警告を出すだけで足りる)。
+check_pagination_shortfall() {
+  local json="$1"
+  [[ -z "$json" ]] && return
+
+  printf '%s' "$json" | jq -r '
+    .data.repository.pullRequest as $pr
+    | [
+        (($pr.reviewThreads.nodes // []) | length) as $rt_fetched
+        | ($pr.reviewThreads.totalCount // 0) as $rt_total
+        | if $rt_total > $rt_fetched
+          then "reviewThreads: fetched \($rt_fetched)/\($rt_total)"
+          else empty end,
+        (($pr.reviews.nodes // []) | length) as $rv_fetched
+        | ($pr.reviews.totalCount // 0) as $rv_total
+        | if $rv_total > $rv_fetched
+          then "reviews: fetched \($rv_fetched)/\($rv_total)"
+          else empty end
+      ]
+    | select(length > 0)
+    | join(", ")
+  ' 2>/dev/null
+}
+
 detect_review_ball_holders_for_pr() {
   local owner="$1"
   local repo="$2"
@@ -231,10 +304,15 @@ detect_review_ball_holders_for_pr() {
     return
   fi
 
-  local threads reviews combined summary count rest oldest breakdown
+  local pagination_warning
+  pagination_warning=$(check_pagination_shortfall "$json")
+  [[ -n "$pagination_warning" ]] && echo "[WARN] ${owner}/${repo}#${pr_number}: totalCount不足(ページネーション取りこぼしの疑い) ${pagination_warning}" >&2
+
+  local threads reviews bodies combined summary count rest oldest breakdown
   threads=$(parse_thread_ball_holders "$json" "$allowlist")
   reviews=$(parse_review_ball_holders "$json" "$allowlist")
-  combined=$(printf '%s\n%s' "$threads" "$reviews")
+  bodies=$(parse_review_body_mentions "$json" "$allowlist")
+  combined=$(printf '%s\n%s\n%s' "$threads" "$reviews" "$bodies")
   summary=$(summarize_ball_holders "$combined")
   count="${summary%%|*}"
   rest="${summary#*|}"
