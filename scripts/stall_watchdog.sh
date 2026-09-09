@@ -38,6 +38,13 @@ source "$SCRIPT_DIR/lib/heartbeat_detect.sh"
 # 受け、cmd_767の心拍検知と同じ考え方を適用する(★単独の新規監視機構は作らず
 # 本watchdogへ相乗り)。
 source "$SCRIPT_DIR/lib/ci_heartbeat_detect.sh"
+# shellcheck source=../lib/stale_errlog_detect.sh
+# cmd_786/787 相乗り: 常駐ジョブの StandardErrorPath が非空のまま長期間
+# 触れられていない(=誰も確認していない疑い)ことの検知。
+# logs/stall_watchdog.err.log の"md5sum: command not found"(バグ自体は
+# 2026-06-30修理済み)が最終更新2026-06-29のまま2ヶ月以上放置された実例への
+# 対応(★単独の新規監視機構は作らず本watchdogへ相乗り)。
+source "$SCRIPT_DIR/lib/stale_errlog_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -108,6 +115,31 @@ CI_HEARTBEAT_OWNER_REPO="halsk/multi-agent-shogun"
 CI_HEARTBEAT_WORKFLOW_FILE="test.yml"
 CI_HEARTBEAT_GRACE_SEC=$((30 * 60))
 CI_HEARTBEAT_NTFY_DELAY=$((30 * 60))
+
+# cmd_786/787 相乗り: 常駐ジョブの StandardErrorPath が非空のまま長期間
+# 触れられていないこと(=誰も確認していない疑い)の検知レジストリ。
+# 各行 "job_name|err_log_path|max_age_sec|excluded_until_iso(省略可)"。
+#
+# 閾値=3日の根拠: 本リポの既存パターンでは「実行間隔+猶予」型の閾値
+# (LEDGER_MISMATCH_THRESHOLD=6h・orphan cmd 等)はいずれも1日未満だが、
+# それらは「ジョブが動いているか」を見るもので、本チェックは「非空の
+# stderrにまだ誰も反応していないか」という人間側のレビュー遅れを見るもの
+# であり性質が異なる。一方 halsk/automation の gap-detect.sh は毎日実行
+# ジョブに対し weekday_aware_max_gap(1) = 1日を許容している(cmd_693)。
+# 2ヶ月放置は論外・即応(6h/30分)ほどの緊急性もない中間の値として、
+# dashboard巡回が数日おきになっても取りこぼさない3日を採る。
+#
+# ★本ラウンドの登録対象は cmd_787 分担どおり auto-improve-loop・
+# stall-watchdog(本ファイル自身)に限る。ollama-serve等の残り8本は
+# ashigaru6が別途担当する(ファイル衝突回避のため本レジストリへの追記は
+# 別PRで行う想定)。
+ERRLOG_MAX_AGE_DEFAULT=$((3 * 24 * 60 * 60))
+ERRLOG_REGISTRY="stall-watchdog|$SCRIPT_DIR/logs/stall_watchdog.err.log|$ERRLOG_MAX_AGE_DEFAULT|
+auto-improve|/Users/hal/workspace/automation/logs/auto_improve.log|$ERRLOG_MAX_AGE_DEFAULT|"
+
+# heartbeatと同じ考え方: dashboard(karo/gunshi向け)は検知の都度即時、
+# ntfy(殿の端末)はこの遅延を超えて同一状態が解消しない場合のみ1回だけ発火。
+ERRLOG_NTFY_DELAY=$((30 * 60))
 
 mkdir -p "$STATE_DIR" logs
 
@@ -937,6 +969,106 @@ check_ci_heartbeat() {
     fi
 }
 
+# ── cmd_786/787 相乗り: 常駐ジョブの StandardErrorPath が非空のまま長期間
+# 触れられていないこと(=誰も確認していない疑い)の検知 ─────────────────────
+
+notify_dashboard_stale_errlog() {
+    local job_name="$1"
+    local detail="$2"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [stale-errlog] ${job_name}: ${detail} @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_stale_errlog() {
+    local job_name="$1"
+    local detail="$2"
+    bash "$SCRIPT_DIR/scripts/ntfy.sh" "stale-errlog: ${job_name} の stderr ログが放置されている(${detail})。確認せよ。"
+}
+
+# heartbeatと同じ相乗り作法: dashboardは状態変化の都度即時、ntfyは
+# ERRLOG_NTFY_DELAYを超えて同一状態が解消しない場合のみ1回だけ発火する。
+check_stale_errlogs() {
+    local now
+    now=$(now_epoch)
+
+    local job_name errlog_status detail
+    while IFS='|' read -r job_name errlog_status detail; do
+        [[ -z "$job_name" ]] && continue
+
+        local state_key="errlog__${job_name}"
+        local problem_id="$errlog_status"
+
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" != "$problem_id" ]]; then
+            log "[STALE-ERRLOG] $job_name: $errlog_status — $detail"
+            if ! $DRY_RUN; then
+                notify_dashboard_stale_errlog "$job_name" "$detail"
+            else
+                log "[DRY-RUN] would notify dashboard for $job_name (stale-errlog)"
+            fi
+            state_set "$state_key" "notified_status" "$problem_id"
+            state_set "$state_key" "first_bad_at" "$(now_iso)"
+            state_set "$state_key" "ntfy_sent" "false"
+        fi
+
+        local first_bad_at first_bad_epoch elapsed
+        first_bad_at=$(state_get "$state_key" "first_bad_at" "")
+        first_bad_epoch=$(iso_to_epoch "$first_bad_at")
+        elapsed=$(( now - first_bad_epoch ))
+
+        local ntfy_sent
+        ntfy_sent=$(state_get "$state_key" "ntfy_sent" "false")
+        if [[ "$ntfy_sent" != "true" && "$elapsed" -ge "$ERRLOG_NTFY_DELAY" ]]; then
+            log "[STALE-ERRLOG-NTFY] $job_name: ${elapsed}s持続(閾値${ERRLOG_NTFY_DELAY}s超) → 殿へ通知"
+            if ! $DRY_RUN; then
+                send_ntfy_stale_errlog "$job_name" "$detail"
+            else
+                log "[DRY-RUN] would send ntfy for $job_name (stale-errlog)"
+            fi
+            state_set "$state_key" "ntfy_sent" "true"
+        fi
+    done < <(detect_stale_errlogs "$ERRLOG_REGISTRY" "$now")
+
+    reset_recovered_errlogs "$now"
+}
+
+# 回復した(okに戻った、または err.log が消えた/クリアされた)ジョブの
+# 通知stateをリセットする。check_stale_errlogsとは別関数に分離し、
+# レジストリのmax_age_secを正しく使う(check_heartbeats/
+# reset_recovered_heartbeatsと同じ分離方針)。
+reset_recovered_errlogs() {
+    local now="$1"
+    local job_name err_log_path max_age_sec result errlog_status
+    while IFS='|' read -r job_name err_log_path max_age_sec _; do
+        [[ -z "$job_name" ]] && continue
+        result=$(errlog_check_one "$err_log_path" "$max_age_sec" "$now")
+        errlog_status="${result%%|*}"
+        if [[ "$errlog_status" == "ok" ]]; then
+            local state_key="errlog__${job_name}"
+            local was_notified
+            was_notified=$(state_get "$state_key" "notified_status" "")
+            if [[ -n "$was_notified" ]]; then
+                log "[STALE-ERRLOG-RECOVERED] $job_name: 復旧(クリア済み) → state リセット"
+                state_set "$state_key" "notified_status" ""
+                state_set "$state_key" "first_bad_at" ""
+                state_set "$state_key" "ntfy_sent" "false"
+            fi
+        fi
+    done <<< "$ERRLOG_REGISTRY"
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -1078,6 +1210,10 @@ check_heartbeats
 # subtask_767_771_self_ci_heartbeat 相乗り: 自リポGitHub Actions CIが
 # 黙って死んでいないかの検知(PR作成後、猶予内にrunが立つか)
 check_ci_heartbeat
+
+# cmd_786/787 相乗り: 常駐ジョブのstderrログが非空のまま長期間放置されて
+# いないか(=誰も確認していない疑い)の検知
+check_stale_errlogs
 
 log "[DONE] stall_watchdog scan complete"
 
