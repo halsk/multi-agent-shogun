@@ -30,8 +30,14 @@
 
 _errlog_mtime_epoch() {
   local file="$1"
-  # macOS: stat -f %m。Linux(CI ubuntu-latest): stat -c %Y。
-  stat -f '%m' "$file" 2>/dev/null || stat -c '%Y' "$file" 2>/dev/null
+  # ★GNUのstat -fはBSDと意味が違う(ファイルシステム情報表示・%mを渡しても
+  # exit 0で複数行の無関係な出力を返す=フォールバックが発火しない罠。
+  # scripts/deadman_switch.sh・lib/ledger_mismatch_detect.sh と同じ教訓)。
+  # GNU形式(-c %Y)を先に試し、BSDではillegal optionで正しく失敗して
+  # -f %m へフォールバックする順序にする(CI macos-latest/ubuntu-latest
+  # 双方で実測。macos-latest CIはcoreutils gnubinをPATH先頭に置くため
+  # GNU stat が使われる)。
+  stat -c '%Y' "$file" 2>/dev/null || stat -f '%m' "$file" 2>/dev/null
 }
 
 _errlog_iso_to_epoch() {
