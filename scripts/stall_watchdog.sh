@@ -51,6 +51,18 @@ source "$SCRIPT_DIR/lib/stale_errlog_detect.sh"
 # 実例への対応(殿ご下命2026-09-09により射程はhalsk限定でなく人間レビュアー
 # 全般へ拡大)。★単独の新規監視機構は作らず本watchdogへ相乗り。
 source "$SCRIPT_DIR/lib/human_review_detect.sh"
+# shellcheck source=../lib/orphan_test_detect.sh
+# subtask_741_layer3_orphan_detection①: cmd_741第三層(orphan test検知)。
+# どのCI job/Makefileからも実行されないtestファイル(実例④「e2e/tenants-
+# crud.spec.tsが一度もCIで実行されていなかった」相当)を検知する。
+# ★単独の新規監視機構は作らず本watchdogへ相乗り。
+source "$SCRIPT_DIR/lib/orphan_test_detect.sh"
+# shellcheck source=../lib/report_consumption_detect.sh
+# subtask_741_layer3_orphan_detection②: cmd_741第三層(QC未消費検知)。
+# gunshiのQC判定reportがdashboard.mdに一度も言及されないまま長時間経過
+# していないか(実例⑤「軍師のsubtask_739のQC判定が2日間死蔵」相当)を
+# 検知する。★単独の新規監視機構は作らず本watchdogへ相乗り。
+source "$SCRIPT_DIR/lib/report_consumption_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -192,6 +204,20 @@ geolonia/skills"
 # (REST APIでは"dependabot[bot]"のように付く場合がある)、将来的な表記揺れに
 # 備え両形式を列挙しておく。
 REVIEW_BOT_ALLOWLIST="coderabbitai,coderabbitai[bot],dependabot,dependabot[bot],github-actions,github-actions[bot],copilot-pull-request-reviewer,copilot-pull-request-reviewer[bot]"
+
+# subtask_741_layer3_orphan_detection①: orphan test検知の対象
+# (自リポのみ・他リポへの展開可否はreport参照)。
+ORPHAN_TEST_WORKFLOW_FILE="$SCRIPT_DIR/.github/workflows/test.yml"
+ORPHAN_TEST_TESTS_DIR="$SCRIPT_DIR/tests"
+
+# subtask_741_layer3_orphan_detection②: QC report未消費検知の対象と
+# 許容経過時間。task本文の目安どおり24h。★対象はgunshi_report.yaml
+# (QC判定)のみに絞る——ashigaru報告は日常的に大量発生し1件ずつ
+# dashboard.mdへ個別言及される運用ではないため、全report対象にすると
+# 恒常的な誤検知源になる(過剰設計を避けるための意図的な絞り込み・
+# 詳細はlib/report_consumption_detect.shのコメント参照)。
+UNCONSUMED_REPORT_GLOB="gunshi_report.yaml"
+UNCONSUMED_REPORT_THRESHOLD=$((24 * 60 * 60))
 
 mkdir -p "$STATE_DIR" logs
 
@@ -1194,6 +1220,96 @@ check_unresolved_human_reviews() {
     done <<< "$REVIEW_REPO_REGISTRY"
 }
 
+# ── subtask_741_layer3_orphan_detection①相乗り: orphan test(実例④相当)検知 ──
+
+notify_dashboard_orphan_test() {
+    local rel_path="$1"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [orphan_test/cmd_741] ${rel_path} がどのCI job/Makefileからも実行されていない(orphan test) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+# dashboard🚨(karo/gunshi向け)のみ・ntfy(殿の端末)は発火させない——
+# 実例④は緊急性の高い障害ではなくbacklog相当のため(RACE-001/
+# check_file_collisionsと同じ判断)。同一rel_pathは一度通知したら
+# 再送しない(スパム防止・state dedup)。
+check_orphan_tests() {
+    local rel_path
+    while IFS= read -r rel_path; do
+        [[ -z "$rel_path" ]] && continue
+
+        local state_key="orphan_test__${rel_path//\//_}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified" "")
+        if [[ "$already_notified" == "true" ]]; then
+            continue
+        fi
+
+        log "[ORPHAN-TEST] $rel_path: どのCI jobからも参照されていない"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard for orphan test: $rel_path"
+            continue
+        fi
+        notify_dashboard_orphan_test "$rel_path"
+        state_set "$state_key" "notified" "true"
+    done < <(detect_orphan_tests "$ORPHAN_TEST_WORKFLOW_FILE" "$ORPHAN_TEST_TESTS_DIR")
+}
+
+# ── subtask_741_layer3_orphan_detection②相乗り: QC report未消費(実例⑤相当)検知 ──
+
+notify_dashboard_unconsumed_report() {
+    local agent="$1" parent_cmd="$2" task_id="$3" age="$4"
+    local ts
+    ts=$(now_iso)
+    local hours=$(( age / 3600 ))
+    local label="${parent_cmd:-$task_id}"
+    local entry="- 🚨 [unconsumed_report/cmd_741] ${agent}のreport(${label})がdone報告後約${hours}時間、dashboard.mdに一度も言及されていない(QC判定死蔵の疑い) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+# dashboard🚨のみ・ntfyは発火させない(check_orphan_testsと同じ理由)。
+# 同一agent/parent_cmd/task_idの組は一度通知したら再送しない。
+check_unconsumed_reports() {
+    local agent parent_cmd task_id report_file age
+    while IFS='|' read -r agent parent_cmd task_id report_file age; do
+        [[ -z "$agent" ]] && continue
+
+        local state_key="unconsumed_report__${agent}__${parent_cmd}__${task_id}"
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified" "")
+        if [[ "$already_notified" == "true" ]]; then
+            continue
+        fi
+
+        log "[UNCONSUMED-REPORT] $agent: parent_cmd=$parent_cmd task_id=$task_id report_file=$report_file age=${age}s"
+        if $DRY_RUN; then
+            log "[DRY-RUN] would notify dashboard for unconsumed report: $agent/$parent_cmd"
+            continue
+        fi
+        notify_dashboard_unconsumed_report "$agent" "$parent_cmd" "$task_id" "$age"
+        state_set "$state_key" "notified" "true"
+    done < <(detect_unconsumed_reports "$SCRIPT_DIR/queue/reports" "$UNCONSUMED_REPORT_GLOB" "$SCRIPT_DIR/dashboard.md" "$UNCONSUMED_REPORT_THRESHOLD")
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -1342,6 +1458,12 @@ check_stale_errlogs
 
 # cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知
 check_unresolved_human_reviews
+
+# subtask_741_layer3_orphan_detection①: orphan test(実例④相当)検知
+check_orphan_tests
+
+# subtask_741_layer3_orphan_detection②: QC report未消費(実例⑤相当)検知
+check_unconsumed_reports
 
 log "[DONE] stall_watchdog scan complete"
 
