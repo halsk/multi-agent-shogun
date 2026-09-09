@@ -1146,7 +1146,7 @@ check_unresolved_human_reviews() {
         owner="${owner_repo%%/*}"
         repo="${owner_repo#*/}"
 
-        local pr_line pr_number pr_url
+        local pr_number pr_url
         while IFS='|' read -r pr_number pr_url; do
             [[ -z "$pr_number" ]] && continue
 
