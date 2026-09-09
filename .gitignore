@@ -83,6 +83,7 @@
 !lib/heartbeat_detect.sh
 !lib/ci_heartbeat_detect.sh
 !lib/stale_errlog_detect.sh
+!lib/human_review_detect.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md

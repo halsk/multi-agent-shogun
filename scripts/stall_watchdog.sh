@@ -45,6 +45,12 @@ source "$SCRIPT_DIR/lib/ci_heartbeat_detect.sh"
 # 2026-06-30修理済み)が最終更新2026-06-29のまま2ヶ月以上放置された実例への
 # 対応(★単独の新規監視機構は作らず本watchdogへ相乗り)。
 source "$SCRIPT_DIR/lib/stale_errlog_detect.sh"
+# shellcheck source=../lib/human_review_detect.sh
+# cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知。
+# 殿(halsk)が2026-06-27にPR#31へ書いた18件の指摘が2ヶ月半誰にも届かなかった
+# 実例への対応(殿ご下命2026-09-09により射程はhalsk限定でなく人間レビュアー
+# 全般へ拡大)。★単独の新規監視機構は作らず本watchdogへ相乗り。
+source "$SCRIPT_DIR/lib/human_review_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -140,6 +146,43 @@ auto-improve|/Users/hal/workspace/automation/logs/auto_improve.log|$ERRLOG_MAX_A
 # heartbeatと同じ考え方: dashboard(karo/gunshi向け)は検知の都度即時、
 # ntfy(殿の端末)はこの遅延を超えて同一状態が解消しない場合のみ1回だけ発火。
 ERRLOG_NTFY_DELAY=$((30 * 60))
+
+# cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘を検知する
+# 対象リポ一覧("owner/repo"を改行区切り)。
+#
+# ★対象リポの確定根拠(2026-09-09・ashigaru3実測): config/projects.yamlの
+# repo:列挙(37件)を鵜呑みにせず、~/workspace・~/tools配下の実在git repoの
+# originを洗い出したうえで、各repoのPR一覧をgh apiで実測し
+# 「直近30日以内にhalsk(=swarmのgh認証アカウント)自身が作成したPRがあるか」
+# で絞り込んだ。geolonia組織配下でも dkastl・miya0001・ShinichiNishikawa等の
+# 実在の同僚が主に開発しているリポ(geolonia-design-system・geonicdb-cli・
+# geonicdb-demo-app・geonicdb-deployments・geonicdb-infra-cdk・
+# geonicdb-livedeck等)は、それらの同僚が自分のGitHub通知で気づける前提の
+# ためscan対象から除外した(cmd_789の趣旨はswarmが代筆したPRへの人間の
+# 返信をswarm自身が聞く仕組みであり、同僚が自分で読んでいるPRの監視は
+# 本taskの射程外)。geolonia/geonicdb(FIWARE Orion互換ContextBroker本体・
+# dkastl/miya0001等の外部貢献者が主でPR総数3101件)・team-mirai/mirai-gikai
+# (nasuka氏等の外部貢献者PR)も同じ理由で除外。codeforjapan/ddcrは直近PRが
+# 2026-05-16(約4ヶ月前)でありswarmの現在の活動範囲外と判断し除外。
+# geonicdb-devblogのみ30日基準からは外れる(直近PRは2026-07-01)が、
+# task本文で明示された実演対象PR#31が存在するリポのため確定的に含める。
+REVIEW_REPO_REGISTRY="geolonia/geonicdb-console
+geolonia/workflow-portal
+geolonia/geonicdb-devblog
+geolonia/docs.geolonia.com
+halsk/skills
+halsk/multi-agent-shogun
+halsk/automation
+geolonia/ai-worker
+geolonia/foss4g-keynote
+geolonia/geonicdb-docs
+geolonia/skills"
+
+# ★bot allowlist方式(task指示どおり)。GraphQL上のlogin文字列は
+# "coderabbitai"のように[bot]サフィックスが付かないことを実測確認済みだが
+# (REST APIでは"dependabot[bot]"のように付く場合がある)、将来的な表記揺れに
+# 備え両形式を列挙しておく。
+REVIEW_BOT_ALLOWLIST="coderabbitai,coderabbitai[bot],dependabot,dependabot[bot],github-actions,github-actions[bot],copilot-pull-request-reviewer,copilot-pull-request-reviewer[bot]"
 
 mkdir -p "$STATE_DIR" logs
 
@@ -1069,6 +1112,79 @@ reset_recovered_errlogs() {
     done <<< "$ERRLOG_REGISTRY"
 }
 
+# ── cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知 ──
+
+notify_dashboard_unresolved_review() {
+    local pr_url="$1"
+    local count="$2"
+    local oldest="$3"
+    local breakdown="$4"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [unresolved-review] ${pr_url} — 未解決の人間レビュー${count}件(最古手番変更${oldest}・${breakdown}) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+# REVIEW_REPO_REGISTRY の各リポのOPENなPR(draft含む)を巡回し、未解決の
+# 人間レビュー(reviewThreads+reviewDecisionの2条件・cmd_789)を検知し、
+# 差し戻し中/resolve待ちの手番(ball-holder)まで判定する。
+# dashboardは状態(件数|最古手番変更日時|内訳)が変化した時のみ追記する
+# (heartbeat/stale-errlogと同じ相乗り作法・毎tick重複追記を防ぐ)。
+check_unresolved_human_reviews() {
+    local owner_repo owner repo
+    while IFS= read -r owner_repo; do
+        [[ -z "$owner_repo" ]] && continue
+        owner="${owner_repo%%/*}"
+        repo="${owner_repo#*/}"
+
+        local pr_number pr_url
+        while IFS='|' read -r pr_number pr_url; do
+            [[ -z "$pr_number" ]] && continue
+
+            local result
+            result=$(detect_review_ball_holders_for_pr "$owner" "$repo" "$pr_number" "$pr_url" "$REVIEW_BOT_ALLOWLIST")
+            local state_key="review__${owner}__${repo}__${pr_number}"
+
+            if [[ -z "$result" ]]; then
+                local was_notified
+                was_notified=$(state_get "$state_key" "notified_status" "")
+                if [[ -n "$was_notified" ]]; then
+                    log "[UNRESOLVED-REVIEW-RECOVERED] ${owner}/${repo}#${pr_number}: 解消 → state リセット"
+                    state_set "$state_key" "notified_status" ""
+                fi
+                continue
+            fi
+
+            local count oldest breakdown problem_id
+            count=$(echo "$result" | cut -d'|' -f2)
+            oldest=$(echo "$result" | cut -d'|' -f3)
+            breakdown=$(echo "$result" | cut -d'|' -f4)
+            problem_id="${count}|${oldest}|${breakdown}"
+
+            local already_notified
+            already_notified=$(state_get "$state_key" "notified_status" "")
+            if [[ "$already_notified" != "$problem_id" ]]; then
+                log "[UNRESOLVED-REVIEW] ${owner}/${repo}#${pr_number}: ${count}件(最古手番変更${oldest}・${breakdown})"
+                if ! $DRY_RUN; then
+                    notify_dashboard_unresolved_review "$pr_url" "$count" "$oldest" "$breakdown"
+                else
+                    log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unresolved-review)"
+                fi
+                state_set "$state_key" "notified_status" "$problem_id"
+            fi
+        done < <(fetch_open_prs "$owner_repo")
+    done <<< "$REVIEW_REPO_REGISTRY"
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -1214,6 +1330,9 @@ check_ci_heartbeat
 # cmd_786/787 相乗り: 常駐ジョブのstderrログが非空のまま長期間放置されて
 # いないか(=誰も確認していない疑い)の検知
 check_stale_errlogs
+
+# cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知
+check_unresolved_human_reviews
 
 log "[DONE] stall_watchdog scan complete"
 
