@@ -73,11 +73,20 @@ setup() {
 @test "T-CIHB-005: ok reproduces the real PR#67 case (run fired 3s after PR creation)" {
   source "$LIB_FILE"
 
+  # ★test blind spot是正(cmd_new_utc_jst・家老実機再現2026-09-10):
+  # now_epochを_ci_iso_to_epoch経由(pr_created_epoch + 60)で算出すると、
+  # F1のようなTZバイアスが両辺(pr_created_epochとnow_epoch)で同時に発生し
+  # 相殺してしまい、このテストではバグを検出できなかった。
+  # 既知の正epoch値(TZ=UTC date実測・2026-09-06T06:17:45Z)を独立に直接与え、
+  # _ci_iso_to_epochの出力をその既知値と突き合わせることでバグを検出できる
+  # 構造にする。
+  local known_correct_pr_created_epoch=1788675465
+
   pr_created_epoch=$(_ci_iso_to_epoch "2026-09-06T06:17:45Z")
   matched_run_epoch=$(_ci_iso_to_epoch "2026-09-06T06:17:48Z")
-  now_epoch=$(( pr_created_epoch + 60 ))
+  now_epoch=$(( known_correct_pr_created_epoch + 60 ))
 
-  [ "$pr_created_epoch" -gt 0 ]
+  [ "$pr_created_epoch" -eq "$known_correct_pr_created_epoch" ]
   [ "$matched_run_epoch" -gt "$pr_created_epoch" ]
 
   run ci_heartbeat_judge "$pr_created_epoch" "$matched_run_epoch" 1800 "$now_epoch"
