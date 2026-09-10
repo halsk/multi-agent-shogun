@@ -74,9 +74,15 @@ state_set() {
         # sed -i ''(BSD専用書式)はGNU sed(Linux)では空スクリプト+ファイル名誤認
         # として壊れる(cmd_766教訓・ubuntu-latestで実際に踏んだ)。
         # 一時ファイル経由のmvならBSD/GNU両対応で安全。
+        # ★sedの`s|...|...|`はvalueに`|`を含むと区切り文字衝突で構文エラーに
+        # なる(PR#108教訓)。valueを正規表現/置換パターンに埋め込まず、awkの
+        # 文字列としてそのまま出力することで衝突を根絶する。
         local _tmp
         _tmp=$(mktemp)
-        sed "s|^${key}:.*|${key}: ${value}|" "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
+        awk -v key="$key" -v value="$value" '
+            $0 ~ "^" key ":" { print key ": " value; next }
+            { print }
+        ' "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
     else
         printf '%s: %s\n' "$key" "$value" >> "$STATE_FILE"
     fi

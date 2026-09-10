@@ -258,6 +258,34 @@ JSON
     rm -rf "$root"
 }
 
+@test "T-MBW-012: state_set()の|区切り文字衝突 回帰(PR#108 follow-up・前回監査の見逃し)" {
+    local root
+    root="$(mktemp -d "/tmp/mbw_XXXXXX")"
+    build_tmp_project "$root"
+
+    set --
+    SHOGUN_PROJECT_ROOT="$root"
+    SHOGUN_QUEUE_DIR="$root/queue"
+    SHOGUN_DASHBOARD_FILE="$root/dashboard.md"
+    source "$root/scripts/mgmt_bloat_watchdog.sh"
+
+    local pipe_value="21|2026-09-10T12:00:00|resolve待ち(halsk氏)x18"
+    state_set "test_field" "$pipe_value"
+    result="$(state_get "test_field" "")"
+    [ "$result" = "$pipe_value" ]
+
+    local pipe_value2="22|2026-09-10T13:00:00|resolve待ちx22"
+    state_set "test_field" "$pipe_value2"
+    result2="$(state_get "test_field" "")"
+    [ "$result2" = "$pipe_value2" ]
+
+    state_set "other_field" "0"
+    result3="$(state_get "other_field" "")"
+    [ "$result3" = "0" ]
+
+    rm -rf "$root"
+}
+
 @test "T-MBW-011: 実行が重なった場合、後発は何もせずexit 0で退く(flock単一起動)" {
     local root
     root="$(mktemp -d "/tmp/mbw_XXXXXX")"

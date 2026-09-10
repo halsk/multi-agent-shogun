@@ -107,9 +107,16 @@ state_set() {
     if grep -qE "^${field}:" "$STATE_FILE" 2>/dev/null; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ★sedの`s|...|...|`はvalueに`|`を含むと区切り文字衝突で構文エラーに
+        # なる(PR#108・cmd_789のnotified_status形式で実際に発生)。valueを
+        # 正規表現/置換パターンに埋め込まず、awkの文字列としてそのまま出力
+        # することで衝突を根絶する。
         local _tmp
         _tmp=$(mktemp)
-        sed "s|^${field}:.*|${field}: ${value}|" "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
+        awk -v field="$field" -v value="$value" '
+            $0 ~ "^" field ":" { print field ": " value; next }
+            { print }
+        ' "$STATE_FILE" > "$_tmp" && mv "$_tmp" "$STATE_FILE"
     else
         printf '%s: %s\n' "$field" "$value" >> "$STATE_FILE"
     fi

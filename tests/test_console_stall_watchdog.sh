@@ -230,6 +230,35 @@ echo "=== Section 10: iso_to_epoch がTZ非依存で正しいepochを返す(UTC/
 assert_eq "10a: iso_to_epoch('2026-09-06T06:17:45Z') が既知の正epochと一致" \
     "1788675465" "$(iso_to_epoch "2026-09-06T06:17:45Z")"
 
+# ── Section 11: state_set() の`|`区切り文字衝突 回帰テスト(PR#108 follow-up) ──
+# PR#108(scripts/stall_watchdog.sh)で見つかったsed区切り文字衝突バグと
+# 同型のパターンが本ファイルにも残存していた(前回監査の見逃し)。
+# 実state fileを汚さぬようSTATE_FILEを一時ファイルへ差し替えて検証する。
+echo ""
+echo "=== Section 11: state_set()の|区切り文字衝突 回帰テスト ==="
+
+TMPDIR_TEST11=$(mktemp -d)
+STATE_FILE="$TMPDIR_TEST11/state.yaml"
+
+pipe_value='21|2026-09-10T12:00:00|resolve待ち(halsk氏)x18,差し戻し中(足軽)x1'
+state_set "pending_body" "$pipe_value"
+readback_11a=$(state_get "pending_body" "")
+assert_eq "11a: |を含む値の新規書き込みが正しく読める" "$pipe_value" "$readback_11a"
+
+state_set "pending_body" "old_value"
+readback_before_11b=$(state_get "pending_body" "")
+assert_eq "11b前提: 上書き前は旧値" "old_value" "$readback_before_11b"
+pipe_value2='22|2026-09-10T13:00:00|resolve待ち(halsk氏)x22'
+state_set "pending_body" "$pipe_value2"
+readback_11b=$(state_get "pending_body" "")
+assert_eq "11b: |を含む値でのupsertが正しく反映される" "$pipe_value2" "$readback_11b"
+
+state_set "pending" "false"
+readback_11c=$(state_get "pending" "")
+assert_eq "11c: 他フィールドは|衝突の影響を受けない" "false" "$readback_11c"
+
+rm -rf "$TMPDIR_TEST11"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"
