@@ -220,6 +220,16 @@ else
     assert_eq "9d: 強制停滞状態でも[DONE]まで正常終了する" "found" "NOT FOUND: $FORCED_STALL_OUTPUT"
 fi
 
+# ── Section 10: iso_to_epoch — UTC/JST混同回帰(cmd_new_utc_jst F2) ──────────
+# ★date -j -f '...Z' はTZ未指定だとローカルTZとして解釈され、真のepochより
+# ローカルTZ分ずれる(macOS実機再現・家老確認済み)。既知の正epoch値と突き合わせ、
+# 再発を検出できる構造にする。
+echo ""
+echo "=== Section 10: iso_to_epoch がTZ非依存で正しいepochを返す(UTC/JST混同回帰) ==="
+
+assert_eq "10a: iso_to_epoch('2026-09-06T06:17:45Z') が既知の正epochと一致" \
+    "1788675465" "$(iso_to_epoch "2026-09-06T06:17:45Z")"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"

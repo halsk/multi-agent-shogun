@@ -37,7 +37,10 @@
 _ci_iso_to_epoch() {
   local iso="$1"
   [[ -z "$iso" ]] && { echo 0; return; }
-  date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" '+%s' 2>/dev/null \
+  # ★TZ=UTC必須: BSD date -j -f は書式中の"Z"をリテラル文字として消費するのみで
+  # 「UTCとして解釈せよ」の指示にならず、TZ未指定だとローカルTZとして解釈され
+  # 実際のepochより(ローカルTZ分)ずれる(cmd_new_utc_jst F1・将軍実測)。
+  TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" '+%s' 2>/dev/null \
     || date -d "$iso" '+%s' 2>/dev/null \
     || echo 0
 }
