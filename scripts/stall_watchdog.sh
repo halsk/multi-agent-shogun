@@ -297,9 +297,16 @@ state_set() {
     if grep -qE "^${field}:" "$state_file" 2>/dev/null; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ★sedの`s|...|...|`はvalueに`|`を含むと区切り文字衝突で構文エラーに
+        # なる(cmd_789のnotified_status="21|...|..."で実際に発生・dashboard
+        # 無限追記の根本原因)。valueを正規表現/置換パターンに埋め込まず、
+        # awkの文字列としてそのまま出力することで衝突を根絶する。
         local _tmp
         _tmp=$(mktemp)
-        sed "s|^${field}:.*|${field}: ${value}|" "$state_file" > "$_tmp" && mv "$_tmp" "$state_file"
+        awk -v field="$field" -v value="$value" '
+            $0 ~ "^" field ":" { print field ": " value; next }
+            { print }
+        ' "$state_file" > "$_tmp" && mv "$_tmp" "$state_file"
     else
         printf '%s: %s\n' "$field" "$value" >> "$state_file"
     fi

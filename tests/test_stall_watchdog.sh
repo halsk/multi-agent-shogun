@@ -569,6 +569,41 @@ agent_is_busy_check() { return 0; }
 result_11c=$(all_ashigaru_idle)
 assert_eq "11c: 1人でもbusyならfalse" "false" "$result_11c"
 
+# ── Section 12: state_set() の`|`区切り文字衝突 回帰テスト(dashboard無限追記の根本原因) ──
+# cmd_789のnotified_status="21|2026-06-26T22:55:12Z|resolve待ち..."のように
+# `|`を含むvalueをstate_setに渡すと、旧実装(sed "s|...|...|")は区切り文字
+# 衝突でsedが構文エラー終了し、state fileが永久に更新されなかった。
+
+echo ""
+echo "=== Section 12: state_set()の|区切り文字衝突 回帰テスト ==="
+echo ""
+
+TMPDIR_TEST12=$(mktemp -d)
+STATE_DIR="$TMPDIR_TEST12/stall_watchdog"
+mkdir -p "$STATE_DIR"
+
+# 12a: 新規フィールドに`|`を含む値を書き込み、そのまま読める
+pipe_value='21|2026-06-26T22:55:12Z|resolve待ち(halsk氏)x18,差し戻し中(足軽)x1'
+state_set "test_pipe_agent" "notified_status" "$pipe_value"
+readback_12a=$(state_get "test_pipe_agent" "notified_status" "")
+assert_eq "12a: |を含む値の新規書き込みが正しく読める" "$pipe_value" "$readback_12a"
+
+# 12b: 既存フィールドを`|`を含む新しい値で upsert しても正しく更新される
+state_set "test_pipe_agent" "notified_status" "old_value"
+readback_before_12b=$(state_get "test_pipe_agent" "notified_status" "")
+assert_eq "12b前提: 上書き前は旧値" "old_value" "$readback_before_12b"
+pipe_value2='22|2026-09-10T12:00:00Z|resolve待ち(halsk氏)x22'
+state_set "test_pipe_agent" "notified_status" "$pipe_value2"
+readback_12b=$(state_get "test_pipe_agent" "notified_status" "")
+assert_eq "12b: |を含む値でのupsertが正しく反映される" "$pipe_value2" "$readback_12b"
+
+# 12c: 他フィールドは巻き込まれず無事(1行だけが更新される)
+state_set "test_pipe_agent" "escalation_phase" "0"
+readback_12c=$(state_get "test_pipe_agent" "escalation_phase" "")
+assert_eq "12c: 他フィールドは|衝突の影響を受けない" "0" "$readback_12c"
+
+rm -rf "$TMPDIR_TEST12"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""
