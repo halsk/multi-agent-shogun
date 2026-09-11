@@ -359,3 +359,144 @@ setup() {
   grep -qE "check_unresolved_human_reviews" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
   grep -qE "detect_review_ball_holders_for_pr" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── cmd_793拡張: 上流PR追跡(著者=我ら・レビュー0件・OPEN放置の検知) ─────────
+# フィクスチャの日付は実測固定値: 2026-09-07T00:00:00Zは月曜日、
+# 2026-09-09T00:00:00Zは水曜日(2営業日後)、2026-09-10T00:00:00Zは木曜日
+# (3営業日後)——`TZ=UTC date -j -f`で確認済み(epoch: 1788739200 / 1788912000
+# / 1788998400)。
+
+# ── T-HREV-023: count_business_days_since — 月曜0時から木曜0時まで3営業日 ──
+
+@test "T-HREV-023: count_business_days_since counts Mon 00:00 to Thu 00:00 as 3 business days" {
+  source "$LIB_FILE"
+
+  run count_business_days_since 1788739200 1788998400
+  [ "$status" -eq 0 ]
+  [[ "$output" == "3" ]]
+}
+
+# ── T-HREV-024: count_business_days_since — 週末(土)を跨いでも土日は加算しない ──
+
+@test "T-HREV-024: count_business_days_since skips weekend days when spanning Mon to Sat" {
+  source "$LIB_FILE"
+
+  # Mon 00:00 → Sat 00:00 (5 calendar days later, epoch 1789171200):
+  # 加算されるのは Tue/Wed/Thu/Fri の4日のみ(Satは含めない)
+  run count_business_days_since 1788739200 1789171200
+  [ "$status" -eq 0 ]
+  [[ "$output" == "4" ]]
+}
+
+# ── T-HREV-025: count_business_days_since — 同一時刻(経過0)は0 ──
+
+@test "T-HREV-025: count_business_days_since returns 0 for zero elapsed time" {
+  source "$LIB_FILE"
+
+  run count_business_days_since 1788739200 1788739200
+  [ "$status" -eq 0 ]
+  [[ "$output" == "0" ]]
+}
+
+# ── T-HREV-026: parse_unreviewed_authored_pr — OPEN・著者一致・レビュー0件・
+# 閾値到達 → created_at|elapsed_daysを返す ──
+
+@test "T-HREV-026: parse_unreviewed_authored_pr flags an OPEN, zero-review, authored PR past the threshold" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  [ "$status" -eq 0 ]
+  [[ "$output" == "2026-09-07T00:00:00Z|3" ]]
+}
+
+# ── T-HREV-027: parse_unreviewed_authored_pr — 閾値未到達(2営業日<3)は非検知 ──
+
+@test "T-HREV-027: parse_unreviewed_authored_pr does not flag before the threshold is reached" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788912000
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-028: parse_unreviewed_authored_pr — state!=OPEN(MERGED)は非検知 ──
+
+@test "T-HREV-028: parse_unreviewed_authored_pr never flags a non-OPEN PR" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"MERGED","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-029: parse_unreviewed_authored_pr — 著者が違えば非検知(同僚のPRは対象外) ──
+
+@test "T-HREV-029: parse_unreviewed_authored_pr does not flag a PR authored by someone else" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"dkastl"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-030: parse_unreviewed_authored_pr — reviews.totalCount>=1なら非検知
+# (誰かがレビュー済みならこの検知の射程外・既存check_unresolved_human_reviewsの範疇) ──
+
+@test "T-HREV-030: parse_unreviewed_authored_pr does not flag a PR that already has at least one review" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":1,"nodes":[{"author":{"login":"dkastl"},"state":"COMMENTED"}]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-031: detect_unreviewed_authored_pr_for_pr — fetch+parseを結合し
+# pr_url付きで返す ──
+
+@test "T-HREV-031: detect_unreviewed_authored_pr_for_pr prefixes the match with pr_url" {
+  source "$LIB_FILE"
+
+  fetch_pr_review_data() {
+    echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
+  }
+
+  # now_epochは関数内部でdate -u +%sを実測するため、遠い過去日付
+  # (2026-09-07)を使い、実行時刻が何であってもthreshold=3を確実に超える
+  # ようにする(テストの実行日に依存しないための設計)。
+  run detect_unreviewed_authored_pr_for_pr "geolonia" "geonicdb" 999 \
+    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3
+  [ "$status" -eq 0 ]
+  [[ "$output" == "https://github.com/geolonia/geonicdb/pull/999|2026-09-07T00:00:00Z|"* ]]
+}
+
+# ── T-HREV-032: detect_unreviewed_authored_pr_for_pr — fetch失敗(空JSON)は空 ──
+
+@test "T-HREV-032: detect_unreviewed_authored_pr_for_pr returns empty when fetch fails" {
+  source "$LIB_FILE"
+
+  fetch_pr_review_data() { echo ""; }
+
+  run detect_unreviewed_authored_pr_for_pr "geolonia" "geonicdb" 999 \
+    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-033: stall_watchdog.sh が新検知を実際に呼び出し、REVIEW_REPO_REGISTRY
+# に geolonia/geonicdb を含んでいる(cmd_793相乗り確認) ──
+
+@test "T-HREV-033: stall_watchdog.sh wires up check_unreviewed_authored_prs and registers geolonia/geonicdb" {
+  grep -qE "check_unreviewed_authored_prs" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+  grep -qE "detect_unreviewed_authored_pr_for_pr" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+  grep -qE "^geolonia/geonicdb" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
+}

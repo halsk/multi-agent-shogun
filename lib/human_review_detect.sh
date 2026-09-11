@@ -77,9 +77,12 @@
 #     → impure。OPENなPR(draft含む)を "<number>|<url>" で列挙。
 #
 #   fetch_pr_review_data <owner> <repo> <pr_number>
-#     → impure。gh api graphqlで state・reviewDecision・reviewThreads
-#       (各スレッド最大20コメント)・reviews・直近commit日時 を1回の
-#       クエリで取得しJSON文字列を返す。失敗時は空文字。
+#     → impure。gh api graphqlで state・author・createdAt・reviewDecision・
+#       reviewThreads(各スレッド最大20コメント)・reviews・直近commit日時を
+#       1回のクエリで取得しJSON文字列を返す。失敗時は空文字。
+#       (author/createdAtは2026-09-12 cmd_793拡張で追加——上流PR追跡用の
+#       check_unreviewed_authored_prのために必要な最小限のフィールド追加。
+#       既存のparse_*関数は該当フィールドを参照しないため無害)。
 #
 #   parse_thread_ball_holders <json> <bot_allowlist_csv>
 #     → pure。isResolved=false かつ最初のコメント投稿者がbot allowlist外の
@@ -112,6 +115,30 @@
 #       state!=OPENなら常に空文字(merged/closedの誤検知防止)。
 #       件数>0の場合のみ "<pr_url>|<count>|<oldest_changed_at>|<breakdown>" を返す。
 #       totalCount不足を検知した場合は標準エラー出力へ警告を出す(戻り値は変えない)。
+#
+# ── cmd_793拡張(2026-09-12): 上流PR追跡 ─────────────────────────────────────
+# 背景: 殿ご下問「上流へのPRがどうなったかトラッキングできるか」
+# (addendum_20260911_2240)。既存のcheck_unresolved_human_reviewsは
+# detect_review_ball_holders_for_prが空を返せば何も通知しない設計のため、
+# 「誰も一度もレビューせず放置されたPR」(上流PRで最も起こりそうな事態)は
+# 無反応のまま検知されない。以下の2関数でその穴を埋める
+# (parse_thread_ball_holders等の既存判定へは一切手を入れない・純追加)。
+#
+#   count_business_days_since <created_epoch> <now_epoch>
+#     → pure。createdからnowまでの経過日数のうち、平日(月〜金)の日数のみを
+#       24時間刻みで数えて返す(週末を跨いでも実際の対応可能日数に近づける
+#       簡易実装。祝日は考慮しない——過剰設計を避けるための意図的な簡略化)。
+#
+#   parse_unreviewed_authored_pr <json> <author_login> <threshold_business_days> <now_epoch>
+#     → pure。state==OPEN かつ author.login==author_login かつ
+#       reviews.totalCount==0 かつ経過営業日数がthreshold_business_days以上
+#       の場合のみ "<created_at>|<elapsed_business_days>" を返す。
+#       条件を満たさなければ空文字(state!=OPEN・著者違い・レビュー1件以上
+#       いずれも非検知)。
+#
+#   detect_unreviewed_authored_pr_for_pr <owner> <repo> <pr_number> <pr_url> <author_login> <threshold_business_days>
+#     → fetch+parseを結合した実行用ラッパー。該当する場合のみ
+#       "<pr_url>|<created_at>|<elapsed_business_days>" を返す。
 
 fetch_open_prs() {
   local owner_repo="$1"
@@ -125,7 +152,7 @@ fetch_pr_review_data() {
   local pr_number="$3"
 
   local query
-  query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){state reviewDecision reviewThreads(first:100){totalCount nodes{isResolved comments(first:20){nodes{author{login} createdAt}}}} reviews(last:50){totalCount nodes{author{login} state body createdAt}} commits(last:1){nodes{commit{committedDate}}}}}}'
+  query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){state author{login} createdAt reviewDecision reviewThreads(first:100){totalCount nodes{isResolved comments(first:20){nodes{author{login} createdAt}}}} reviews(last:50){totalCount nodes{author{login} state body createdAt}} commits(last:1){nodes{commit{committedDate}}}}}}'
 
   gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null
 }
@@ -325,4 +352,102 @@ detect_review_ball_holders_for_pr() {
   fi
 
   echo "${pr_url}|${count}|${oldest}|${breakdown}"
+}
+
+# ── cmd_793拡張: 上流PR追跡(著者=我ら・レビュー0件・OPEN放置の検知) ─────────
+
+# createdからnowまでの経過"営業日数"を24時間刻みで数える(月〜金のみ加算)。
+# 祝日は考慮しない簡易実装(過剰設計を避ける・将軍案の目安=3営業日を
+# 満たせれば足りるとの判断)。UTC固定で計算する——macOSの`date -jf`は
+# 末尾Zを無視し「変換したつもり」が起きる罠があるため、GitHubのISO8601
+# (常にUTC・Z終端)はTZ=UTC明示で扱う(feedback_utc_jst_mixing_in_elapsed_time
+# の教訓を踏襲)。
+count_business_days_since() {
+  local created_epoch="$1"
+  local now_epoch="$2"
+
+  [[ -z "$created_epoch" || "$created_epoch" == "0" ]] && { echo "0"; return; }
+  [[ "$now_epoch" -le "$created_epoch" ]] && { echo "0"; return; }
+
+  local count=0
+  local cur=$created_epoch
+  local dow
+  while [[ "$cur" -lt "$now_epoch" ]]; do
+    cur=$(( cur + 86400 ))
+    # %u: 1=Monday .. 7=Sunday
+    dow=$(TZ=UTC date -u -r "$cur" '+%u' 2>/dev/null || TZ=UTC date -u -d "@$cur" '+%u' 2>/dev/null)
+    [[ -z "$dow" ]] && continue
+    if [[ "$dow" -le 5 ]]; then
+      count=$(( count + 1 ))
+    fi
+  done
+  echo "$count"
+}
+
+# GitHubのISO8601(常にUTC・"2026-09-01T12:00:00Z"形式)をepoch秒へ変換する。
+# TZ=UTC明示(末尾Zをdate -jfが無視する罠を踏まない・上記教訓と同じ)。
+_github_iso_to_epoch() {
+  local iso="$1"
+  [[ -z "$iso" ]] && { echo "0"; return; }
+  TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" '+%s' 2>/dev/null \
+    || TZ=UTC date -u -d "$iso" '+%s' 2>/dev/null \
+    || echo "0"
+}
+
+# state==OPEN かつ author.login==author_login かつ reviews.totalCount==0
+# かつ経過営業日数がthreshold_business_days以上の場合のみ
+# "<created_at>|<elapsed_business_days>" を返す。
+parse_unreviewed_authored_pr() {
+  local json="$1"
+  local author_login="$2"
+  local threshold_business_days="$3"
+  local now_epoch="$4"
+
+  [[ -z "$json" ]] && return
+
+  local state pr_author review_count created_at
+  state=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.state // "UNKNOWN"' 2>/dev/null)
+  [[ "$state" != "OPEN" ]] && return
+
+  pr_author=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.author.login // ""' 2>/dev/null)
+  [[ "$pr_author" != "$author_login" ]] && return
+
+  review_count=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.reviews.totalCount // 0' 2>/dev/null)
+  [[ "$review_count" != "0" ]] && return
+
+  created_at=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.createdAt // ""' 2>/dev/null)
+  [[ -z "$created_at" ]] && return
+
+  local created_epoch elapsed_days
+  created_epoch=$(_github_iso_to_epoch "$created_at")
+  [[ "$created_epoch" == "0" ]] && return
+  elapsed_days=$(count_business_days_since "$created_epoch" "$now_epoch")
+
+  if [[ "$elapsed_days" -ge "$threshold_business_days" ]]; then
+    echo "${created_at}|${elapsed_days}"
+  fi
+}
+
+# fetch+parseを結合した実行用ラッパー。該当する場合のみ
+# "<pr_url>|<created_at>|<elapsed_business_days>" を返す。
+detect_unreviewed_authored_pr_for_pr() {
+  local owner="$1"
+  local repo="$2"
+  local pr_number="$3"
+  local pr_url="$4"
+  local author_login="$5"
+  local threshold_business_days="$6"
+
+  local json
+  json=$(fetch_pr_review_data "$owner" "$repo" "$pr_number")
+  [[ -z "$json" ]] && { echo ""; return; }
+
+  local now_epoch
+  now_epoch=$(date -u '+%s')
+
+  local result
+  result=$(parse_unreviewed_authored_pr "$json" "$author_login" "$threshold_business_days" "$now_epoch")
+  [[ -z "$result" ]] && { echo ""; return; }
+
+  echo "${pr_url}|${result}"
 }
