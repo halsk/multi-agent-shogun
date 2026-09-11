@@ -253,27 +253,37 @@ detect_orphan_cmds() {
     done < <(_lmd_all_ledger_cmd_statuses "$ledger_file")
 }
 
-# ── cmd_778② 相乗り: report・task YAML・inboxの三面食い違い検知(型h) ────────
+# ── cmd_778② 相乗り: report・task YAMLの二面食い違い検知(型h) ────────
 #
 # 殿ご裁可(2026-09-06)。a〜gのように型を列挙して足すやり方は限界に来ている
-# ——「report・task YAML・inboxの三面が一致しているか」という一つの不変条件で
-# まだ見ぬ型も拾う。本日 ashigaru6 のreport(status: done)・task YAML
-# (status: assigned)・家老inbox(通知0件)が7〜12時間食い違ったまま放置された
-# 実例の再発防止。
+# ——「report・task YAMLが一致しているか」という一つの不変条件でまだ見ぬ型も
+# 拾う。本日 ashigaru6 のreport(status: done)・task YAML(status: assigned)
+# が7〜12時間食い違ったまま放置された実例の再発防止。
+#
+# ★★★cmd_800恒久修正(2026-09-12・家老判断): 当初はinbox通知の有無も
+# 判定材料に含む三面照合だったが、scripts/inbox_write.shの上書き防止仕様
+# (メッセージ50件上限・超過時は既読30件のみ保持)により、短時間に大量の
+# 通知が飛び交うと正しく通知・処理済みのエントリが物理的に押し出されて
+# 消える。inbox本体を「通知が届いたか」の証跡として使うこと自体が
+# 構造的に無理があった(inboxは作業キューであり永続ログではない)。
+# task YAMLのstatusがdone/cancelledであるという事実こそが「karoが報告を
+# 確認し処理した」ことの直接証拠であり、それ以外にinbox通知の有無を別途
+# チェックする必要は無い。ゆえに判定は以下(a)の一面(task面)のみへ
+# 簡素化した。inbox面の算出(_lmd_inbox_has_entry_from_after)自体は
+# stall_watchdog.shの表示(参考情報)向けに残す。
 #
 # 不変条件: report(queue/reports/{agent}_report.yaml)の最新エントリが
 # status: done であるなら、
 #   (a) 対応する task YAML(queue/tasks/{agent}.yaml)の status も
-#       done/cancelled(完了相当)であるべき
+#       done/cancelled(完了相当)であるべき ← ★これのみがmismatch判定条件
 #   (b) 報告先inbox(既定=karo)に、その報告以降の from:{agent} エントリが
-#       存在するべき(read:true/falseは問わない——存在すること自体が
-#       「二手目(inbox_write)が打たれた」証跡)
-# いずれかが崩れていれば mismatch として列挙する。
+#       存在するか(read:true/falseは問わない) ← 参考情報として出力に
+#       残すが、消えていてもmismatch判定には使わない(上記理由)
 #
 # 提供関数:
 #   detect_three_way_mismatch <reports_dir> <tasks_dir> <inbox_file> <threshold_seconds>
 #     → 各行 "agent|parent_cmd|report_file|task_status|inbox_ok|age_seconds" で
-#       mismatch を列挙(inbox_ok=0のとき無音・1のとき通知あり)
+#       mismatch を列挙(inbox_okは参考情報・0/1いずれでも判定には無関係)
 
 # inbox_file 内に、agent からの from: エントリで timestamp が since 以降の
 # ものが存在するかを判定する(read:true/falseは問わない=存在すればOK)。
@@ -343,7 +353,10 @@ detect_three_way_mismatch() {
             inbox_ok=1
         fi
 
-        if [[ "$task_ok" -eq 0 || "$inbox_ok" -eq 0 ]]; then
+        # ★cmd_800恒久修正: 判定条件はtask_okのみ。inbox_okは出力に含めて
+        # 参考情報として残すが、mismatch判定のゲートには使わない
+        # (inbox_write.shの50件上限で正常エントリが物理的に消えうるため)。
+        if [[ "$task_ok" -eq 0 ]]; then
             printf '%s|%s|%s|%s|%s|%s\n' "$agent" "$parent_cmd" "$f" "$task_status" "$inbox_ok" "$age"
         fi
     done

@@ -653,10 +653,20 @@ check_blocked_reason_gaps() {
 }
 
 # ── cmd_778②(型h)相乗り: report・task YAML・inboxの三面食い違い検知 ────────
-# 殿ご裁可(2026-09-06)。型を列挙するのでなく「三面が一致しているか」という
+# 殿ご裁可(2026-09-06)。型を列挙するのでなく「一致しているか」という
 # 一つの不変条件で見る(a〜gのように継ぎ足すやり方は限界に来ていた)。
-# 本日 ashigaru6 の report(status: done)・task YAML(status: assigned)・
-# 家老inbox(通知0件)が7〜12時間食い違ったまま放置された実例への対応。
+# 本日 ashigaru6 の report(status: done)・task YAML(status: assigned)が
+# 7〜12時間食い違ったまま放置された実例への対応。
+#
+# ★★★cmd_800恒久修正(2026-09-12): 当初はinbox通知の有無(inbox_ok)も
+# mismatch判定に使っていたが、scripts/inbox_write.shの50件上限で正常な
+# 通知エントリが物理的に消えることがあり、真に処理済みの報告まで誤検知
+# する事故が一晩で7件連発した(queue/shogun_to_karo.yaml cmd_800
+# addendum_20260912_0740参照)。lib/ledger_mismatch_detect.shの
+# detect_three_way_mismatchはtask_okのみを判定条件とするよう改めた。
+# inbox_okは参考情報として出力に残るが、以下のnotify/dedup処理は
+# task_statusの変化にのみ反応するようにする(inbox_okの値だけが
+# 変わっても——inboxの上限churnで頻繁に起こりうる——再通知しない)。
 
 notify_dashboard_three_way_mismatch() {
     local agent="$1"
@@ -667,8 +677,12 @@ notify_dashboard_three_way_mismatch() {
     local ts
     ts=$(now_iso)
     local hours=$(( age / 3600 ))
+    # ★cmd_800恒久修正: mismatchの原因はtask_status(=task_ok)のみ。
+    # inbox_okは判定に使っていないため「原因」として書かず、あくまで
+    # 参考情報として括弧書きで添えるに留める(旧文言「・inbox無通知」は
+    # 判定基準の一部であるかのように読めたため紛らわしく、削除した)。
     local detail="task=${task_status}"
-    [[ "$inbox_ok" == "0" ]] && detail="${detail}・inbox無通知"
+    [[ "$inbox_ok" == "0" ]] && detail="${detail}(参考: inbox通知未検出・判定には不使用)"
     local entry="- 🚨 [three_way_mismatch] ${agent}(${parent_cmd}): reportはdone報告済だが${detail}のまま約${hours}時間経過 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
@@ -701,7 +715,12 @@ check_three_way_mismatch() {
         [[ -z "$agent" ]] && continue
 
         local state_key="three_way_mismatch__${agent}__${parent_cmd}"
-        local notified_key="${task_status}:${inbox_ok}"
+        # ★cmd_800恒久修正: dedupキーはtask_statusのみ(inbox_okは判定に
+        # 使わなくなったため、inbox_okだけが変化しても同一状態とみなし
+        # 再通知しない——inbox_okはinboxのchurnで頻繁に0/1が入れ替わり
+        # うるため、旧実装のまま含めるとdedupが効かず再送スパムの原因に
+        # なりかねない)。
+        local notified_key="${task_status}"
         local already_notified
         already_notified=$(state_get "$state_key" "notified_status" "")
         if [[ "$already_notified" == "$notified_key" ]]; then
