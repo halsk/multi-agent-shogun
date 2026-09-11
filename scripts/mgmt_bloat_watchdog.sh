@@ -134,7 +134,8 @@ send_ntfy() {
         log "[DRY-RUN] ntfy送信: $msg"
         return
     fi
-    bash "$PROJECT_ROOT/scripts/ntfy.sh" "$msg"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$PROJECT_ROOT/scripts/ntfy.sh" "$msg"
 }
 
 # ── 第四層: 閾値判定 ────────────────────────────────────────────────────────

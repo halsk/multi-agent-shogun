@@ -70,7 +70,9 @@ total_stops=$(( ledger_mismatch + blocked_reason_gap + orphan_cmd + e4_limit + p
 echo "[$(now_iso)] [REPORT-24H] ledger_mismatch=$ledger_mismatch blocked_reason_gap=$blocked_reason_gap orphan_cmd=$orphan_cmd e4_limit=$e4_limit p1=$p1 p2=$p2 p3=$p3 activity=$activity total_stops=$total_stops" | tee -a "$LOG_FILE"
 
 if [[ "$(should_send_24h_report "$total_stops" "$activity")" == "true" ]]; then
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "stall_watchdog 24h観測: 停止0件(稼働${activity}件)。異常なし。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・all-clear報告は殿を煩わすのみ)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "stall_watchdog 24h観測: 停止0件(稼働${activity}件)。異常なし。"
+    :
 elif [[ "$total_stops" -eq 0 ]]; then
     echo "[$(now_iso)] [REPORT-24H-SKIP] 稼働0件のため0件報告はスキップ(稼働0件の0件は無意味)" | tee -a "$LOG_FILE"
 else
