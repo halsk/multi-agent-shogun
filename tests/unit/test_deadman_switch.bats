@@ -91,7 +91,7 @@ epoch_of() {
 
 # ── T-DM-002: idle大・昼間 → 家老通知の15分後、同一agentが停止中なら殿宛ntfyが
 #   発火する(cmd_783『殿は最後の砦』により1回の実行では発火しない) ──
-@test "T-DM-002: idleが閾値超・昼間は家老通知→15分後に殿宛ntfyが発火する" {
+@test "T-DM-002: idleが閾値超・昼間は家老通知が飛ぶ・殿宛ntfyはcmd_795で恒久停止" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   # 1回目: 家老通知のみ。殿はまだ起こさぬ
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
@@ -100,11 +100,12 @@ epoch_of() {
   [ ! -s "$CALLS_LOG" ]
   [ -f "$DEADMAN_STATE_DIR/karo_notified_agents.txt" ]
 
-  # 2回目: 15分経過・同一agentがまだ停止中 → 殿宛ntfy発火
+  # 2回目: 15分経過・同一agentがまだ停止中でも、cmd_795(殿裁定=丙・2026-09-11)
+  # により殿宛エスカレーションは無効化済み(guard exit 0)。ntfyは飛ばない。
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
-  [ -s "$CALLS_LOG" ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
   run grep -c "deadman_switch" "$DEADMAN_DASHBOARD"
   [ "$output" -ge 1 ]
 }
@@ -191,14 +192,11 @@ YAML
   [ -s "$KARO_CALLS_LOG" ]
   [ ! -s "$CALLS_LOG" ]
 
+  # cmd_795(殿裁定=丙・2026-09-11)により殿宛エスカレーションは無効化済み。ntfyは飛ばない。
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
-  [ -s "$CALLS_LOG" ]
-  run grep -o "ashigaru9" "$DEADMAN_DASHBOARD"
-  [ -n "$output" ]
-  run grep -o "ashigaru8" "$DEADMAN_DASHBOARD"
-  [ -z "$output" ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -s "$CALLS_LOG" ]
 }
 
 # ── T-DM-009: エージェント名でないファイル(実測で発見: queue/tasks/には
@@ -235,7 +233,7 @@ YAML
 
 # ── T-DM-011: 昼間+停止検知 → 家老inbox・殿へのntfy双方が機能する(15分の
 #   エスカレーション猶予を経て。cmd_783是正後の挙動) ──
-@test "T-DM-011: 昼間の停止検知時は家老inbox・殿へのntfy双方が機能する" {
+@test "T-DM-011: 昼間の停止検知時は家老inboxのみ機能する(殿へのntfyはcmd_795で恒久停止)" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -244,17 +242,17 @@ YAML
 
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ -s "$CALLS_LOG" ]
+  [ ! -s "$CALLS_LOG" ]
   run grep -c "軽い作業のみ" "$KARO_CALLS_LOG"
   [ "$output" -eq 0 ]
-  [ -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
   [ -f "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt" ]
 }
 
 # ── T-DM-012: 家老宛cooldown(30分)以内の再発火は抑止される。殿宛cooldown(2h)
 #   とは独立した状態ファイルで管理されている(状態ファイル名が別であることも実証)。
 #   殿宛エスカレーション条件(15分経過+同一agent停止中)は別途満たしておく ──
-@test "T-DM-012: 家老宛cooldown(20分)以内は再通知しない・殿宛cooldownとは独立" {
+@test "T-DM-012: 家老宛cooldown(20分)以内は再通知しない・殿宛ntfyはcmd_795で恒久停止" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   mkdir -p "$DEADMAN_STATE_DIR"
   echo "$(epoch_of "2026-09-08 13:45:00")" > "$DEADMAN_STATE_DIR/karo_last_fire_epoch.txt"
@@ -262,9 +260,8 @@ YAML
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$KARO_CALLS_LOG" ]
-  # 殿宛cooldownは別状態ファイルゆえ影響を受けず、エスカレーション条件が
-  # 揃っていれば通常どおり発火する
-  [ -s "$CALLS_LOG" ]
+  # cmd_795(殿裁定=丙・2026-09-11)により殿宛エスカレーションは条件充足でも発火しない
+  [ ! -s "$CALLS_LOG" ]
 }
 
 # ── T-DM-013: 家老宛cooldownが切れていれば夜間でも再度通知される ──
@@ -340,7 +337,7 @@ YAML
 #   殿宛エスカレーションに巻き込まれない ──
 #   snapshot=[ashigaru5](15分経過済)・現在の停止=ashigaru1+ashigaru5。
 #   殿へ飛ぶのはashigaru5のみで、家老通知を経ていないashigaru1は含まれない。
-@test "T-DM-018: 殿宛エスカレーションはkaro_notify_agentsとの交差集合のみ(新規停止agentを巻き込まない)" {
+@test "T-DM-018: 殿宛エスカレーション自体がcmd_795で恒久停止(交差集合ロジックは到達不能として保全)" {
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru1.yaml"   # 240分idle(新規停止)
   touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru5.yaml"   # 240分idle(通知済)
   mkdir -p "$DEADMAN_STATE_DIR"
@@ -352,13 +349,10 @@ YAML
   [ "$status" -eq 0 ]
   # 家老は再通知されない(cooldown内)
   [ ! -s "$KARO_CALLS_LOG" ]
-  # 殿へは発火する
-  [ -s "$CALLS_LOG" ]
-  # ★核心: 殿宛msgにはashigaru5のみ・ashigaru1は含まれない
-  run grep -c "ashigaru5" "$CALLS_LOG"
-  [ "$output" -ge 1 ]
-  run grep -c "ashigaru1" "$CALLS_LOG"
-  [ "$output" -eq 0 ]
+  # cmd_795(殿裁定=丙・2026-09-11)により殿宛エスカレーションは条件充足でも発火しない。
+  # 交差集合(escalate_agents)のバグ①修正ロジック自体はコードとして保全されているが、
+  # 273行以降が到達不能ゆえ実行されない。
+  [ ! -s "$CALLS_LOG" ]
 }
 
 # ── T-DM-019【バグ②修正実証】家老宛cooldownは20分(30分ではない) ──
@@ -433,7 +427,7 @@ YAML
 }
 
 # ── T-DM-023【dispatcher→殿の最後の砦】家老停止が15分後も未解消なら殿へ発火 ──
-@test "T-DM-023: 家老停止が家老通知15分後も未解消なら殿宛ntfyが最後の砦として発火する" {
+@test "T-DM-023: 家老停止が15分後も未解消でも、殿宛ntfy(最後の砦)はcmd_795で恒久停止" {
   touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   cat > "$DEADMAN_KARO_INBOX" <<'YAML'
 messages:
@@ -449,12 +443,14 @@ YAML
   [ "$status" -eq 0 ]
   [ -s "$KARO_CALLS_LOG" ]
   [ ! -s "$CALLS_LOG" ]
-  # 2回目: 16分後・家老はまだ停止(未読滞留のまま) → 殿へ発火
+  # 2回目: 16分後・家老はまだ停止(未読滞留のまま)でも、cmd_795(殿裁定=丙・
+  # 2026-09-11)により殿宛「最後の砦」エスカレーションは発火しない。
+  # ★gunshi設計文書が正直に記帳した穴(家中完全停止+家老自身も詰まった時に
+  # 気づく主体が居なくなる)がまさにこの状態。埋める案(家老自動/clear復旧)は
+  # 本cmdでは未実装・殿裁可待ち。
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:16:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ -s "$CALLS_LOG" ]
-  run grep -c "karo" "$CALLS_LOG"
-  [ "$output" -ge 1 ]
+  [ ! -s "$CALLS_LOG" ]
 }
 
 # ══════════════════════════════════════════════════════════════════════════

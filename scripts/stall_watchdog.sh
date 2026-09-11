@@ -368,7 +368,8 @@ send_ntfy_e4_limit() {
     local agent="$1"
     local elapsed="$2"
     local minutes=$(( elapsed / 60 ))
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "e4_suppress_limit: ${agent} のhuman attach抑止が約${minutes}分継続中。attachしたまま放置されていないか確認せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11)。家老判定=外す(家中の停止パターンの一種・我らで対処すべき)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "e4_suppress_limit: ${agent} のhuman attach抑止が約${minutes}分継続中。attachしたまま放置されていないか確認せよ。"
 }
 
 # attach抑止が続いている間、経過時間を state に記録し上限超過時に1回通知する
@@ -457,7 +458,8 @@ send_ntfy() {
         log "[DRY-RUN] ntfy.sh push: $agent stall=$sig"
         return
     fi
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "stall_watchdog: $agent が $sig で固着。手動確認せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "stall_watchdog: $agent が $sig で固着。手動確認せよ。"
 }
 
 escalate() {
@@ -563,7 +565,8 @@ $entry
 send_ntfy_ledger_mismatch() {
     local cmd_id="$1"
     local ledger_status="$2"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "ledger_mismatch: ${cmd_id} がdone報告済なのに台帳${ledger_status}のまま。是正せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "ledger_mismatch: ${cmd_id} がdone報告済なのに台帳${ledger_status}のまま。是正せよ。"
 }
 
 check_ledger_mismatches() {
@@ -619,7 +622,8 @@ $entry
 send_ntfy_blocked_reason_gap() {
     local file_name="$1"
     local status="$2"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "blocked_reason_gap: ${file_name} がstatus=${status}なのにblocked_on/blocked_reasonが空。実態を書け。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "blocked_reason_gap: ${file_name} がstatus=${status}なのにblocked_on/blocked_reasonが空。実態を書け。"
 }
 
 check_blocked_reason_gaps() {
@@ -683,7 +687,8 @@ $entry
 send_ntfy_three_way_mismatch() {
     local agent="$1"
     local parent_cmd="$2"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "three_way_mismatch: ${agent}(${parent_cmd})でreport/task/inboxの三面が食い違ったまま。是正せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "three_way_mismatch: ${agent}(${parent_cmd})でreport/task/inboxの三面が食い違ったまま。是正せよ。"
 }
 
 check_three_way_mismatch() {
@@ -858,7 +863,8 @@ $entry
 send_ntfy_orphan_cmd() {
     local cmd_id="$1"
     local status="$2"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "orphan_cmd: ${cmd_id}(台帳status=${status})が誰にも割り当てられていない。task起票せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "orphan_cmd: ${cmd_id}(台帳status=${status})が誰にも割り当てられていない。task起票せよ。"
 }
 
 check_orphan_cmds() {
@@ -918,7 +924,8 @@ send_ntfy_heartbeat() {
     local job_name="$1"
     local hb_status="$2"
     local detail="$3"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "heartbeat: ${job_name} が${hb_status}(${detail})。確認せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "heartbeat: ${job_name} が${hb_status}(${detail})。確認せよ。"
 }
 
 # job毎の検知状態を state ファイルへ記録し、ntfy(殿の端末へ届く)は
@@ -1078,7 +1085,8 @@ $entry
 send_ntfy_stale_errlog() {
     local job_name="$1"
     local detail="$2"
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "stale-errlog: ${job_name} の stderr ログが放置されている(${detail})。確認せよ。"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "stale-errlog: ${job_name} の stderr ログが放置されている(${detail})。確認せよ。"
 }
 
 # heartbeatと同じ相乗り作法: dashboardは状態変化の都度即時、ntfyは

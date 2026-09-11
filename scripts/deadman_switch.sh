@@ -270,6 +270,14 @@ if [ $(( now_epoch - karo_last_fire )) -ge "$karo_cooldown_sec" ]; then
   echo "[deadman_switch] $now_iso KARO_NOTIFIED stalled=${stalled[*]} in_night=$in_night" >> "$LOG_FILE"
 fi
 
+# ★cmd_795【殿ご裁定=丙・2026-09-11】殿宛エスカレーションを無効化する。
+# 殿のお尋ね「死者確認スイッチが届くが私は何をすればよい?」→答え「何もない」。
+# 家中の停止は我らで片付けるべきもので、殿にしかできぬこと(裁可・認証・外部への一声)ではない。
+# よって以下の殿宛ntfyエスカレーション一式は発火させない。
+# ★家老宛通知(256-271行)は一切変更せず正しく機能し続ける(dashboardにも従来どおり出る)。
+# ★実装は消さず(cmd_783/784の履歴保全)、この exit で無効化する。復活は殿の明示裁定を要す。
+exit 0
+
 # 殿へのntfyは夜間は引き続き発火しない(殿のお休みを妨げぬため・現状維持)
 $in_night && exit 0
 

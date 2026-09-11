@@ -232,7 +232,8 @@ send_ntfy() {
         log "[DRY-RUN] ntfy.sh push: $(echo "$body" | tr '\n' ' ')"
         return
     fi
-    bash "$SCRIPT_DIR/scripts/ntfy.sh" "console_stall_watchdog: $body"
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "console_stall_watchdog: $body"
 }
 
 # ── --sample-all: 状態を見ず5区分のサンプル文言のみ出す ──────────────────────

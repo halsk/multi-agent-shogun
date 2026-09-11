@@ -107,24 +107,30 @@ branch_policy_notify() {
         return 0
     fi
 
-    if [[ -x "$BRANCH_POLICY_ROOT/scripts/ntfy_send.sh" ]]; then
-        bash "$BRANCH_POLICY_ROOT/scripts/ntfy_send.sh" "$message"
-        return $?
-    fi
-
-    if [[ -x "$BRANCH_POLICY_ROOT/scripts/ntfy.sh" ]]; then
-        bash "$BRANCH_POLICY_ROOT/scripts/ntfy.sh" "$message"
-        return $?
-    fi
-
-    local topic
-    topic="$(branch_policy_query ntfy_topic)"
-    if [[ -z "$topic" ]]; then
-        printf 'ntfy_topic not configured; notification skipped: %s\n' "$message" >&2
-        return 1
-    fi
-
-    curl -fsS -d "$message" "https://ntfy.sh/$topic" >/dev/null
+    # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11)。家老判定=外す(branchポリシー
+    # 違反是正も我らで片付けるべきものであり殿にしかできぬことではない)。
+    # ★実装時に発覚: 本関数はntfy_send.sh→ntfy.sh→curl直叩きの3経路フォールバック構成であり、
+    # 設計文書が指した:116(ntfy.sh呼出)のみを止めても他2経路が生きて意味を成さぬため、
+    # 3経路とも同時に無効化する(家老へ報告済み・実装は消さずコメントアウトで保全)。
+    # if [[ -x "$BRANCH_POLICY_ROOT/scripts/ntfy_send.sh" ]]; then
+    #     bash "$BRANCH_POLICY_ROOT/scripts/ntfy_send.sh" "$message"
+    #     return $?
+    # fi
+    #
+    # if [[ -x "$BRANCH_POLICY_ROOT/scripts/ntfy.sh" ]]; then
+    #     bash "$BRANCH_POLICY_ROOT/scripts/ntfy.sh" "$message"
+    #     return $?
+    # fi
+    #
+    # local topic
+    # topic="$(branch_policy_query ntfy_topic)"
+    # if [[ -z "$topic" ]]; then
+    #     printf 'ntfy_topic not configured; notification skipped: %s\n' "$message" >&2
+    #     return 1
+    # fi
+    #
+    # curl -fsS -d "$message" "https://ntfy.sh/$topic" >/dev/null
+    return 0
 }
 
 branch_policy_remote_refs() {

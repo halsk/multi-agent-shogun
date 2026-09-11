@@ -109,7 +109,9 @@ JSON
 
     run run_watchdog "$root"
     [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "1" ]
-    [ "$(ntfy_call_count "$root")" = "1" ]
+    # cmd_795・殿裁定(丙・2026-09-11): 肥大警報は「我らで片付けるもの」ゆえ殿宛ntfyは
+    # 止めた(dashboard記録は無傷)。以後このケースでntfyは発火しない。
+    [ "$(ntfy_call_count "$root")" = "0" ]
 
     rm -rf "$root"
 }
@@ -125,9 +127,10 @@ JSON
     run run_watchdog "$root"
     run run_watchdog "$root"
 
-    # 3回tickしても、cooldown中はdashboard追記・ntfy送信とも1回のみ。
+    # 3回tickしても、cooldown中はdashboard追記は1回のみ。
+    # cmd_795・殿裁定(丙・2026-09-11)によりntfyは常に0(送信そのものを停止)。
     [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "1" ]
-    [ "$(ntfy_call_count "$root")" = "1" ]
+    [ "$(ntfy_call_count "$root")" = "0" ]
 
     rm -rf "$root"
 }
@@ -166,7 +169,8 @@ JSON
 
     write_last_run "$root" "2026-09-15T10:00:00+09:00" 0
     run run_watchdog "$root"
-    [ "$(ntfy_call_count "$root")" = "1" ]
+    # cmd_795・殿裁定(丙・2026-09-11)によりntfyは常に0(送信そのものを停止・dashboardは別途記録)。
+    [ "$(ntfy_call_count "$root")" = "0" ]
 
     rm -rf "$root"
 }
@@ -238,10 +242,11 @@ JSON
     run run_watchdog "$root" --dry-run
     [ ! -f "$root/queue/mgmt_bloat_watchdog/state.yaml" ]
 
-    # dry-runの後で実行しても、cooldownに邪魔されず初回どおり通知される。
+    # dry-runの後で実行しても、cooldownに邪魔されず初回どおりdashboard記録される。
+    # cmd_795・殿裁定(丙・2026-09-11)によりntfyは常に0(送信そのものを停止)。
     run run_watchdog "$root"
     [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "1" ]
-    [ "$(ntfy_call_count "$root")" = "1" ]
+    [ "$(ntfy_call_count "$root")" = "0" ]
 
     rm -rf "$root"
 }
