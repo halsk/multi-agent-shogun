@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/scripts/console_stall_watchdog.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 ERRORS=()
 
 assert_eq() {
@@ -204,13 +205,13 @@ assert_eq "9a: reports_text=\$(console_reports_text) がset -e下で生き残る
 # ★sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・本ファイルを
 # ubuntu-latest CIへ接続する際に実測発覚・state_set()と同じ一時ファイル
 # 経由のsed→mvへ是正)。
-TMP_SETTINGS_BAK=$(mktemp)
-cp "$SCRIPT_DIR/config/settings.yaml" "$TMP_SETTINGS_BAK"
+# ★★実在の config/settings.yaml は一切書き換えない(cmd_new_ci_orphan_tests
+# 軍師QC F-3)——閾値0hの一時コピーを作り、CONSOLE_STALL_WATCHDOG_SETTINGS
+# でスクリプトの読み先だけを差し替える。中断されても実ファイルは無傷。
 _tmp_settings=$(mktemp)
-sed 's/stall_threshold_hours: 4/stall_threshold_hours: 0/' "$SCRIPT_DIR/config/settings.yaml" > "$_tmp_settings" && mv "$_tmp_settings" "$SCRIPT_DIR/config/settings.yaml"
-FORCED_STALL_OUTPUT=$(bash "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" --dry-run 2>&1) && FORCED_RC=0 || FORCED_RC=$?
-cp "$TMP_SETTINGS_BAK" "$SCRIPT_DIR/config/settings.yaml"
-rm -f "$TMP_SETTINGS_BAK"
+sed 's/stall_threshold_hours: 4/stall_threshold_hours: 0/' "$SCRIPT_DIR/config/settings.yaml" > "$_tmp_settings"
+FORCED_STALL_OUTPUT=$(CONSOLE_STALL_WATCHDOG_SETTINGS="$_tmp_settings" bash "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" --dry-run 2>&1) && FORCED_RC=0 || FORCED_RC=$?
+rm -f "$_tmp_settings"
 
 assert_eq "9b: 強制停滞状態でも--dry-runがrc=0で完走する" "0" "$FORCED_RC"
 if echo "$FORCED_STALL_OUTPUT" | grep -q '\[STALL\]'; then
@@ -326,7 +327,7 @@ echo " テスト結果サマリー"
 echo "========================================"
 echo " PASS: $PASS"
 echo " FAIL: $FAIL"
-echo " SKIP: 0"
+echo " SKIP: $SKIP"
 if [[ "${#ERRORS[@]}" -gt 0 ]]; then
     echo ""
     echo " 失敗したテスト:"
@@ -336,10 +337,10 @@ if [[ "${#ERRORS[@]}" -gt 0 ]]; then
 fi
 echo "========================================"
 
-if [[ "$FAIL" -eq 0 ]]; then
+if [[ "$FAIL" -eq 0 && "$SKIP" -eq 0 ]]; then
     echo " 全テスト PASS ✅"
     exit 0
 else
-    echo " テスト失敗 ❌ (SKIP=FAIL ルール: FAIL=$FAIL)"
+    echo " テスト失敗 ❌ (SKIP=FAIL ルール: FAIL=$FAIL SKIP=$SKIP)"
     exit 1
 fi

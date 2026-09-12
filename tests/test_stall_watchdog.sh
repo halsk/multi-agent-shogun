@@ -9,6 +9,7 @@ source "$SCRIPT_DIR/scripts/stall_watchdog.sh"
 
 PASS=0
 FAIL=0
+SKIP=0
 ERRORS=()
 
 assert_eq() {
@@ -667,7 +668,7 @@ echo " テスト結果サマリー"
 echo "========================================"
 echo " PASS: $PASS"
 echo " FAIL: $FAIL"
-echo " SKIP: 0"
+echo " SKIP: $SKIP"
 if [[ "${#ERRORS[@]}" -gt 0 ]]; then
     echo ""
     echo " 失敗したテスト:"
@@ -677,10 +678,10 @@ if [[ "${#ERRORS[@]}" -gt 0 ]]; then
 fi
 echo "========================================"
 
-if [[ "$FAIL" -eq 0 ]]; then
+if [[ "$FAIL" -eq 0 && "$SKIP" -eq 0 ]]; then
     echo " 全テスト PASS ✅"
     exit 0
 else
-    echo " テスト失敗 ❌ (SKIP=FAIL ルール: FAIL=$FAIL)"
+    echo " テスト失敗 ❌ (SKIP=FAIL ルール: FAIL=$FAIL SKIP=$SKIP)"
     exit 1
 fi
