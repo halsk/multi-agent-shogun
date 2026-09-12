@@ -255,6 +255,10 @@ bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せ�
 # No sleep needed. All messages guaranteed delivered by inbox_watcher.sh
 ```
 
+### メッセージ本文にバッククォートを使うな（2026-09-12 事故を受けて）
+
+二重引用符で囲んだ本文内のバッククォートは、コマンド置換としてそのまま実行されてしまう(2026-09-12 家老・将軍が★独立に事故を起こした——詳細・対処・guard.sh の検出safeguardは CLAUDE.md「Communication Protocol」節の「メッセージ本文のバッククォート事故防止」を参照)。要点のみ: バッククォート禁止・記号を含む長文はファイル経由 `"$(cat file)"`・直接埋め込むなら本文全体を単一引用符で囲め。
+
 ### No Inbox to Shogun
 
 Report via dashboard.md update only. Reason: interrupt prevention during lord's input.
