@@ -8,10 +8,13 @@
 # を静的grep+突合で検知する純関数のテスト。
 #
 # T-ORPH-009/010は本リポの実データ(.github/workflows/test.yml・tests/)を
-# 直接対象にした回帰テストであり、着手時点(2026-09-09)で実測確認した
-# 4件の実在orphan(tests/watcher/test_modal_and_idle.bats・
+# 直接対象にした回帰テストである。2026-09-09着手時点で実測確認した4件の
+# 実在orphan(tests/watcher/test_modal_and_idle.bats・
 # tests/test_stall_watchdog.sh・tests/test_console_stall_watchdog.sh・
-# tests/test_claude_usage_report.py)を固定する。
+# tests/test_claude_usage_report.py)は、殿ご裁可の二の矢
+# (subtask_ci_orphan_tests_wiring)でCIへ接続済み。T-ORPH-010は
+# 「orphanとして固定する」テストから「再びorphan化していないことを
+# 守る」回帰ガードへ更新した。
 
 setup() {
   export PROJECT_ROOT
@@ -155,17 +158,19 @@ EOF
   [[ "$output" != *"test_vendored.bats"* ]]
 }
 
-# ── T-ORPH-010: detect_orphan_tests — 本リポ実データでの回帰確認(実例④相当の実在orphan) ──
+# ── T-ORPH-010: detect_orphan_tests — 本リポ実データでの回帰確認(subtask_ci_orphan_tests_wiringで接続済み・再発防止ガード) ──
 
-@test "T-ORPH-010: detect_orphan_tests finds the real orphan tests currently present in this repo" {
+@test "T-ORPH-010: detect_orphan_tests no longer finds the 4 tests wired in by subtask_ci_orphan_tests_wiring" {
   source "$LIB_FILE"
 
   run detect_orphan_tests "${PROJECT_ROOT}/.github/workflows/test.yml" "${PROJECT_ROOT}/tests"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"tests/watcher/test_modal_and_idle.bats"* ]]
-  [[ "$output" == *"tests/test_stall_watchdog.sh"* ]]
-  [[ "$output" == *"tests/test_console_stall_watchdog.sh"* ]]
-  [[ "$output" == *"tests/test_claude_usage_report.py"* ]]
+  # 2026-09-09時点は実在orphanだったが、subtask_ci_orphan_tests_wiringで
+  # .github/workflows/test.ymlへ接続済み——再びorphan化していないことを守る。
+  [[ "$output" != *"tests/watcher/test_modal_and_idle.bats"* ]]
+  [[ "$output" != *"tests/test_stall_watchdog.sh"* ]]
+  [[ "$output" != *"tests/test_console_stall_watchdog.sh"* ]]
+  [[ "$output" != *"tests/test_claude_usage_report.py"* ]]
   # false-positive guard: root-level test_inbox_write.bats IS covered by
   # `tests/*.bats` (CI/Makefile共通) ゆえ検知されてはならない
   [[ "$output" != *"tests/test_inbox_write.bats"* ]]

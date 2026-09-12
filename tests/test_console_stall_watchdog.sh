@@ -201,9 +201,13 @@ result_9a=$(
 assert_eq "9a: reports_text=\$(console_reports_text) がset -e下で生き残る" "survived" "$result_9a"
 
 # 強制停滞(閾値0h)状態でも --dry-run がSTALL/NOTIFYまで到達し正常終了すること
+# ★sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・本ファイルを
+# ubuntu-latest CIへ接続する際に実測発覚・state_set()と同じ一時ファイル
+# 経由のsed→mvへ是正)。
 TMP_SETTINGS_BAK=$(mktemp)
 cp "$SCRIPT_DIR/config/settings.yaml" "$TMP_SETTINGS_BAK"
-sed -i '' 's/stall_threshold_hours: 4/stall_threshold_hours: 0/' "$SCRIPT_DIR/config/settings.yaml"
+_tmp_settings=$(mktemp)
+sed 's/stall_threshold_hours: 4/stall_threshold_hours: 0/' "$SCRIPT_DIR/config/settings.yaml" > "$_tmp_settings" && mv "$_tmp_settings" "$SCRIPT_DIR/config/settings.yaml"
 FORCED_STALL_OUTPUT=$(bash "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" --dry-run 2>&1) && FORCED_RC=0 || FORCED_RC=$?
 cp "$TMP_SETTINGS_BAK" "$SCRIPT_DIR/config/settings.yaml"
 rm -f "$TMP_SETTINGS_BAK"

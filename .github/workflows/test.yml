@@ -33,7 +33,12 @@ jobs:
       - name: Install GNU tools (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install bash coreutils fswatch
+          # flock: macOSには標準で存在しない(scripts/stall_watchdog.shの
+          # 単一起動ロックが要求。subtask_ci_orphan_tests_wiringで
+          # tests/test_stall_watchdog.shを実際にmacos-latest CIへ接続する
+          # まで検知されていなかった——ソースするだけのテストはflockの
+          # ある行をスキップするため気づかれなかった)。
+          brew install bash coreutils fswatch flock
           echo "$(brew --prefix)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH
 
@@ -56,7 +61,7 @@ jobs:
 
       - name: Run root-level tests (except agent_selfwatch)
         run: |
-          ROOT_TESTS=$(ls tests/*.bats 2>/dev/null | grep -v 'tests/agent_selfwatch.bats' || true)
+          ROOT_TESTS=$(ls tests/*.bats tests/watcher/*.bats 2>/dev/null | grep -v 'tests/agent_selfwatch.bats' || true)
           if [ -n "$ROOT_TESTS" ]; then
             bats $ROOT_TESTS --timing
           else
@@ -85,10 +90,34 @@ jobs:
             exit 1
           }
 
+      - name: Prepare config/settings.yaml fixture (CI only)
+        run: |
+          # config/settings.yaml は .gitignore 対象でCI checkoutに存在しない。
+          # tests/test_console_stall_watchdog.sh が実パスを直接読むため、
+          # テスト専用の最小フィクスチャをCI環境にのみ用意する
+          # (開発者ローカルの config/settings.yaml には一切触れない)。
+          cp config/settings.yaml.sample config/settings.yaml
+
+      - name: Run legacy shell test suites (non-bats)
+        run: |
+          for f in tests/test_stall_watchdog.sh tests/test_console_stall_watchdog.sh; do
+            echo "::group::$f"
+            bash "$f" || {
+              echo "::error::$f failed"
+              exit 1
+            }
+            echo "::endgroup::"
+          done
+
+      - name: Run Python tests (claude_usage_report)
+        run: |
+          # tests/test_claude_usage_report.py (dotted module form below runs the same file)
+          .venv/bin/python3 -m unittest tests.test_claude_usage_report -v
+
       - name: Verify zero unexpected SKIPs (SKIP=FAIL policy)
         run: |
           SKIP_COUNT=0
-          for f in tests/*.bats tests/unit/*.bats; do
+          for f in tests/*.bats tests/unit/*.bats tests/watcher/*.bats; do
             [ -f "$f" ] || continue
             RESULT=$(bats "$f" --tap 2>/dev/null || true)
             # Count skips, excluding known CI-environment skips (e.g. "claude not installed")
