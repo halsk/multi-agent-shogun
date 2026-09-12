@@ -449,6 +449,12 @@ parse_unreviewed_authored_pr() {
 
 # fetch+parseを結合した実行用ラッパー。該当する場合のみ
 # "<pr_url>|<created_at>|<elapsed_business_days>" を返す。
+# ★FU-1是正(2026-09-12・PR#114軍師QC指摘): reviews(last:50)は直近50件しか
+# 返らないため、レビュー総数が50を超えかつ直近50件が全てbotの場合、
+# それより古い位置にある人間レビューを見落として「人間レビュー0件」と
+# 誤判定しうる(今の実害は無い——registry上の最大は33件で50に届いていない)。
+# 兄弟関数detect_review_ball_holders_for_prと同じ作法(check_pagination_
+# shortfallでtotalCount不足をstderrへ警告)に揃える。
 detect_unreviewed_authored_pr_for_pr() {
   local owner="$1"
   local repo="$2"
@@ -461,6 +467,10 @@ detect_unreviewed_authored_pr_for_pr() {
   local json
   json=$(fetch_pr_review_data "$owner" "$repo" "$pr_number")
   [[ -z "$json" ]] && { echo ""; return; }
+
+  local pagination_warning
+  pagination_warning=$(check_pagination_shortfall "$json")
+  [[ -n "$pagination_warning" ]] && echo "[WARN] ${owner}/${repo}#${pr_number}: totalCount不足(ページネーション取りこぼしの疑い) ${pagination_warning}" >&2
 
   local now_epoch
   now_epoch=$(date -u '+%s')

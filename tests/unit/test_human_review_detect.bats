@@ -520,6 +520,25 @@ setup() {
   [ -z "$output" ]
 }
 
+# ── T-HREV-036: detect_unreviewed_authored_pr_for_pr — FU-1是正回帰: reviews
+# のfetch件数がtotalCountを下回る(50件超のpagination取りこぼし)場合、
+# stderrへ警告を出しつつstdout(判定結果)は変えないこと ──
+
+@test "T-HREV-036: detect_unreviewed_authored_pr_for_pr emits a pagination warning to stderr without altering stdout (FU-1 regression guard)" {
+  source "$LIB_FILE"
+
+  fetch_pr_review_data() {
+    echo '{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviewThreads":{"totalCount":0,"nodes":[]},"reviews":{"totalCount":51,"nodes":[]}}}}}'
+  }
+
+  run --separate-stderr detect_unreviewed_authored_pr_for_pr "geolonia" "geonicdb" 999 \
+    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3 "$BOTS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "https://github.com/geolonia/geonicdb/pull/999|2026-09-07T00:00:00Z|"* ]]
+  [[ "$stderr" == *"totalCount不足"* ]]
+  [[ "$stderr" == *"reviews: fetched 0/51"* ]]
+}
+
 # ── T-HREV-033: stall_watchdog.sh が新検知を実際に呼び出し、REVIEW_REPO_REGISTRY
 # に geolonia/geonicdb を含んでいる(cmd_793相乗り確認) ──
 
