@@ -789,6 +789,37 @@ check "Hook8 Z7: a blank line two lines above a dangerous call (block)" block \
 check "Hook8 Z1: backslash line-continuation before the dangerous body (block, no regression)" block \
   $'bash scripts/inbox_write.sh karo \\\n  "text `date` here" cmd_new shogun'
 
+echo ""
+echo "=== Hook 8 FN-2是正 (殿ご裁可・subtask_guardsh_fn2_dollar_paren・\$(...) 開き検知) ==="
+# (a) 事故の2形が確実にblockされること(是正前後を対比)。
+# a1: 二重引用符内の \$(...) 開き(是正前はFNだった形)。
+check "Hook8 FN-2 a1: dquoted body containing \$(...) command substitution opening (block)" block \
+  'bash scripts/inbox_write.sh karo "設定は $(brew install --cask 1password) を実行する" cmd_new shogun'
+# a2: 引用符なし(bare)の \$(...) 開き。バッククォートのFN-1是正と対称に、
+#     state=Nでも同じ判定を入れているためこちらも検知される。
+check "Hook8 FN-2 a2: bare unquoted \$(...) command substitution opening (block)" block \
+  'bash scripts/inbox_write.sh karo 本文$(date)です task_assigned karo'
+
+# (b) ★最重要: 正当な連絡文が誤検知ゼロでallowされること。
+# b1: 本文全体を単一引用符で囲めば \$(...) を含んでいてもallow(CLAUDE.mdの対処法どおり)。
+check "Hook8 FN-2 b1: single-quoted body containing \$(...) (allow)" allow \
+  'bash scripts/inbox_write.sh karo '"'"'設定は $(date) を実行する'"'"' cmd_new shogun'
+# b2: STEP4で書き換える変数経由の渡し方——変数への代入(呼出より前・in_call圏外)は
+#     \$(cat file) を含んでいても対象外。呼出自体は変数参照のみで \$( を含まない。
+check "Hook8 FN-2 b2: variable built via \$(cat file) BEFORE the call, then passed by variable (allow)" allow \
+  'file_content="$(cat /tmp/some_report.txt)"; bash scripts/inbox_write.sh karo "$file_content" task_assigned karo'
+# b3: 本文中の \$ が \$100 のような金額表記等、直後が「(」でなければ無害(過検知でない)。
+check "Hook8 FN-2 b3: dquoted body with a bare \$ not followed by paren (e.g. \$100) (allow)" allow \
+  'bash scripts/inbox_write.sh karo "予算は$100です" task_assigned karo'
+# b4: \${VAR} 形の変数展開(次の文字が「{」)は \$(...) ではないため対象外。
+check "Hook8 FN-2 b4: dquoted body with \${VAR}-style expansion, not \$(...) (allow)" allow \
+  'bash scripts/inbox_write.sh karo "設定は${SETTING}です" task_assigned karo'
+
+# (c) heredoc経路: heredocの展開結果が二重引用符内のコマンド置換として
+#     呼出引数へ渡される形(is 危険な \$( の開きそのもの)がblockされること。
+check "Hook8 FN-2 c1: heredoc fed via \$(cat <<EOF ...) directly into dquoted call arg (block)" block \
+  $'bash scripts/inbox_write.sh karo "$(cat <<EOF\nreport body here\nEOF\n)" task_assigned karo'
+
 # FU-1是正(PR#124 QC followup・軍師試作採用・followup4是正):
 # RS="\001" は「入力に \001 が現れない」という前提に寄りかかっていた。実際に
 # 制御文字 U+0001 を挟むと段落(レコード)が分割され、旧実装は exit が各

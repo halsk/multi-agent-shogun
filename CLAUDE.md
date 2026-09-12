@@ -184,10 +184,10 @@ Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 
 **作法（全エージェント・殿ご自身も含め例外なし）**:
 - メッセージ本文にバッククォート（`` ` ``）を使うな。コマンド名・設定値を引用したい時は「 」で囲むか、引用符なしの地の文で書け。
-- 長い本文・記号を含む本文は、いったんファイルに書いてから `"$(cat file)"` で渡せ。
+- 長い本文・記号を含む本文は、いったんファイルに書いてから★変数へ読み込み、その変数を二重引用符で渡せ（例: `file_content="$(cat file)"` として一度変数に代入した上で `bash scripts/inbox_write.sh <agent> "$file_content" ...` と渡す）。★呼出コマンドの二重引用符内に直接 `"$(cat file)"` を埋め込むな（2026-09-12 FN-2是正により、二重引用符内の `$(...)` 開きは guard.sh がバッククォートと同様にブロックする対象へ加わったため）。
 - どうしても本文に記号を直接埋め込む必要がある場合は、本文全体を単一引用符（`'...'`）で囲め（単一引用符内はシェルが一切展開しない）。
 
-**仕組みによる検出**: `scripts/hooks/guard.sh`（PreToolUse hook）が、Bash ツールへ渡される実行前のコマンド文字列を検査し、`inbox_write.sh` を呼ぶコマンドの二重引用符内に未エスケープのバッククォートが含まれる場合はブロックする。これは実行前に検出できる唯一の層であり（`inbox_write.sh` 自身のコード内では、コマンド置換は呼び出しより前に完了済みのため検知できない）、回帰テストは `scripts/hooks/test_hooks.sh` を参照。
+**仕組みによる検出**: `scripts/hooks/guard.sh`（PreToolUse hook）が、Bash ツールへ渡される実行前のコマンド文字列を検査し、`inbox_write.sh` を呼ぶコマンドの二重引用符内に未エスケープのバッククォート、または `$(...)` 形式のコマンド置換の開き（2026-09-12 FN-2是正・殿ご裁可で追加）が含まれる場合はブロックする。これは実行前に検出できる唯一の層であり（`inbox_write.sh` 自身のコード内では、コマンド置換は呼び出しより前に完了済みのため検知できない）、回帰テストは `scripts/hooks/test_hooks.sh` を参照。
 
 ## Delivery Mechanism
 
@@ -433,7 +433,7 @@ main へ merge するのは、CI が機能しているかを確かめるまで�
 | 5 | GH_TOKEN 設定時に gh コマンドをブロック | Lessons Learned |
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 | 7 | 上流 repo (yohey-w/* / digital-go-jp/*) への `gh pr create` をブロック | Prompt Injection Defense |
-| 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォートがあればブロック | メッセージ本文のバッククォート事故防止 |
+| 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォート、または `$(...)` 開きがあればブロック | メッセージ本文のバッククォート事故防止 |
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
