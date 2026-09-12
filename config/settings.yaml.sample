@@ -1,0 +1,13 @@
+# config/settings.yaml.sample — CI/新規環境向けの最小フィクスチャ。
+# config/settings.yaml 本体は .gitignore で除外される(実行時ローカル設定・
+# 秘匿情報を含みうるため)。tests/test_console_stall_watchdog.sh は
+# scripts/console_stall_watchdog.sh 経由でこのパスを直接読むため、CIでは
+# 本サンプルを config/settings.yaml としてコピーしてから実行する
+# (.github/workflows/test.yml「Prepare config/settings.yaml fixture (CI only)」)。
+# ここに書く値はテストの期待値と一致させること(repo_path/repo_slug/ntfy_topic
+# 等の秘匿・環境固有値は未設定でも安全に既定動作するため含めない)。
+console_stall_watchdog:
+  stall_threshold_hours: 4
+  night_start_hour: 22
+  night_end_hour: 8
+  throttle_hours: 6
