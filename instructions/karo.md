@@ -925,8 +925,9 @@ STEP 1: Identify creative/knowledge task (naming, writing, design, research, doc
 STEP 2: Write task YAML to queue/tasks/gunshi2.yaml
   - type: naming | writing | design | research | knowledge
   - Include all context_files
-STEP 3: Set pane task label
-  tmux set-option -p -t multiagent:agents.10 @current_task "創造立案"
+STEP 3: Set pane task label (reverse-lookup the pane — never hardcode the index)
+  GUNSHI2_PANE=$(tmux list-panes -t multiagent:agents -F '#{pane_index}' -f '#{==:#{@agent_id},gunshi2}')
+  tmux set-option -p -t "multiagent:agents.${GUNSHI2_PANE}" @current_task "創造立案"
 STEP 4: Send inbox
   bash scripts/inbox_write.sh gunshi2 "タスクYAMLを読んで分析開始せよ。" task_assigned karo
 STEP 5: Continue dispatching other tasks in parallel

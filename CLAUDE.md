@@ -109,7 +109,7 @@ language:
 
 1. Identify self: `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'`
 2. **Read `memory/MEMORY.md`** (shogun only) — persistent cross-session memory. **`memory/MEMORY.md` is the sole source of truth for persistent cross-session memory** (Memory MCP / `mcp__memory__read_graph` is retired — do not attempt to call it, it no longer exists on this machine). If file missing, skip. *Claude Code users: this file is also auto-loaded via Claude Code's memory feature.*
-3. **Read your instructions file**: shogun→`instructions/shogun.md`, karo→`instructions/karo.md`, ashigaru→`instructions/ashigaru.md`, gunshi→`instructions/gunshi.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
+3. **Read your instructions file**: shogun→`instructions/shogun.md`, karo→`instructions/karo.md`, ashigaru→`instructions/ashigaru.md`, gunshi→`instructions/gunshi.md`, gunshi2→`instructions/gunshi2.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
 4. Rebuild state from primary YAML data (queue/, tasks/, reports/)
 5. Review forbidden actions, then start work
 
@@ -137,7 +137,7 @@ Step 4: Start work (only if assigned=work)
 
 Forbidden after /clear (ashigaru): reading instructions/*.md (1st task), polling (F004), contacting humans directly (F002). Trust task YAML only — pre-/clear memory is gone.
 
-## /clear・compaction Recovery (karo / gunshi / shogun — command-layer agents)
+## /clear・compaction Recovery (karo / gunshi / gunshi2 / shogun — command-layer agents)
 
 Persona・戦国口調・forbidden_actions の再確立は **SessionStart hook** (`scripts/session_start_hook.sh`, matcher=`clear`/`compact`) が自動注入する。手順詳細は hook 側を正とする。
 
