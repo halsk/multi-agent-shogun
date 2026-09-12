@@ -301,6 +301,46 @@ JSON
     rm -rf "$root"
 }
 
+@test "T-MBW-014: dashboard見出しgrepは本文中の言及ではなく実際の^##見出し行を拾う(実バグ回帰・cmd_793 FU-1)" {
+    # 実際のdashboard.mdでは、本文中に「grep -nE '要対応...殿のご判断'という
+    # パターンを使い」のような★過去の設計解説の引用が見出しより先に出現し、
+    # 非アンカーのgrepがそこへ先にマッチして通知が地の文の中へ誤挿入される
+    # 実バグが確認された(subtask_mgmt_bloat_dashboard_heading_grep_fix)。
+    # このテストはその状況を再現し、修正後は実際の見出し行(^## )の直後に
+    # 挿入されることを保証する。
+    local root
+    root="$(mktemp -d "/tmp/mbw_XXXXXX")"
+    build_tmp_project "$root"
+    seed_bootstrapped_state "$root"
+
+    cat > "$root/dashboard.md" <<'DASH'
+# dashboard
+
+**参考**: `notify_dashboard`は`grep -nE '要対応.*殿のご判断|🚨.*要対応'`というパターンを使い実際の見出しに一致させている、という解説がここに書かれている(本文中の言及であり見出しではない)。
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required - Awaiting Lord's Decision)
+
+(既存の項目はここに続く)
+DASH
+
+    python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*45000))"
+
+    run run_watchdog "$root"
+
+    local decoy_line heading_line entry_line
+    decoy_line=$(grep -n '参考' "$root/dashboard.md" | head -1 | cut -d: -f1)
+    heading_line=$(grep -n '^## 🚨 要対応' "$root/dashboard.md" | head -1 | cut -d: -f1)
+    entry_line=$(grep -n 'mgmt_bloat_watchdog' "$root/dashboard.md" | grep -v '^[0-9]*:\*\*参考' | tail -1 | cut -d: -f1)
+
+    [ -n "$heading_line" ]
+    [ -n "$entry_line" ]
+    # 通知は本文中の言及(decoy)より後、かつ実見出しの直後(見出しの次の行)に入る。
+    [ "$entry_line" -gt "$decoy_line" ]
+    [ "$entry_line" -eq "$((heading_line + 1))" ]
+
+    rm -rf "$root"
+}
+
 @test "T-MBW-010: last-run.json が無ければ第三層は何もしない(初回・slim_yaml未実行)" {
     local root
     root="$(mktemp -d "/tmp/mbw_XXXXXX")"
