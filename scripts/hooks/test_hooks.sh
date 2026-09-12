@@ -584,6 +584,16 @@ check "FN-H3 N8: cat > file <<EOF then bash file (write-then-execute, block)" bl
 git -C $FNH3_MAIN push origin main
 EOF
 bash /tmp/fnh3_script.sh"
+# FU-1是正(PR#125 v2 followup・軍師QC subtask_qc_pr125_v2_guardsh_hook3_receiver):
+# (d)はリテラル一致でしか宛先再利用を見ないため、宛先を glob で実行する形
+# (N8b)がすり抜けていた(是正前: main=block・v2=allow)。
+# has_glob_exec_risk で「本文外に bash/sh/zsh/source/. と glob 文字が同一行に
+# 現れたらマスクしない」を足し、是正後は block へ転じる。
+check "FN-H3 N8b: cat > file.sh <<EOF then bash file.* (glob-execute reuse, block・FU-1是正)" block \
+"cat > /tmp/fnh3_n8b_script.sh <<EOF
+git -C $FNH3_MAIN push origin main
+EOF
+bash /tmp/fnh3_n8b_script.*"
 # 受け手が stdout(リダイレクト無し)の cat は行き先が定まらぬ(多行の \$( ) 内かもしれぬ)ので安全側で block。
 check "FN-H3 safe-side: cat <<EOF (no redirect) with real push in body (block)" block \
 "cat <<EOF
@@ -778,6 +788,16 @@ check "Hook8 Z7: a blank line two lines above a dangerous call (block)" block \
 # ——明示的な回帰テストとして収載する。
 check "Hook8 Z1: backslash line-continuation before the dangerous body (block, no regression)" block \
   $'bash scripts/inbox_write.sh karo \\\n  "text `date` here" cmd_new shogun'
+
+# FU-1是正(PR#124 QC followup・軍師試作採用・followup4是正):
+# RS="\001" は「入力に \001 が現れない」という前提に寄りかかっていた。実際に
+# 制御文字 U+0001 を挟むと段落(レコード)が分割され、旧実装は exit が各
+# レコードの処理ブロック内にあったため1レコード目だけで判定・終了し、
+# 後続レコードにある本物の危険(バッククォート)を見ずに通していた(guard rc=0)。
+# state/in_call/danger を BEGIN で持ち越し exit を END へ移したことで、
+# レコード分割そのものに免疫が付いたことをここで確認する。
+check "Hook8 FU-1: literal U+0001 splits the awk record, but danger after it is still caught (block)" block \
+  $'bash scripts/inbox_write.sh karo "part one \x01 part two `date`" cmd_new shogun'
 
 # --- FN-1追加実証: 引用符なし(bare)のバッククォートが、guardのblockにより
 #     一度も評価されない(=対象ファイルが作られない)ことを実際に確かめる。
