@@ -544,6 +544,40 @@ check "Hook8 followup FP-2: unrelated preceding command with backtick (allow)" a
 check "Hook8 followup FN-1: bare unquoted backtick (block)" block \
   'bash scripts/inbox_write.sh karo 本文`date`です task_assigned karo'
 
+# B1(将軍の事故形=brew installをバッククォート引用)は本節冒頭の
+# "Hook8: inbox_write.sh with backtick in dquotes (block)" と同型のため
+# ここでは重複させない。B2(家老の事故形=git configをバッククォート引用)を
+# 明示的に確認する。
+check "Hook8 B2: incident-shaped body citing git config in backticks (block)" block \
+  'bash scripts/inbox_write.sh karo "設定 `git config commit.gpgsign false` を確認せよ" cmd_new karo'
+
+echo ""
+echo "=== Hook 8 followup2是正 (X1-X6・PR#118軍師QC=条件付きNO-GOで検知後退5形+維持1形) ==="
+# X1: 本文(二重引用符内)に | を含んでも、引用符の外でのみ区間を閉じるため
+# 後続のバッククォートを見失わない(PR#118は正規表現で | 区切ってしまい素通りした)。
+check "Hook8 X1: dquoted body containing | before backtick (block)" block \
+  'bash scripts/inbox_write.sh karo "表に | を含む本文 `date` です" cmd_new shogun'
+# X2: 本文(二重引用符内)に ; を含んでも同様に見失わない。
+check "Hook8 X2: dquoted body containing ; before backtick (block)" block \
+  'bash scripts/inbox_write.sh karo "本文に ; を含む `date` です" cmd_new shogun'
+# X3: 本文(二重引用符内)に & を含んでも同様に見失わない。
+check "Hook8 X3: dquoted body containing & before backtick (block)" block \
+  'bash scripts/inbox_write.sh karo "本文に & を含む `date` です" cmd_new shogun'
+# X4: 1つ目の呼出は安全でも、2つ目以降の呼出を見る(head -1で先頭だけ見る
+# 近道は採らない——instructions/karo.mdの標準形=複数エージェントへ続けて
+# inbox_writeする形そのものが素通りしていたPR#118の穴)。
+check "Hook8 X4: second inbox_write.sh call is dangerous (block)" block \
+  'bash scripts/inbox_write.sh ashigaru1 "安全な本文" task_assigned karo && bash scripts/inbox_write.sh ashigaru2 "危険 `date` です" task_assigned karo'
+# X5: 二重引用符内のアポストロフィ2個に挟まれたバッククォート。二重引用符の
+# 中のアポストロフィは単一引用符の開始と見なさないため、挟まれた区間ごと
+# バッククォートを消してしまう(PR#118の sed 無条件除去)誤りを避ける。
+check "Hook8 X5: backtick between two apostrophes inside dquotes (block)" block \
+  'bash scripts/inbox_write.sh karo "It'"'"'s a `date` isn'"'"'t it" task_assigned karo'
+# X6(維持確認): アポストロフィ1個(閉じなし)+バッククォートは、旧実装
+# 是正前後を通じて block を維持すべき(退行チェックの対照)。
+check "Hook8 X6: single unclosed apostrophe with backtick (block, no regression)" block \
+  'bash scripts/inbox_write.sh karo "It'"'"'s got a `date` in it" task_assigned karo'
+
 # --- FN-1追加実証: 引用符なし(bare)のバッククォートが、guardのblockにより
 #     一度も評価されない(=対象ファイルが作られない)ことを実際に確かめる。
 #     ★実際の inbox_write.sh は呼ばず(karo の実inboxを汚さぬため)、
