@@ -1319,7 +1319,7 @@ check_unreviewed_authored_prs() {
 
             local result
             result=$(detect_unreviewed_authored_pr_for_pr "$owner" "$repo" "$pr_number" "$pr_url" \
-                "$UNREVIEWED_AUTHORED_PR_AUTHOR" "$UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS")
+                "$UNREVIEWED_AUTHORED_PR_AUTHOR" "$UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS" "$REVIEW_BOT_ALLOWLIST")
             local state_key="unreviewed_authored_pr__${owner}__${repo}__${pr_number}"
 
             if [[ -z "$result" ]]; then

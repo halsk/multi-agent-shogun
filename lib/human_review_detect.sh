@@ -129,14 +129,16 @@
 #       24時間刻みで数えて返す(週末を跨いでも実際の対応可能日数に近づける
 #       簡易実装。祝日は考慮しない——過剰設計を避けるための意図的な簡略化)。
 #
-#   parse_unreviewed_authored_pr <json> <author_login> <threshold_business_days> <now_epoch>
+#   parse_unreviewed_authored_pr <json> <author_login> <threshold_business_days> <now_epoch> <bot_allowlist_csv>
 #     → pure。state==OPEN かつ author.login==author_login かつ
-#       reviews.totalCount==0 かつ経過営業日数がthreshold_business_days以上
-#       の場合のみ "<created_at>|<elapsed_business_days>" を返す。
-#       条件を満たさなければ空文字(state!=OPEN・著者違い・レビュー1件以上
-#       いずれも非検知)。
+#       「reviews.nodesをbot_allowlist_csvで濾した後の人間レビュー件数が0」
+#       かつ経過営業日数がthreshold_business_days以上の場合のみ
+#       "<created_at>|<elapsed_business_days>" を返す。
+#       条件を満たさなければ空文字(state!=OPEN・著者違い・人間レビュー1件以上
+#       いずれも非検知。bot専任レビューは人間レビュー0件として検知対象——
+#       FU-A是正・2026-09-12)。
 #
-#   detect_unreviewed_authored_pr_for_pr <owner> <repo> <pr_number> <pr_url> <author_login> <threshold_business_days>
+#   detect_unreviewed_authored_pr_for_pr <owner> <repo> <pr_number> <pr_url> <author_login> <threshold_business_days> <bot_allowlist_csv>
 #     → fetch+parseを結合した実行用ラッパー。該当する場合のみ
 #       "<pr_url>|<created_at>|<elapsed_business_days>" を返す。
 
@@ -394,26 +396,43 @@ _github_iso_to_epoch() {
     || echo "0"
 }
 
-# state==OPEN かつ author.login==author_login かつ reviews.totalCount==0
-# かつ経過営業日数がthreshold_business_days以上の場合のみ
+# state==OPEN かつ author.login==author_login かつ「人間(bot allowlist外)の
+# レビューが0件」かつ経過営業日数がthreshold_business_days以上の場合のみ
 # "<created_at>|<elapsed_business_days>" を返す。
+# ★FU-A是正(2026-09-12・gunshi QC指摘): reviews.totalCountは
+# CodeRabbit等botのレビューも数えてしまい、bot専任レビューのPR
+# (例: geolonia/workflow-portal#166)を無検知にしていた。兄弟関数
+# (parse_thread_ball_holders・parse_review_ball_holders)と同じ作法に
+# 揃え、reviews.nodesのauthor.loginをbot allowlistで濾した後の件数で
+# 判定する(totalCountは使わない)。
 parse_unreviewed_authored_pr() {
   local json="$1"
   local author_login="$2"
   local threshold_business_days="$3"
   local now_epoch="$4"
+  local allowlist="$5"
 
   [[ -z "$json" ]] && return
 
-  local state pr_author review_count created_at
+  local bots_jq
+  bots_jq=$(printf '%s' "$allowlist" | jq -R 'split(",")')
+
+  local state pr_author human_review_count created_at
   state=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.state // "UNKNOWN"' 2>/dev/null)
   [[ "$state" != "OPEN" ]] && return
 
   pr_author=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.author.login // ""' 2>/dev/null)
   [[ "$pr_author" != "$author_login" ]] && return
 
-  review_count=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.reviews.totalCount // 0' 2>/dev/null)
-  [[ "$review_count" != "0" ]] && return
+  human_review_count=$(printf '%s' "$json" | jq -r --argjson bots "$bots_jq" '
+    [
+      (.data.repository.pullRequest.reviews.nodes // [])[]
+      | select(.author != null)
+      | (.author.login) as $login
+      | select(($bots | index($login)) == null)
+    ] | length
+  ' 2>/dev/null)
+  [[ "$human_review_count" != "0" ]] && return
 
   created_at=$(printf '%s' "$json" | jq -r '.data.repository.pullRequest.createdAt // ""' 2>/dev/null)
   [[ -z "$created_at" ]] && return
@@ -437,6 +456,7 @@ detect_unreviewed_authored_pr_for_pr() {
   local pr_url="$4"
   local author_login="$5"
   local threshold_business_days="$6"
+  local allowlist="$7"
 
   local json
   json=$(fetch_pr_review_data "$owner" "$repo" "$pr_number")
@@ -446,7 +466,7 @@ detect_unreviewed_authored_pr_for_pr() {
   now_epoch=$(date -u '+%s')
 
   local result
-  result=$(parse_unreviewed_authored_pr "$json" "$author_login" "$threshold_business_days" "$now_epoch")
+  result=$(parse_unreviewed_authored_pr "$json" "$author_login" "$threshold_business_days" "$now_epoch" "$allowlist")
   [[ -z "$result" ]] && { echo ""; return; }
 
   echo "${pr_url}|${result}"
