@@ -259,6 +259,62 @@ assert_eq "11c: 他フィールドは|衝突の影響を受けない" "false" "$
 
 rm -rf "$TMPDIR_TEST11"
 
+# ── Section 12: notify_dashboard — 見出し行(^##)以外の言及に惑わされない ─────
+# 実バグ回帰(cmd_793 FU-1)。本文中に過去の解説として、見出し検出に使う
+# パターン文字列自体への言及(decoy)が複数箇所あっても、非アンカーの
+# grep/sedはそれらにも一致してしまい重複挿入する瑕疵があった
+# (subtask_console_stall_watchdog_dashboard_heading_grep_fix)。
+# PR#119(stall_watchdog.sh)・PR#120(mgmt_bloat_watchdog.sh)のT-MBW-014と
+# 同型のテスト: 修正前のnotify_dashboard()に対して実行すると本テストは
+# FAILすることを確認済み(3箇所へ重複挿入・実見出し以外にも入る)。
+echo ""
+echo "=== Section 12: notify_dashboard — 見出し行以外の言及に惑わされない(実バグ回帰・cmd_793 FU-1) ==="
+
+TMPDIR_TEST12=$(mktemp -d)
+mkdir -p "$TMPDIR_TEST12/scripts" "$TMPDIR_TEST12/lib" "$TMPDIR_TEST12/logs" "$TMPDIR_TEST12/queue"
+cp "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" "$TMPDIR_TEST12/scripts/console_stall_watchdog.sh"
+cp "$SCRIPT_DIR/lib/console_stall_detect.sh" "$TMPDIR_TEST12/lib/console_stall_detect.sh"
+cp "$SCRIPT_DIR/lib/run_log.sh" "$TMPDIR_TEST12/lib/run_log.sh"
+
+cat > "$TMPDIR_TEST12/dashboard.md" <<'DASH'
+# dashboard
+
+**参考**: `grep -q '## 🚨 要対応'`というパターンを使い実際の見出しに一致させている、という解説がここに書かれている(本文中の言及であり見出しではない)。
+
+別の言及: sedのアドレス指定は`/## 🚨 要対応/a`のように書ける、という説明もここにある。
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required - Awaiting Lord's Decision)
+
+(既存の項目はここに続く)
+DASH
+
+(
+    set -euo pipefail
+    source "$TMPDIR_TEST12/lib/console_stall_detect.sh"
+    source "$TMPDIR_TEST12/scripts/console_stall_watchdog.sh"
+    notify_dashboard "T12FIXTURE_MARKER_UNIQUE"
+)
+
+decoy1_line=$(grep -n '\*\*参考\*\*' "$TMPDIR_TEST12/dashboard.md" | head -1 | cut -d: -f1)
+decoy2_line=$(grep -n '別の言及' "$TMPDIR_TEST12/dashboard.md" | head -1 | cut -d: -f1)
+heading_line=$(grep -n '^## 🚨 要対応' "$TMPDIR_TEST12/dashboard.md" | head -1 | cut -d: -f1)
+entry_count=$(grep -c 'T12FIXTURE_MARKER_UNIQUE' "$TMPDIR_TEST12/dashboard.md" || true)
+entry_line=$(grep -n 'T12FIXTURE_MARKER_UNIQUE' "$TMPDIR_TEST12/dashboard.md" | head -1 | cut -d: -f1)
+
+assert_eq "12a: 通知は1件のみ挿入される(decoyへの重複挿入なし)" "1" "$entry_count"
+if [[ -n "$heading_line" && -n "$entry_line" && "$entry_line" -eq "$((heading_line + 1))" ]]; then
+    assert_eq "12b: 通知は実見出し(^## )の直後に挿入される" "found" "found"
+else
+    assert_eq "12b: 通知は実見出し(^## )の直後に挿入される" "found" "NOT FOUND: heading=$heading_line entry=$entry_line"
+fi
+if [[ -n "$entry_line" && -n "$decoy1_line" && -n "$decoy2_line" && "$entry_line" -gt "$decoy1_line" && "$entry_line" -gt "$decoy2_line" ]]; then
+    assert_eq "12c: 通知は本文中の言及(decoy)より後に入る" "found" "found"
+else
+    assert_eq "12c: 通知は本文中の言及(decoy)より後に入る" "found" "NOT FOUND: decoy1=$decoy1_line decoy2=$decoy2_line entry=$entry_line"
+fi
+
+rm -rf "$TMPDIR_TEST12"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"
