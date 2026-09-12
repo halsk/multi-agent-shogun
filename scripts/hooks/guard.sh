@@ -67,11 +67,23 @@ GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
 #     (c) cat 以降の開始行に | $( <( >( バッククォートが無い
 #     (d) 書き出し先のパスが同じコマンドの他の場所に★再び現れない
 #         (cat > s.sh <<EOF … EOF; bash s.sh のような書き出し→実行を除外)
+#         ★FU-1是正(PR#125 v2 followup・軍師QC): (d) はリテラル一致のみを見るため
+#         宛先を glob で実行する形(cat > /tmp/n8b.sh <<EOF … EOF; bash /tmp/n8b.*)が
+#         すり抜けていた(N8b)。本文外の行に bash/sh/zsh/source/. のいずれかと
+#         glob 文字(* ? [)が同一行に現れたら、宛先再利用とみなしマスクしない
+#         (has_glob_exec_risk)。
 #     (e) 本文に `$(` もバッククォートも無い(unquoted heredoc は展開される)
 #   これを全て満たす時だけ本文を "HEREDOC_BODY_MASKED" に置換する。
 #   それ以外(bash/sh/zsh/source/eval/パイプ先/プロセス置換/受け手不明の stdout/
 #   tee 等)は heredoc と見なさず★素通し(=従来どおり本文の語で検知される)。
 #   tee は本文を stdout にも複写するため受け手が定まらず、対象外とした。
+#
+# ★S8(設計上の受容点・欠陥ではない): 本文に実際の push 操作を書いても、
+#   ★同一コマンド内で実行されなければ(=別の Bash 呼出で後から実行される)
+#   allow のままである。これは「書いて実行しない二段構えは PreToolUse(1コマンド
+#   しか見えない)の射程外」という受け手判定の設計そのものに内在する性質であり、
+#   本PRが新たに作った危険ではない。次に読む者が「書いて実行する二段構えも
+#   guard が見てくれる」と誤解せぬための一言として記す。
 #
 # ★v1(PR#125初版)の設計判断は誤りであった——「本文に $( もバッククォートも
 #   無ければ安全」と★本文の中身だけで決め、★本文の行き先を見ていなかった。
@@ -147,6 +159,14 @@ _mask_heredoc_bodies_for_git_detection() {
       }
       return n
     }
+    # FU-1是正(PR#125 v2 followup): 行に bash/sh/zsh/source/. のいずれかの
+    # 起動語と glob 文字(* ? [)が同一行に現れるか(宛先を glob で実行する
+    # N8b のような形を、リテラル一致に頼らず捕らえる)。
+    function has_glob_exec_risk(l) {
+      if (l !~ /(^|[^A-Za-z0-9_.\/])(bash|sh|zsh|source|\.)[ \t]/) return 0
+      if (l ~ /[*?\[]/) return 1
+      return 0
+    }
     { L[NR] = $0 }
     END {
       n = NR
@@ -192,6 +212,7 @@ _mask_heredoc_bodies_for_git_detection() {
             for (j = 1; j <= n && sink; j++) {
               if (j >= i && j <= e) continue
               if (occurs(L[j], target) > 0) sink = 0
+              if (has_glob_exec_risk(L[j])) sink = 0
             }
             # (e) 本文に置換記号が無いか(unquoted heredoc は展開される)
             last = terminated ? e - 1 : e
@@ -626,12 +647,18 @@ fi
 # followup2是正(PR#118): 正規表現で切り刻む方式をやめ、★引用符を
 # 理解しながら1文字ずつ歩く一パス走査に書き直した(軍師の試作方針を採用)。
 # FN-2($()形式)は引き続き対象外(殿/将軍の裁可待ち)。
-# followup3是正(本コミット・FP-3・軍師QC pass_with_followup追加探索):
+# followup3是正(PR#124・FP-3・軍師QC pass_with_followup追加探索):
 # 区間を閉じる境界(引用符の外の ; & |)に★改行が含まれていなかったため、
 # 安全な呼出(1行目で完結)の★次の行にバッククォートがあると同じ区間に
 # 巻き込まれ誤ってブロックされていた。境界へ改行を1つ追加して是正する
 # (二重引用符の中の改行は state=D のままなので影響を受けず、改行を跨ぐ
 # 本文中のバッククォートは引き続き検知される)。
+# followup4是正(本コミット・PR#124 QC followup FU-1・_has_unescaped_backtick_in_inbox_write_args):
+# RS="\001" は「入力に \001 が現れない」という前提に寄りかかっており、実際に
+# \001 を挟むと段落(レコード)が分割される。exit が★各レコードの処理ブロック
+# 内にあったため1レコード目だけで判定・終了し、後続レコードの本物の危険を
+# 見ずに通す穴が残っていた。state/in_call/danger を BEGIN で持ち越し、exit を
+# END へ移すことで、レコード分割そのものに免疫を付けた。
 # ------------------------------------------------------------
 # 背景: 2026-09-12朝、家老・将軍の双方が★独立に同じ事故を起こした。
 # `bash scripts/inbox_write.sh <agent> "..."` の二重引用符で囲んだ
@@ -671,14 +698,20 @@ fi
 # ============================================================
 _has_unescaped_backtick_in_inbox_write_args() {
   local cmd="$1"
+  # ★FU-1是正(PR#124 QC followup・軍師試作採用): RS="\001" は「入力に \001 が
+  # 現れない」という前提に依存していた——\001 を実際に挟むと段落(レコード)が
+  # 分割され、旧実装は exit が★各レコードの処理ブロック内にあったため、
+  # ★1レコード目を読み終えた時点で(そのレコードだけの danger 判定で)終了し、
+  # 後続レコードにある本物の危険を見ずに通してしまっていた(RS="\0" が
+  # 実質 段落モード になっていた FN-3 と同根の穴)。
+  # 是正: state/in_call/danger を BEGIN で初期化してレコードを跨いで持ち越し、
+  # exit は★END ブロックへ移す(全レコードを読み終えてから一度だけ判定する)。
+  # これによりレコード分割そのものに免疫が付く。
   printf '%s' "$cmd" | awk -v pat='inbox_write.sh' '
-    BEGIN { RS="\001" }
+    BEGIN { RS="\001"; state = "N"; in_call = 0; danger = 0 }
     {
       n = length($0)
       plen = length(pat)
-      state = "N"    # N=none, S=single-quote, D=double-quote
-      in_call = 0
-      danger = 0
       i = 1
       while (i <= n) {
         c = substr($0, i, 1)
@@ -702,8 +735,8 @@ _has_unescaped_backtick_in_inbox_write_args() {
         else if (c == ";" || c == "&" || c == "|" || c == "\n") in_call = 0
         i++
       }
-      exit (danger ? 0 : 1)
     }
+    END { exit (danger ? 0 : 1) }
   '
 }
 
