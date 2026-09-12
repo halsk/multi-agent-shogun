@@ -106,6 +106,7 @@ jobs:
 
       - name: Run Python tests (claude_usage_report)
         run: |
+          # tests/test_claude_usage_report.py (dotted module form below runs the same file)
           .venv/bin/python3 -m unittest tests.test_claude_usage_report -v
 
       - name: Verify zero unexpected SKIPs (SKIP=FAIL policy)
