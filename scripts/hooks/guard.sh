@@ -437,7 +437,15 @@ if echo "$COMMAND" | grep -qE 'gh\s+(pr|pull-request)\s+create'; then
 fi
 
 # ============================================================
-# Hook 8: inbox_write.sh 呼出時のバッククォート事故防止 (2026-09-12)
+# Hook 8: inbox_write.sh 呼出時のバッククォート事故防止 (2026-09-12・PR#116)
+# followup是正(PR#118・軍師QC=条件付きNO-GO・subtask_backtick_safety_followup_fp_fn):
+# FP-1/FP-2/FN-1 は直ったが、代わりに「正規表現で区切ってから見る」
+# 「単一引用符を無条件に剥がす」という近道により、mainが止めていた5形
+# (X1-X5: 本文に | ; & を含む/2つ目以降の呼出/二重引用符内のアポストロフィに
+# 挟まれたバッククォート)が素通りするようになると軍師が実証した(NO-GO)。
+# followup2是正(本コミット): 正規表現で切り刻む方式をやめ、★引用符を
+# 理解しながら1文字ずつ歩く一パス走査に書き直した(軍師の試作方針を採用)。
+# FN-2($()形式)は引き続き対象外(殿/将軍の裁可待ち)。
 # ------------------------------------------------------------
 # 背景: 2026-09-12朝、家老・将軍の双方が★独立に同じ事故を起こした。
 # `bash scripts/inbox_write.sh <agent> "..."` の二重引用符で囲んだ
@@ -454,21 +462,63 @@ fi
 # 渡される★実行前のコマンド文字列そのものを検査する——これが実行前に
 # 検出できる唯一の層である。過剰設計は避け、検出(ブロック)のみを行う
 # (自動エスケープ・自動修正は範囲外)。
+#
+# ★走査の設計(状態は none/single/double の3つのみ):
+#   - "inbox_write.sh" という文字列に出会ったら、その時点から
+#     (引用符の外の ; & | に出会うまで)「呼出の引数区間」に入ったと印を
+#     立てる。呼出は1回に限らず、区間が閉じたあと再び出会えば何度でも
+#     入り直す(head -1 で先頭だけを見る近道は採らない)。
+#   - 区間の境界判定(; & |)は★必ず引用符の外でのみ行う。二重引用符の
+#     中にある | ; & は本文の一部であり、区間を閉じない(X1/X2/X3 是正)。
+#   - 区間内で、単一引用符の中でない未エスケープのバッククォートを見たら
+#     危険と判定する。二重引用符の中の未エスケープバッククォートも対象
+#     (シェルは二重引用符内でもコマンド置換を評価するため)。
+#   - 単一引用符は「二重引用符の外にあるものだけ」が開始と見なされる。
+#     二重引用符の中にあるアポストロフィはただの文字であり、単一引用符
+#     として状態遷移しない(X5 是正——2個のアポストロフィに挟まれた区間
+#     ごとバッククォートを消してしまう誤りを避ける)。
+#   - バックスラッシュは(単一引用符の中でない限り)常に次の1文字を
+#     読み飛ばす(エスケープとして扱う——CLAUDE.mdが勧める回避策の一つ)。
 # ============================================================
-_has_unescaped_backtick_in_dquotes() {
-  local cmd="$1" dquoted
-  # "..." (二重引用符) セグメントを抽出する。エスケープされた文字
-  # (\\. — \" や \\` を含む)はセグメント内側の非終端文字として許容し、
-  # 素の `"` で閉じる。ネストした複雑なケースまでは扱わないが、
-  # inbox_write.sh 呼出の典型形(第2引数を "..." で囲む)は捕捉できる。
-  dquoted=$(echo "$cmd" | grep -oE '"([^"\\]|\\.)*"' || true)
-  [[ -z "$dquoted" ]] && return 1
-  # セグメント内に「直前が \ でない `」があれば未エスケープのバッククォート。
-  echo "$dquoted" | grep -qE '(^|[^\\])`' && return 0
-  return 1
+_has_unescaped_backtick_in_inbox_write_args() {
+  local cmd="$1"
+  printf '%s' "$cmd" | awk -v pat='inbox_write.sh' '
+    BEGIN { RS="\0" }
+    {
+      n = length($0)
+      plen = length(pat)
+      state = "N"    # N=none, S=single-quote, D=double-quote
+      in_call = 0
+      danger = 0
+      i = 1
+      while (i <= n) {
+        c = substr($0, i, 1)
+        # バックスラッシュ(単一引用符の中でない限り)は次の1文字を読み飛ばす
+        if (state != "S" && c == "\\") { i += 2; continue }
+        # "inbox_write.sh" に出会ったら呼出の引数区間に入る(引用符の内外を問わぬ)
+        if (!in_call && substr($0, i, plen) == pat) { in_call = 1; i += plen; continue }
+        if (state == "S") {
+          if (c == "\047") state = "N"
+          i++; continue
+        }
+        if (state == "D") {
+          if (c == "\"") state = "N"
+          else if (c == "`" && in_call) danger = 1
+          i++; continue
+        }
+        # state == N
+        if (c == "\047") state = "S"
+        else if (c == "\"") state = "D"
+        else if (c == "`" && in_call) danger = 1
+        else if (c == ";" || c == "&" || c == "|") in_call = 0
+        i++
+      }
+      exit (danger ? 0 : 1)
+    }
+  '
 }
 
-if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_unescaped_backtick_in_dquotes "$COMMAND"; then
+if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_unescaped_backtick_in_inbox_write_args "$COMMAND"; then
   echo "❌ inbox_write.sh 呼出のメッセージ本文(二重引用符内)に未エスケープのバッククォートが検出されました。" >&2
   echo "   二重引用符内のバッククォートはシェルのコマンド置換として実行されてしまいます" >&2
   echo "   (2026-09-12 家老・将軍が独立に事故——gpgsign設定消失・brew install誤実行)。" >&2
