@@ -122,7 +122,12 @@ notify_dashboard() {
     fi
     if [ -f "$DASHBOARD_FILE" ]; then
         local marker_line
-        marker_line=$(grep -nE '要対応.*殿のご判断|🚨.*要対応' "$DASHBOARD_FILE" | head -1 | cut -d: -f1)
+        # ★見出し行(`^## `始まり)のみに限定する。本文中の引用・言及
+        # (「grep -nE '要対応...'というパターンを使い」等)まで拾ってしまうと
+        # 実際の見出しより先に地の文へマッチし、通知が見出し直後ではなく
+        # 無関係な段落の中へ誤挿入される(PR#119是正・stall_watchdog.shと
+        # 同じ瑕疵をここでも修正)。
+        marker_line=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$DASHBOARD_FILE" | cut -d: -f1)
         if [ -n "$marker_line" ]; then
             local tmpfile
             tmpfile=$(mktemp)
