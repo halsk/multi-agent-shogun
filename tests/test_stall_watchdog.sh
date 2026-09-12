@@ -148,6 +148,62 @@ else
     assert_eq "1m: 片方の条件のみでは非検知" "not_detected" "not_detected"
 fi
 
+# ── Section 1.5: notify_dashboard* 挿入位置の回帰テスト (実関数・stub化前) ────
+# PR#119(dashboard見出しgrep不一致14箇所是正)の軍師QC=条件付きGO・唯一の条件。
+# ここで real notify_dashboard / notify_dashboard_orphan_cmd を呼ぶ
+# (Section 2 以降で notify_dashboard がstubに差し替わる★前★でなければ意味がない)。
+
+echo ""
+echo "=== Section 1.5: notify_dashboard* 挿入位置の回帰テスト (実関数) ==="
+echo ""
+
+DASH_TEST_DIR=$(mktemp -d)
+DASH_FIXTURE="$DASH_TEST_DIR/dashboard.md"
+
+# fixture: ①見出しより前の地の文に「要対応」を含む行、②正しい `## 🚨 要対応` 見出し
+cat > "$DASH_FIXTURE" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+このプロジェクトでは要対応の件が過去に何度か発生している、という説明文。
+
+## 🚨 要対応 - 殿のご判断
+
+- (既存の項目)
+EOF
+
+_ORIG_SCRIPT_DIR="$SCRIPT_DIR"
+_ORIG_DRY_RUN="$DRY_RUN"
+SCRIPT_DIR="$DASH_TEST_DIR"
+DRY_RUN=false
+
+# 1n: notify_dashboard() の挿入位置
+_heading_line=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$DASH_FIXTURE" | cut -d: -f1)
+_body_line=$(grep -m1 -n '要対応' "$DASH_FIXTURE" | head -1 | cut -d: -f1)
+notify_dashboard "test_agent" "idle"
+_inserted_line=$(grep -n 'stall_watchdog\] test_agent が idle' "$DASH_FIXTURE" | cut -d: -f1)
+_expect_line=$(( _heading_line + 1 ))
+assert_eq "1n: notify_dashboard 挿入位置=見出し直後(地の文でも末尾でもない)" "$_expect_line" "$_inserted_line"
+
+# 1o: notify_dashboard_orphan_cmd() の挿入位置 (fixture を作り直して再検証)
+cat > "$DASH_FIXTURE" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+このプロジェクトでは要対応の件が過去に何度か発生している、という説明文。
+
+## 🚨 要対応 - 殿のご判断
+
+- (既存の項目)
+EOF
+_heading_line2=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$DASH_FIXTURE" | cut -d: -f1)
+notify_dashboard_orphan_cmd "cmd_999" "assigned"
+_inserted_line2=$(grep -n 'orphan_cmd\] cmd_999' "$DASH_FIXTURE" | cut -d: -f1)
+_expect_line2=$(( _heading_line2 + 1 ))
+assert_eq "1o: notify_dashboard_orphan_cmd 挿入位置=見出し直後(地の文でも末尾でもない)" "$_expect_line2" "$_inserted_line2"
+
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR"
+DRY_RUN="$_ORIG_DRY_RUN"
+rm -rf "$DASH_TEST_DIR"
+
 # ── Section 2: エスカレーション state machine 単体テスト (実 escalate() 使用) ─
 
 echo ""
