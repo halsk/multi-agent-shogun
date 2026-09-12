@@ -213,12 +213,19 @@ notify_dashboard() {
         return
     fi
     dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '## 🚨 要対応' "$dashboard"; then
+    # ★見出し行(`^## `始まり)のみに限定する。本文中の引用・言及まで
+    # 拾ってしまうと、実際の見出しより先に地の文へマッチし、しかもsedの
+    # アドレス指定は一致する全ての行に効くため複数箇所へ重複挿入される
+    # (PR#119/#120是正・stall_watchdog.sh・mgmt_bloat_watchdog.shと同じ瑕疵を
+    # ここでも修正)。行番号アドレスへ限定することで一致箇所を1つに固定する。
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/## 🚨 要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
