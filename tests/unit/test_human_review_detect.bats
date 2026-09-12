@@ -406,7 +406,7 @@ setup() {
 
   json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
 
-  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
   [ "$status" -eq 0 ]
   [[ "$output" == "2026-09-07T00:00:00Z|3" ]]
 }
@@ -418,7 +418,7 @@ setup() {
 
   json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
 
-  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788912000
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788912000 "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -430,7 +430,7 @@ setup() {
 
   json='{"data":{"repository":{"pullRequest":{"state":"MERGED","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
 
-  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -442,7 +442,7 @@ setup() {
 
   json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"dkastl"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":0,"nodes":[]}}}}}'
 
-  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -455,7 +455,35 @@ setup() {
 
   json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":1,"nodes":[{"author":{"login":"dkastl"},"state":"COMMENTED"}]}}}}}'
 
-  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# ── T-HREV-034: parse_unreviewed_authored_pr — FU-A是正回帰: レビューが
+# bot(coderabbitai)のみでも「人間レビュー0件」として検知すること
+# (workflow-portal#166実例の再現・totalCount==1だがbot専任だった) ──
+
+@test "T-HREV-034: parse_unreviewed_authored_pr flags a PR whose only review is from a bot (FU-A regression guard)" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":1,"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED"}]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "2026-09-07T00:00:00Z|3" ]]
+}
+
+# ── T-HREV-035: parse_unreviewed_authored_pr — bot+人間の混在なら
+# 人間レビューが1件でもあれば非検知(bot除外のロジックが人間まで
+# 巻き込まないことの確認) ──
+
+@test "T-HREV-035: parse_unreviewed_authored_pr does not flag when a bot review is mixed with a human review" {
+  source "$LIB_FILE"
+
+  json='{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviews":{"totalCount":2,"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED"},{"author":{"login":"dkastl"},"state":"COMMENTED"}]}}}}}'
+
+  run parse_unreviewed_authored_pr "$json" "halsk" 3 1788998400 "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -474,7 +502,7 @@ setup() {
   # (2026-09-07)を使い、実行時刻が何であってもthreshold=3を確実に超える
   # ようにする(テストの実行日に依存しないための設計)。
   run detect_unreviewed_authored_pr_for_pr "geolonia" "geonicdb" 999 \
-    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3
+    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3 "$BOTS"
   [ "$status" -eq 0 ]
   [[ "$output" == "https://github.com/geolonia/geonicdb/pull/999|2026-09-07T00:00:00Z|"* ]]
 }
@@ -487,7 +515,7 @@ setup() {
   fetch_pr_review_data() { echo ""; }
 
   run detect_unreviewed_authored_pr_for_pr "geolonia" "geonicdb" 999 \
-    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3
+    "https://github.com/geolonia/geonicdb/pull/999" "halsk" 3 "$BOTS"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
