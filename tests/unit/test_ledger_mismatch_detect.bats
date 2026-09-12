@@ -248,10 +248,15 @@ seed_task() {
   grep -qE "check_orphan_cmds|detect_orphan_cmds" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
 
-# ── cmd_778② (型h): report・task YAML・inboxの三面食い違い検知。
-# 個別の型(a〜g)を列挙するのでなく「三面が一致しているか」という一つの
+# ── cmd_778② (型h): report・task YAMLの食い違い検知(名前は関数名の
+# 由来である"three_way"のまま残すが、cmd_800恒久修正によりmismatch判定
+# 自体はtask面のみの二面照合へ簡素化済み——理由・詳細は
+# lib/ledger_mismatch_detect.shのdetect_three_way_mismatch直上コメント参照)。
+# 個別の型(a〜g)を列挙するのでなく「一致しているか」という一つの
 # 不変条件で見る。本日 ashigaru6 が実際に踏んだ事例
-# (report=done / task YAML=assigned / 家老inbox=通知0件・7〜12時間)の再現を含む。
+# (report=done / task YAML=assigned・7〜12時間)の再現を含む。
+# inbox面(inbox_ok)は出力に参考情報として残るため、そちらの算出自体の
+# 単体テストも引き続き用意する(T-3WM-003b以降参照)。
 
 seed_inbox() {
   local content="$1"
@@ -287,9 +292,12 @@ seed_inbox() {
   [[ "$output" != *"ashigaru2"* ]]
 }
 
-# ── T-3WM-003: task=doneだがinboxにreport以降のfrom:{agent}なし → 検知される(inbox面のみ食い違い) ──
+# ── T-3WM-003: task=doneだがinboxにreport以降のfrom:{agent}なし(=inbox_write.sh
+# の50件上限で正常な通知エントリが物理的に押し出された状態を模す)
+# → ★cmd_800恒久修正後は検知しない(task面が一致していればinbox面の
+# 欠落だけでは誤検知させない。cmd_800夜間7件連発の直接原因への対応) ──
 
-@test "T-3WM-003: flags when task is done but no matching inbox entry exists after the report" {
+@test "T-3WM-003: does not flag when task is done even if no matching inbox entry exists (cmd_800 eviction repro)" {
   source "$LIB_FILE"
 
   seed_report "ashigaru3_report.yaml" $'worker_id: ashigaru3\nparent_cmd: cmd_801\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
@@ -298,8 +306,25 @@ seed_inbox() {
 
   run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ashigaru3|cmd_801|"* ]]
-  [[ "$output" == *"|done|0|"* ]]
+  [[ "$output" != *"ashigaru3"* ]]
+}
+
+# ── T-3WM-003b: task=assigned(未完了)のまま・inbox欠落 → ★改修後も検知され
+# 続ける(こちらは真の異常であり、inbox面の扱い変更で検知能力を落として
+# はならない、が task instructions の acceptance_criteria)。task_ok=0が
+# 唯一の判定条件になったことの直接確認。 ──
+
+@test "T-3WM-003b: still flags when task remains assigned (true anomaly, not just inbox eviction)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru3b_report.yaml" $'worker_id: ashigaru3b\nparent_cmd: cmd_801b\ntimestamp: "2026-09-06T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru3b.yaml" $'task:\n  status: assigned\n'
+  seed_inbox $'messages:\n- content: dummy\n  from: karo\n  id: msg_3b\n  read: true\n  timestamp: "2026-09-06T09:00:00"\n  type: task_assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru3b|cmd_801b|"* ]]
+  [[ "$output" == *"|assigned|0|"* ]]
 }
 
 # ── T-3WM-004: report=done経過時間が閾値未満 → 検知しない(即時誤検知防止) ──
