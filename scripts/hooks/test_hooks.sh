@@ -816,7 +816,7 @@ check "Hook8 FN-2 b4: dquoted body with \${VAR}-style expansion, not \$(...) (al
   'bash scripts/inbox_write.sh karo "設定は${SETTING}です" task_assigned karo'
 
 # (c) heredoc経路: heredocの展開結果が二重引用符内のコマンド置換として
-#     呼出引数へ渡される形(is 危険な \$( の開きそのもの)がblockされること。
+#     呼出引数へ渡される形(危険な \$( の開きそのもの)がblockされること。
 check "Hook8 FN-2 c1: heredoc fed via \$(cat <<EOF ...) directly into dquoted call arg (block)" block \
   $'bash scripts/inbox_write.sh karo "$(cat <<EOF\nreport body here\nEOF\n)" task_assigned karo'
 
