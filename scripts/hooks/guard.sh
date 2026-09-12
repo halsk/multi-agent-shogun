@@ -437,7 +437,10 @@ if echo "$COMMAND" | grep -qE 'gh\s+(pr|pull-request)\s+create'; then
 fi
 
 # ============================================================
-# Hook 8: inbox_write.sh 呼出時のバッククォート事故防止 (2026-09-12)
+# Hook 8: inbox_write.sh 呼出時のバッククォート事故防止 (2026-09-12・PR#116)
+# followup是正 (2026-09-12・軍師QC pass_with_followup・subtask_backtick_safety_followup_fp_fn):
+# FP-1/FP-2(誤検知2件)・FN-1(検知漏れ1件)を是正。FN-2($()形式)は設計判断が
+# 要るため対象外のまま(殿/将軍へ別途諮る)。
 # ------------------------------------------------------------
 # 背景: 2026-09-12朝、家老・将軍の双方が★独立に同じ事故を起こした。
 # `bash scripts/inbox_write.sh <agent> "..."` の二重引用符で囲んだ
@@ -455,20 +458,26 @@ fi
 # 検出できる唯一の層である。過剰設計は避け、検出(ブロック)のみを行う
 # (自動エスケープ・自動修正は範囲外)。
 # ============================================================
-_has_unescaped_backtick_in_dquotes() {
-  local cmd="$1" dquoted
-  # "..." (二重引用符) セグメントを抽出する。エスケープされた文字
-  # (\\. — \" や \\` を含む)はセグメント内側の非終端文字として許容し、
-  # 素の `"` で閉じる。ネストした複雑なケースまでは扱わないが、
-  # inbox_write.sh 呼出の典型形(第2引数を "..." で囲む)は捕捉できる。
-  dquoted=$(echo "$cmd" | grep -oE '"([^"\\]|\\.)*"' || true)
-  [[ -z "$dquoted" ]] && return 1
-  # セグメント内に「直前が \ でない `」があれば未エスケープのバッククォート。
-  echo "$dquoted" | grep -qE '(^|[^\\])`' && return 0
+_has_unescaped_backtick_in_inbox_write_args() {
+  local cmd="$1" segment stripped
+  # ★FP-2是正: コマンド文字列全体ではなく、inbox_write.sh を含む「同じ呼出」
+  # (未エスケープの ; & | で区切られる区間)に判定範囲を絞る。複合コマンドの
+  # 無関係な部分(呼出より前の別コマンド等)に巻き込まれて誤ブロックしない。
+  segment=$(echo "$cmd" | grep -oE '[^;&|]*inbox_write\.sh[^;&|]*' | head -1)
+  [[ -z "$segment" ]] && return 1
+  # ★FP-1是正: 単一引用符 '...' セグメントは(bashの仕様上エスケープされた
+  # 単一引用符を内側に含み得ぬため)丸ごと安全に除去できる。除去してから
+  # 残りを調べることで、CLAUDE.mdが勧める「本文全体を単一引用符で囲む」
+  # 対処法を実行した際、本文中の二重引用符・バッククォートを誤検知しない。
+  stripped=$(echo "$segment" | sed -E "s/'[^']*'//g")
+  # ★FN-1是正: 二重引用符内に限定せず、引用符の外にある(bareな)未エスケープ
+  # バッククォートも検出対象に加える。二重引用符内外を問わず、シェルは
+  # 未エスケープのバッククォートをコマンド置換として評価するため。
+  echo "$stripped" | grep -qE '(^|[^\\])`' && return 0
   return 1
 }
 
-if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_unescaped_backtick_in_dquotes "$COMMAND"; then
+if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_unescaped_backtick_in_inbox_write_args "$COMMAND"; then
   echo "❌ inbox_write.sh 呼出のメッセージ本文(二重引用符内)に未エスケープのバッククォートが検出されました。" >&2
   echo "   二重引用符内のバッククォートはシェルのコマンド置換として実行されてしまいます" >&2
   echo "   (2026-09-12 家老・将軍が独立に事故——gpgsign設定消失・brew install誤実行)。" >&2

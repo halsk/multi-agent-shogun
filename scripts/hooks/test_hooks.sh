@@ -528,6 +528,41 @@ check "Hook8: inbox_write.sh without backtick (allow)" allow \
 check "Hook8: unrelated command with backtick in dquotes (allow)" allow \
   'echo "value is `date`"'
 
+echo ""
+echo "=== Hook 8 followup是正 (FP-1/FP-2/FN-1・軍師QC pass_with_followup) ==="
+# FP-1是正確認: 本文全体を単一引用符で囲めば(CLAUDE.mdが勧める対処法どおり)、
+# 本文中に二重引用符を含んでいても誤検知しない(旧実装は単一引用符を理解せず
+# 内側の二重引用符を拾ってブロックしていた)。
+check "Hook8 followup FP-1: single-quoted body containing dquotes (allow)" allow \
+  'bash scripts/inbox_write.sh karo '"'"'本文に "設定 `date` の話" を含む'"'"' task_assigned karo'
+# FP-2是正確認: inbox_write.sh呼出より前の無関係な部分(echo)にバッククォート入り
+# 二重引用符があっても、inbox_write.sh自体の呼出(単一引用符で安全)は巻き込まれない。
+check "Hook8 followup FP-2: unrelated preceding command with backtick (allow)" allow \
+  'echo "now `date`" > /tmp/x && bash scripts/inbox_write.sh karo '"'"'ok'"'"' t k'
+# FN-1是正確認: 引用符なし(bare)のバッククォートは、旧実装では二重引用符内
+# 限定の検出だったため素通りしていたが、是正後は検知してブロックする。
+check "Hook8 followup FN-1: bare unquoted backtick (block)" block \
+  'bash scripts/inbox_write.sh karo 本文`date`です task_assigned karo'
+
+# --- FN-1追加実証: 引用符なし(bare)のバッククォートが、guardのblockにより
+#     一度も評価されない(=対象ファイルが作られない)ことを実際に確かめる。
+#     ★実際の inbox_write.sh は呼ばず(karo の実inboxを汚さぬため)、
+#     "inbox_write.sh" という文字列を含む echo で検出対象パターンのみ再現する。
+MARKER_FILE_FN1="/tmp/should_not_exist_hook8_fn1_test_$$"
+rm -f "$MARKER_FILE_FN1"
+DANGEROUS_CMD_FN1="echo inbox_write.sh 呼出のつもり 本文\`touch $MARKER_FILE_FN1\`です"
+DANGEROUS_JSON_FN1="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$DANGEROUS_CMD_FN1" | jq -Rs .)}}"
+echo "$DANGEROUS_JSON_FN1" | bash "$GUARD" >/dev/null 2>&1
+DANGEROUS_EXIT_FN1=$?
+if [[ $DANGEROUS_EXIT_FN1 -eq 2 && ! -e "$MARKER_FILE_FN1" ]]; then
+  echo "  ✅ FN-1実証: 引用符なしバッククォートもguardにblockされ、touchが一度も評価されず対象ファイルは作られなかった"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: FN-1実証(guard exit=$DANGEROUS_EXIT_FN1, marker_exists=$([[ -e "$MARKER_FILE_FN1" ]] && echo yes || echo no))"
+  ((FAIL++)) || true
+fi
+rm -f "$MARKER_FILE_FN1"
+
 # --- 実証テスト: 危険な本文がguardにブロックされ、コマンド置換が一度も
 #     評価されないこと(=対象ファイルが作られないこと)を実際に確かめる。
 #     ハーネスの実際の動作を模す: guard.sh が exit 2 を返す限り、その
