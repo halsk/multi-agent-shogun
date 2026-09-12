@@ -79,10 +79,18 @@
 #   fetch_pr_review_data <owner> <repo> <pr_number>
 #     → impure。gh api graphqlで state・author・createdAt・reviewDecision・
 #       reviewThreads(各スレッド最大20コメント)・reviews・直近commit日時を
-#       1回のクエリで取得しJSON文字列を返す。失敗時は空文字。
+#       取得しJSON文字列を返す。失敗時は空文字。
 #       (author/createdAtは2026-09-12 cmd_793拡張で追加——上流PR追跡用の
 #       check_unreviewed_authored_prのために必要な最小限のフィールド追加。
 #       既存のparse_*関数は該当フィールドを参照しないため無害)。
+#       ★FU-1b是正(2026-09-12・PR#123軍師QC申し送り): reviews・reviewThreads
+#       はGraphQLのpageInfo(hasNextPage/endCursor)でafter:カーソルを巡回し
+#       全件を取得する(_fetch_pr_connection_pages)。旧実装の reviews(last:50)
+#       は直近50件の窓であり、50件超のPRで直近50件が全てbotなら人間レビューを
+#       見落として誤判定した(geolonia/skills#81がtotalCount=48で窓の直前に
+#       達していた)。追加ページ数の上限=HRD_MAX_PAGES(既定10・無限ループ防止)。
+#       途中ページの取得に失敗した場合はそこまでの結果を返す(欠落は
+#       check_pagination_shortfallが警告する・安全側)。
 #
 #   parse_thread_ball_holders <json> <bot_allowlist_csv>
 #     → pure。isResolved=false かつ最初のコメント投稿者がbot allowlist外の
@@ -108,7 +116,9 @@
 #   check_pagination_shortfall <json>
 #     → pure。reviewThreads/reviewsのfetch件数がtotalCountを下回る場合
 #       (=ページネーション取りこぼし)、警告文字列を返す。無ければ空文字。
-#       自動ページネーションは実装しない(殿「複雑にするな」の趣旨)。
+#       FU-1b是正後は fetch_pr_review_data が全件ページングするため、本警告は
+#       「HRD_MAX_PAGESの上限に到達してなお不足」または「途中ページの取得失敗」
+#       の時だけ出る(最後の砦としての自己申告)。
 #
 #   detect_review_ball_holders_for_pr <owner> <repo> <pr_number> <pr_url> <bot_allowlist_csv>
 #     → fetch+parse+summarizeを結合した実行用ラッパー。
@@ -148,15 +158,85 @@ fetch_open_prs() {
     --jq '.[] | "\(.number)|\(.url)"' 2>/dev/null
 }
 
+# GraphQL connectionの1ページ幅(GitHubの上限=100)と、初回ページに続けて
+# 取得する追加ページ数の上限(無限ループ防止・環境変数で上書き可)。
+# 上限到達時は取れた分だけを返し、欠落はcheck_pagination_shortfallが警告する。
+HRD_PAGE_SIZE=100
+: "${HRD_MAX_PAGES:=10}"
+
+# connection名ごとのnodes選択フィールド(初回クエリと追加ページクエリで
+# 同一の形を使う——ページを結合したあとparse_*が同じ構造で読めるように)。
+_hrd_connection_node_fields() {
+  case "$1" in
+    reviews)       printf '%s' 'author{login} state body createdAt' ;;
+    reviewThreads) printf '%s' 'isResolved comments(first:20){nodes{author{login} createdAt}}' ;;
+    *)             return 1 ;;
+  esac
+}
+
+# 初回JSONの pullRequest.<conn>.pageInfo.hasNextPage が true の間、
+# after:カーソルで続きページを取得し nodes を初回JSONへ結合して返す。
+# 停止条件: hasNextPage=false / 追加ページ数がHRD_MAX_PAGESに到達 /
+# endCursorが空または前回と同一(サーバ異常時の無限ループ防止) /
+# ページ取得またはJSON結合に失敗(そこまでの結果を返す・安全側)。
+_fetch_pr_connection_pages() {
+  local json="$1"
+  local conn="$2"
+  local owner="$3"
+  local repo="$4"
+  local pr_number="$5"
+
+  local node_fields
+  node_fields=$(_hrd_connection_node_fields "$conn") || { printf '%s' "$json"; return; }
+
+  local has_next cursor prev_cursor="" pages=0 page_json merged
+  has_next=$(printf '%s' "$json" | jq -r --arg c "$conn" '.data.repository.pullRequest[$c].pageInfo.hasNextPage // false' 2>/dev/null)
+  cursor=$(printf '%s' "$json" | jq -r --arg c "$conn" '.data.repository.pullRequest[$c].pageInfo.endCursor // ""' 2>/dev/null)
+
+  local query
+  query="query(\$owner:String!,\$repo:String!,\$pr:Int!,\$cursor:String!){repository(owner:\$owner,name:\$repo){pullRequest(number:\$pr){${conn}(first:${HRD_PAGE_SIZE},after:\$cursor){totalCount pageInfo{hasNextPage endCursor} nodes{${node_fields}}}}}}"
+
+  while [[ "$has_next" == "true" && -n "$cursor" && "$cursor" != "$prev_cursor" && "$pages" -lt "$HRD_MAX_PAGES" ]]; do
+    pages=$((pages + 1))
+    prev_cursor="$cursor"
+
+    page_json=$(gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" -f cursor="$cursor" 2>/dev/null) || break
+    [[ -z "$page_json" ]] && break
+
+    merged=$(printf '%s' "$json" | jq -c --arg c "$conn" --argjson page "$page_json" '
+      ($page.data.repository.pullRequest[$c]) as $pc
+      | .data.repository.pullRequest[$c].nodes += ($pc.nodes // [])
+      | .data.repository.pullRequest[$c].pageInfo = ($pc.pageInfo // {hasNextPage:false,endCursor:null})
+    ' 2>/dev/null) || break
+    [[ -z "$merged" ]] && break
+    json="$merged"
+
+    has_next=$(printf '%s' "$page_json" | jq -r --arg c "$conn" '.data.repository.pullRequest[$c].pageInfo.hasNextPage // false' 2>/dev/null)
+    cursor=$(printf '%s' "$page_json" | jq -r --arg c "$conn" '.data.repository.pullRequest[$c].pageInfo.endCursor // ""' 2>/dev/null)
+  done
+
+  printf '%s' "$json"
+}
+
 fetch_pr_review_data() {
   local owner="$1"
   local repo="$2"
   local pr_number="$3"
 
-  local query
-  query='query($owner:String!,$repo:String!,$pr:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$pr){state author{login} createdAt reviewDecision reviewThreads(first:100){totalCount nodes{isResolved comments(first:20){nodes{author{login} createdAt}}}} reviews(last:50){totalCount nodes{author{login} state body createdAt}} commits(last:1){nodes{commit{committedDate}}}}}}'
+  local rv_fields rt_fields query json
+  rv_fields=$(_hrd_connection_node_fields reviews)
+  rt_fields=$(_hrd_connection_node_fields reviewThreads)
+  # reviews は旧実装の last:50(直近50件の窓)から first:${HRD_PAGE_SIZE}+pageInfo
+  # へ変更。first/lastいずれもnodesはcreatedAt昇順で返るため、parse_*関数の
+  # 読み方(group_by/max_by・列挙順)は変わらない。
+  query="query(\$owner:String!,\$repo:String!,\$pr:Int!){repository(owner:\$owner,name:\$repo){pullRequest(number:\$pr){state author{login} createdAt reviewDecision reviewThreads(first:${HRD_PAGE_SIZE}){totalCount pageInfo{hasNextPage endCursor} nodes{${rt_fields}}} reviews(first:${HRD_PAGE_SIZE}){totalCount pageInfo{hasNextPage endCursor} nodes{${rv_fields}}} commits(last:1){nodes{commit{committedDate}}}}}}"
 
-  gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null
+  json=$(gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null) || return 0
+  [[ -z "$json" ]] && return 0
+
+  json=$(_fetch_pr_connection_pages "$json" reviews "$owner" "$repo" "$pr_number")
+  json=$(_fetch_pr_connection_pages "$json" reviewThreads "$owner" "$repo" "$pr_number")
+  printf '%s\n' "$json"
 }
 
 # スレッド内のコメント数が1件超であることを「著者が応答した」の判定に使う
@@ -288,10 +368,11 @@ summarize_ball_holders() {
 }
 
 # ④totalCount安全策: fetchしたnodes件数がtotalCountを下回る場合
-# (=first/last指定によるページネーションで取りこぼしている場合)、
-# 警告文字列を返す(将軍実測の教訓「全件を見たと言う前にtotalCountを
-# 確かめよ」の再発防止)。自動ページネーション実装までは行わない
-# (殿「複雑にするな」の趣旨・警告を出すだけで足りる)。
+# (=ページネーションで取りこぼしている場合)、警告文字列を返す(将軍実測の
+# 教訓「全件を見たと言う前にtotalCountを確かめよ」の再発防止)。
+# FU-1b是正(2026-09-12)で fetch_pr_review_data が全件ページングするように
+# なったため、本警告は「HRD_MAX_PAGES上限到達でなお不足」か「途中ページの
+# 取得失敗」の時だけ出る——判定ロジック本体はこの関数に依存しない。
 check_pagination_shortfall() {
   local json="$1"
   [[ -z "$json" ]] && return
@@ -449,12 +530,15 @@ parse_unreviewed_authored_pr() {
 
 # fetch+parseを結合した実行用ラッパー。該当する場合のみ
 # "<pr_url>|<created_at>|<elapsed_business_days>" を返す。
-# ★FU-1是正(2026-09-12・PR#114軍師QC指摘): reviews(last:50)は直近50件しか
-# 返らないため、レビュー総数が50を超えかつ直近50件が全てbotの場合、
+# ★FU-1是正(2026-09-12・PR#114軍師QC指摘): 旧実装の reviews(last:50) は
+# 直近50件しか返らず、レビュー総数が50を超えかつ直近50件が全てbotの場合、
 # それより古い位置にある人間レビューを見落として「人間レビュー0件」と
-# 誤判定しうる(今の実害は無い——registry上の最大は33件で50に届いていない)。
-# 兄弟関数detect_review_ball_holders_for_prと同じ作法(check_pagination_
-# shortfallでtotalCount不足をstderrへ警告)に揃える。
+# 誤判定しうる。兄弟関数detect_review_ball_holders_for_prと同じ作法
+# (check_pagination_shortfallでtotalCount不足をstderrへ警告)に揃えた。
+# ★FU-1b是正(2026-09-12・PR#123軍師QC申し送り): 上記の警告は見える化に
+# とどまるため、fetch_pr_review_data側で全件ページングして窓依存そのものを
+# 解消した(skills#81がtotalCount=48で窓50の直前に達していた)。本関数の
+# 判定ロジックは不変。
 detect_unreviewed_authored_pr_for_pr() {
   local owner="$1"
   local repo="$2"
