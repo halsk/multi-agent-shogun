@@ -181,12 +181,19 @@ ERRLOG_NTFY_DELAY=$((30 * 60))
 # geonicdb-livedeck等)は、それらの同僚が自分のGitHub通知で気づける前提の
 # ためscan対象から除外した(cmd_789の趣旨はswarmが代筆したPRへの人間の
 # 返信をswarm自身が聞く仕組みであり、同僚が自分で読んでいるPRの監視は
-# 本taskの射程外)。geolonia/geonicdb(FIWARE Orion互換ContextBroker本体・
-# dkastl/miya0001等の外部貢献者が主でPR総数3101件)・team-mirai/mirai-gikai
-# (nasuka氏等の外部貢献者PR)も同じ理由で除外。codeforjapan/ddcrは直近PRが
-# 2026-05-16(約4ヶ月前)でありswarmの現在の活動範囲外と判断し除外。
-# geonicdb-devblogのみ30日基準からは外れる(直近PRは2026-07-01)が、
-# task本文で明示された実演対象PR#31が存在するリポのため確定的に含める。
+# 本taskの射程外)。team-mirai/mirai-gikai(nasuka氏等の外部貢献者PR)も
+# 同じ理由で除外。codeforjapan/ddcrは直近PRが2026-05-16(約4ヶ月前)であり
+# swarmの現在の活動範囲外と判断し除外。geonicdb-devblogのみ30日基準からは
+# 外れる(直近PRは2026-07-01)が、task本文で明示された実演対象PR#31が
+# 存在するリポのため確定的に含める。
+#
+# ★geolonia/geonicdb(FIWARE Orion互換ContextBroker本体・dkastl/miya0001等の
+# 外部貢献者が主でPR総数3101件)は、当初「同僚が自分のGitHub通知で気づける
+# 前提」として除外されていた(cmd_789)。しかし殿ご下問「上流へのPRが
+# どうなったかトラッキングできるか」(2026-09-11 addendum_20260911_2240)を
+# 受け、swarmが本リポへ上流PRを投稿する運用が始まったため cmd_793(2026-09-12)
+# で再登録した——除外理由(同僚が自分で読んでいるPRの監視は不要)は
+# 「swarm自身が著者のPR」には当てはまらない。既存11件は無変更。
 REVIEW_REPO_REGISTRY="geolonia/geonicdb-console
 geolonia/workflow-portal
 geolonia/geonicdb-devblog
@@ -197,13 +204,27 @@ halsk/automation
 geolonia/ai-worker
 geolonia/foss4g-keynote
 geolonia/geonicdb-docs
-geolonia/skills"
+geolonia/skills
+geolonia/geonicdb"
 
 # ★bot allowlist方式(task指示どおり)。GraphQL上のlogin文字列は
 # "coderabbitai"のように[bot]サフィックスが付かないことを実測確認済みだが
 # (REST APIでは"dependabot[bot]"のように付く場合がある)、将来的な表記揺れに
 # 備え両形式を列挙しておく。
 REVIEW_BOT_ALLOWLIST="coderabbitai,coderabbitai[bot],dependabot,dependabot[bot],github-actions,github-actions[bot],copilot-pull-request-reviewer,copilot-pull-request-reviewer[bot]"
+
+# cmd_793拡張: 「我らが著者・レビュー0件のまま一定期間経過したOPEN PR」検知の
+# しきい値。REVIEW_REPO_REGISTRYと同じリポ集合を対象に、著者=swarmの
+# gh認証アカウント(halsk)・レビュー総数0件・OPEN経過が
+# UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS営業日以上のPRをdashboardへ出す
+# (通知先はdashboardのみ・ntfyは追加しない=cmd_795原則)。
+# 閾値=3営業日の根拠: 将軍案をそのまま採用(addendum_20260911_2240)。
+# 上流PRは通常のswarm内部taskと異なり相手の応答速度を制御できないため、
+# 6h/24h等の既存の短い閾値(ledger_mismatch等)ではなく人間の週次業務感覚に
+# 近い日数を使う——3日は「投稿後すぐの誤検知は避けつつ、1週間放置される前に
+# 気づく」という中間値として妥当と判断した。
+UNREVIEWED_AUTHORED_PR_AUTHOR="halsk"
+UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS=3
 
 # subtask_741_layer3_orphan_detection①: orphan test検知の対象
 # (自リポのみ・他リポへの展開可否はreport参照)。
@@ -1254,6 +1275,83 @@ check_unresolved_human_reviews() {
     done <<< "$REVIEW_REPO_REGISTRY"
 }
 
+# ── cmd_793拡張: 「我らが著者・レビュー0件のまま一定期間放置されたOPEN PR」検知 ──
+# check_unresolved_human_reviewsはdetect_review_ball_holders_for_prが空を
+# 返せば何も通知しない設計であり、「誰も一度もレビューせず放置されたPR」
+# (上流PRで最も起こりそうな事態)は無反応のまま検知されない穴があった
+# (addendum_20260911_2240)。同じREVIEW_REPO_REGISTRYへ相乗りし、
+# lib/human_review_detect.shのdetect_unreviewed_authored_pr_for_prで
+# 別軸の検知を行う。通知先はdashboardのみ(ntfyは追加しない=cmd_795原則)。
+
+notify_dashboard_unreviewed_authored_pr() {
+    local pr_url="$1"
+    local created_at="$2"
+    local elapsed_days="$3"
+    local ts
+    ts=$(now_iso)
+    local entry="- 🚨 [unreviewed_pr] ${pr_url} — 著者=我ら・レビュー0件のままOPEN経過約${elapsed_days}営業日(作成 ${created_at}) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "/🚨要対応/a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+# REVIEW_REPO_REGISTRY の各リポのOPENなPR(draft含む)を巡回し、著者=我ら・
+# レビュー0件・OPEN経過がUNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS営業日以上の
+# PRを検知する。dashboardは状態(created_at|elapsed_days)が変化した時のみ
+# 追記する(check_unresolved_human_reviewsと同じ相乗り作法)。
+check_unreviewed_authored_prs() {
+    local owner_repo owner repo
+    while IFS= read -r owner_repo; do
+        [[ -z "$owner_repo" ]] && continue
+        owner="${owner_repo%%/*}"
+        repo="${owner_repo#*/}"
+
+        local pr_number pr_url
+        while IFS='|' read -r pr_number pr_url; do
+            [[ -z "$pr_number" ]] && continue
+
+            local result
+            result=$(detect_unreviewed_authored_pr_for_pr "$owner" "$repo" "$pr_number" "$pr_url" \
+                "$UNREVIEWED_AUTHORED_PR_AUTHOR" "$UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS")
+            local state_key="unreviewed_authored_pr__${owner}__${repo}__${pr_number}"
+
+            if [[ -z "$result" ]]; then
+                local was_notified
+                was_notified=$(state_get "$state_key" "notified_status" "")
+                if [[ -n "$was_notified" ]]; then
+                    log "[UNREVIEWED-AUTHORED-PR-RECOVERED] ${owner}/${repo}#${pr_number}: 解消(レビュー付与/クローズ等) → state リセット"
+                    state_set "$state_key" "notified_status" ""
+                fi
+                continue
+            fi
+
+            local created_at elapsed_days problem_id
+            created_at=$(echo "$result" | cut -d'|' -f2)
+            elapsed_days=$(echo "$result" | cut -d'|' -f3)
+            problem_id="${created_at}|${elapsed_days}"
+
+            local already_notified
+            already_notified=$(state_get "$state_key" "notified_status" "")
+            if [[ "$already_notified" != "$problem_id" ]]; then
+                log "[UNREVIEWED-AUTHORED-PR] ${owner}/${repo}#${pr_number}: 著者=${UNREVIEWED_AUTHORED_PR_AUTHOR}・レビュー0件・経過約${elapsed_days}営業日(作成 ${created_at})"
+                if ! $DRY_RUN; then
+                    notify_dashboard_unreviewed_authored_pr "$pr_url" "$created_at" "$elapsed_days"
+                else
+                    log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unreviewed-authored-pr)"
+                fi
+                state_set "$state_key" "notified_status" "$problem_id"
+            fi
+        done < <(fetch_open_prs "$owner_repo")
+    done <<< "$REVIEW_REPO_REGISTRY"
+}
+
 # ── subtask_741_layer3_orphan_detection①相乗り: orphan test(実例④相当)検知 ──
 
 notify_dashboard_orphan_test() {
@@ -1492,6 +1590,9 @@ check_stale_errlogs
 
 # cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知
 check_unresolved_human_reviews
+
+# cmd_793拡張: 我らが著者・レビュー0件のまま放置された上流PRの検知
+check_unreviewed_authored_prs
 
 # subtask_741_layer3_orphan_detection①: orphan test(実例④相当)検知
 check_orphan_tests
