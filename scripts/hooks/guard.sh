@@ -57,15 +57,30 @@ GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
 # 家老も同型(「git commit」「gh pr create」という語がプロース中にあっただけ)
 # を本セッション中に2度踏んでいる。
 #
-# ★設計方針(過剰設計を避け、Hook8と同程度の一パス走査に留める):
-#   heredoc本文(<<TAG 〜 TAG行、<<-TAG 〜 タブ許容TAG行、引用符の有無を問わず)
-#   を検出し、本文中に `$(` またはバッククォートが★一切含まれない場合に限り
-#   本文全体を "HEREDOC_BODY_MASKED" に置換する。
-#   ★安全側に倒す設計: 本文が `$(...)` やバッククォートによる実際のコマンド
-#   置換を含みうる場合は、検知漏れ(FN)を避けるため★マスクせず素通しする
-#   (=そこに本物の git push/commit があれば従来どおり検知される)。
-#   これにより「地の文としての語」は消え、「実行されうる位置の語」は
-#   残るため、FPを消しつつFNを増やさない。
+# ★設計方針(v2・「本文の受け手」で判定する):
+#   heredoc本文をマスクしてよいのは、本文が★データとして file に書き出される
+#   だけで、この後どこでも実行されないと言える時に限る。判定は heredoc の
+#   ★開始行の受け手で行う——
+#     (a) `<<TAG` を持つコマンド区切り(; && || | ( { の後)の先頭が `cat` である
+#     (b) 同じ区切りに stdout の file リダイレクト(`>`/`>>`・`2>` は不可)があり、
+#         書き出し先が★リテラルなパス($/バッククォート無し・/dev/ /proc/ でない)
+#     (c) cat 以降の開始行に | $( <( >( バッククォートが無い
+#     (d) 書き出し先のパスが同じコマンドの他の場所に★再び現れない
+#         (cat > s.sh <<EOF … EOF; bash s.sh のような書き出し→実行を除外)
+#     (e) 本文に `$(` もバッククォートも無い(unquoted heredoc は展開される)
+#   これを全て満たす時だけ本文を "HEREDOC_BODY_MASKED" に置換する。
+#   それ以外(bash/sh/zsh/source/eval/パイプ先/プロセス置換/受け手不明の stdout/
+#   tee 等)は heredoc と見なさず★素通し(=従来どおり本文の語で検知される)。
+#   tee は本文を stdout にも複写するため受け手が定まらず、対象外とした。
+#
+# ★v1(PR#125初版)の設計判断は誤りであった——「本文に $( もバッククォートも
+#   無ければ安全」と★本文の中身だけで決め、★本文の行き先を見ていなかった。
+#   bash <<EOF / sh <<'EOF' / cat <<EOF | bash / eval "$(cat <<EOF …)" /
+#   bash <(cat <<EOF …) / source /dev/stdin <<EOF / zsh <<EOF の7形(N1〜N7)は
+#   置換記号など無くとも本文がそのままスクリプトとして実行され、main が止めて
+#   いたものを v1 は全て通した(軍師QC・N1 は実 push が通ることまで実証)。
+#   has_git_subcmd の入口でマスクするため D003/D004 にも同じ穴が及んでいた。
+#
 #   ★全般的な引用符(単一/二重)の地の文除外は本taskの範囲外とした——
 #   heredocが実際に踏まれた事故の形であり、二重引用符内の `$(`/バック
 #   クォート実行可否を正しく見分けるには括弧の深さ追跡等が必要になり、
@@ -86,46 +101,125 @@ _mask_heredoc_bodies_for_git_detection() {
       }
       return t
     }
-    BEGIN { in_hd = 0; term = ""; strip_tabs = 0; body = ""; dangerous = 0 }
-    {
-      line = $0
-      if (in_hd) {
-        chk = line
-        if (strip_tabs) sub(/^\t+/, "", chk)
-        if (chk == term) {
-          if (dangerous) {
-            printf "%s", body
-          } else {
-            print "HEREDOC_BODY_MASKED"
-          }
-          print line
-          in_hd = 0; term = ""; body = ""; dangerous = 0; strip_tabs = 0
-          next
-        } else {
-          body = body line "\n"
-          if (index(line, "$(") > 0 || index(line, "`") > 0) dangerous = 1
-          next
-        }
+    # 開始行 probe のうち、最初の <<TAG を含むコマンド区切り(直前の ; && || | ( { 以降)を返す
+    function owner_segment(p, hdpos,    seg, i, c, cut) {
+      seg = substr(p, 1, hdpos - 1)
+      cut = 0
+      for (i = 1; i <= length(seg); i++) {
+        c = substr(seg, i, 1)
+        if (c == ";" || c == "|" || c == "(" || c == "{") cut = i
+        else if (c == "&" && substr(seg, i + 1, 1) != ">") cut = i    # &> はリダイレクト、区切りではない
       }
-      print line
-      # here-string (<<<word) は heredoc ではない。検出用の写しからのみ潰す。
-      probe = line
-      gsub(/<<</, "HERESTRING", probe)
-      if (match(probe, /<<-?[ ]*[A-Za-z_\x27"\\][A-Za-z0-9_]*[\x27"]?/)) {
-        tok = substr(probe, RSTART, RLENGTH)
-        strip_tabs = (tok ~ /^<<-/) ? 1 : 0
-        sub(/^<<-?[ ]*/, "", tok)
-        term = strip_quotes(tok)
-        if (term != "") in_hd = 1
-      }
+      seg = substr(seg, cut + 1)
+      sub(/^[ \t]+/, "", seg)
+      sub(/^(then|do|else)[ \t]+/, "", seg)
+      return seg
     }
-    # 終端行の無い heredoc は bash が EOF まで本文として読む(置換も展開する)。
-    # 溜めた本文を捨てず、通常の終端と同じ規則で流す(捨てると検知漏れになる)。
-    END {
-      if (in_hd) {
-        if (dangerous) printf "%s", body
-        else print "HEREDOC_BODY_MASKED"
+    # stdout の file リダイレクト先(リテラルパス)を返す。無ければ ""。
+    function sink_target(p,    s, pre, rest, tok, c) {
+      s = p
+      while (match(s, />>?/)) {
+        pre = (RSTART > 1) ? substr(s, RSTART - 1, 1) : ""
+        rest = substr(s, RSTART + RLENGTH)
+        s = rest
+        if (pre ~ /[02-9]/) continue              # 2> 等: stderr のみ。stdout は受け手不明
+        sub(/^[ \t]+/, "", rest)
+        c = substr(rest, 1, 1)
+        if (c == "" || c == "&" || c == "(" || c == "|" || c == ">") continue
+        tok = rest
+        sub(/[ \t;&|<>].*$/, "", tok)
+        tok = strip_quotes(tok)
+        if (tok == "" || index(tok, "$") > 0 || index(tok, "`") > 0) return ""   # 変数展開先は不明
+        if (tok ~ /^\/dev\// || tok ~ /^\/proc\//) return ""                     # stdout へ戻りうる
+        return tok
       }
+      return ""
+    }
+    # hay 中に needle がパス文字に挟まれず独立して現れる回数
+    function occurs(hay, needle,    n, pos, off, b, a) {
+      n = 0; off = 1
+      while ((pos = index(substr(hay, off), needle)) > 0) {
+        pos = pos + off - 1
+        b = (pos > 1) ? substr(hay, pos - 1, 1) : ""
+        a = substr(hay, pos + length(needle), 1)
+        if (b !~ /[A-Za-z0-9_.\/~-]/ && a !~ /[A-Za-z0-9_.\/~-]/) n++
+        off = pos + length(needle)
+      }
+      return n
+    }
+    { L[NR] = $0 }
+    END {
+      n = NR
+      # pass 1: heredoc の範囲と「マスクしてよいか」を決める
+      k = 0
+      i = 1
+      while (i <= n) {
+        line = L[i]
+        probe = line
+        # here-string (<<<word) は heredoc ではない。検出用の写しからのみ潰す。
+        gsub(/<<</, "HERESTRING", probe)
+        if (match(probe, /<<-?[ ]*[A-Za-z_\x27"\\][A-Za-z0-9_]*[\x27"]?/)) {
+          hdpos = RSTART
+          tok = substr(probe, RSTART, RLENGTH)
+          strip_tabs = (tok ~ /^<<-/) ? 1 : 0
+          sub(/^<<-?[ ]*/, "", tok)
+          term = strip_quotes(tok)
+          if (term != "") {
+            # 終端行を探す。無ければ bash と同じく EOF まで本文(溜めた本文は捨てず同じ規則で流す)
+            e = 0
+            for (j = i + 1; j <= n; j++) {
+              chk = L[j]
+              if (strip_tabs) sub(/^\t+/, "", chk)
+              if (chk == term) { e = j; break }
+            }
+            terminated = (e > 0) ? 1 : 0
+            if (e == 0) e = n
+            k++; hs[k] = i; he[k] = e; hterm[k] = terminated
+            # (a) 受け手が cat か
+            seg = owner_segment(probe, hdpos)
+            sink = (seg ~ /^cat([ \t]|$)/) ? 1 : 0
+            # (c) cat 以降(開始行の残り全部)に | $( <( >( バッククォートが無いか
+            after = seg substr(probe, hdpos)
+            if (sink && (after ~ /\|/ || index(after, "$(") > 0 || index(after, "<(") > 0 || index(after, ">(") > 0 || index(after, "`") > 0)) sink = 0
+            # (b) stdout の file リダイレクト先がリテラルか
+            target = ""
+            if (sink) {
+              target = sink_target(after)
+              if (target == "") sink = 0
+            }
+            # (d) 書き出し先が他の場所に再び現れないか(開始行の2回目以降・本文外の全行)
+            if (sink && occurs(line, target) > 1) sink = 0
+            for (j = 1; j <= n && sink; j++) {
+              if (j >= i && j <= e) continue
+              if (occurs(L[j], target) > 0) sink = 0
+            }
+            # (e) 本文に置換記号が無いか(unquoted heredoc は展開される)
+            last = terminated ? e - 1 : e
+            for (j = i + 1; j <= last && sink; j++) {
+              if (index(L[j], "$(") > 0 || index(L[j], "`") > 0) sink = 0
+            }
+            hmask[k] = sink
+            i = e + 1
+            continue
+          }
+        }
+        i++
+      }
+      # pass 2: 出力(マスク対象の本文だけを HEREDOC_BODY_MASKED に置換)
+      cur = 1
+      for (m = 1; m <= k; m++) {
+        for (i = cur; i < hs[m]; i++) print L[i]
+        print L[hs[m]]
+        last = hterm[m] ? he[m] - 1 : he[m]
+        if (hmask[m]) {
+          print "HEREDOC_BODY_MASKED"
+        } else {
+          for (i = hs[m] + 1; i <= last; i++) print L[i]
+        }
+        if (hterm[m]) print L[he[m]]
+        cur = he[m] + 1
+      }
+      for (i = cur; i <= n; i++) print L[i]
     }
   ' <<<"$cmd"
 }
