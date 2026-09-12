@@ -145,6 +145,38 @@ hour=$((10#$(date -r "$now_epoch" '+%H' 2>/dev/null || date -d "@$now_epoch" '+%
 # ⑦ 網自身の生存証跡(この網自身を監視する「網の網」は作らない)
 touch "$LIVENESS_FILE"
 
+# ⑧ cmd_807: config/settings.yaml 消失検知(2026-09-13実例——ntfy/model解決/
+# 停滞閾値等の要設定が消失したまま誰も気づかなかった)。★新設の見張りは作らず、
+# 既に周期実行されている本網へ相乗りする。dashboard.mdの🚨要対応節へは
+# scripts/mgmt_bloat_watchdog.sh notify_dashboard() と同じ「見出し行(^## で
+# 始まる行に限定)直後へ挿入」方式を用いる——scripts/deadman_switch.sh 自身の
+# 殿宛ntfy(325行、無条件末尾追記)と同じ瑕疵(PR#119是正で判明済み・dashboard.md
+# 記載のFU-1)を新設個所で繰り返さないため。
+SETTINGS_FILE="${DEADMAN_SETTINGS_FILE:-$SCRIPT_DIR/config/settings.yaml}"
+SETTINGS_MISSING_COOLDOWN_SEC=$((6 * 60 * 60))  # 6h に1度(狼少年化防止・cmd_741の3h間引きに倣い、殿への実害が無い間はやや長め)
+SETTINGS_MISSING_LAST_FIRE_FILE="$STATE_DIR/settings_missing_last_fire_epoch.txt"
+if [ ! -f "$SETTINGS_FILE" ]; then
+  _sm_last_fire=0
+  [ -f "$SETTINGS_MISSING_LAST_FIRE_FILE" ] && _sm_last_fire=$(cat "$SETTINGS_MISSING_LAST_FIRE_FILE" 2>/dev/null || echo 0)
+  if [ $(( now_epoch - _sm_last_fire )) -ge "$SETTINGS_MISSING_COOLDOWN_SEC" ]; then
+    _sm_entry="- 🚨 [deadman_switch] config/settings.yaml が見当たらぬ(ntfy送信・model解決・停滞閾値等の要設定が消失中)。復旧要 @ $now_iso"
+    if [ -f "$DASHBOARD" ]; then
+      _sm_marker=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$DASHBOARD" | cut -d: -f1)
+      if [ -n "$_sm_marker" ]; then
+        _sm_tmp=$(mktemp)
+        printf '%s\n' "$_sm_entry" > "$_sm_tmp"
+        _sm_out=$(mktemp)
+        sed "${_sm_marker}r ${_sm_tmp}" "$DASHBOARD" > "$_sm_out" && mv "$_sm_out" "$DASHBOARD"
+        rm -f "$_sm_tmp" "$_sm_out"
+      else
+        printf '\n%s\n' "$_sm_entry" >> "$DASHBOARD"
+      fi
+    fi
+    echo "$now_epoch" > "$SETTINGS_MISSING_LAST_FIRE_FILE"
+    echo "[deadman_switch] $now_iso SETTINGS_YAML_MISSING detected" >> "$LOG_FILE"
+  fi
+fi
+
 file_count=0
 stalled=()
 stalled_agents=()  # cmd_783: 殿宛エスカレーション比較用の素のagent名一覧(detail文言を含まぬ)

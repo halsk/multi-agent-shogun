@@ -100,7 +100,7 @@ jobs:
 
       - name: Run legacy shell test suites (non-bats)
         run: |
-          for f in tests/test_stall_watchdog.sh tests/test_console_stall_watchdog.sh; do
+          for f in tests/test_stall_watchdog.sh tests/test_console_stall_watchdog.sh tests/test_deadman_switch.sh; do
             echo "::group::$f"
             bash "$f" || {
               echo "::error::$f failed"
