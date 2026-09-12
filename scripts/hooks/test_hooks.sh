@@ -491,6 +491,33 @@ check "git -C <feature repo>: commit (allow, 過剰ブロック防止)" allow "g
 rm -rf "$GITC_FEAT"
 
 echo ""
+echo "=== Hook 3 FP-H3是正: heredoc本文の地の文誤検知 (has_git_subcmd共通・軍師PR#122実地発見) ==="
+# shellcheck disable=SC2016
+check "FP-H3: quoted heredoc body citing git commit/push as prose (allow, no real git op)" allow \
+'cat > /tmp/fph3_test_report.yaml <<'"'"'EOF'"'"'
+test_name: "git commit falsely blocked test"
+detail: "Hook3 mis-detects git push string in prose"
+EOF'
+# shellcheck disable=SC2016
+check "FP-H3: unquoted heredoc body citing git push as prose (allow, no real git op)" allow \
+'cat > /tmp/fph3_test_report2.yaml <<EOF
+detail: about git push safety and git commit hygiene
+EOF'
+# shellcheck disable=SC2016
+check "FP-H3: dash-form heredoc (<<-TAG, tab-indented terminator) citing git commit as prose (allow)" allow \
+'cat <<-EOF
+	git commit test in prose, not a real invocation
+	EOF'
+FPH3_MAIN_TMP=$(mktemp -d)
+git -C "$FPH3_MAIN_TMP" init -q -b main
+# shellcheck disable=SC2016
+check "FP-H3 no-regression: heredoc body containing real \$(git push) substitution still blocks" block \
+"cat > /tmp/fph3_no_regression.yaml <<EOF
+\$(git -C $FPH3_MAIN_TMP push origin main)
+EOF"
+rm -rf "$FPH3_MAIN_TMP"
+
+echo ""
 echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
 unset GH_TOKEN
 # BLOCK: --repo yohey-w/* を指定

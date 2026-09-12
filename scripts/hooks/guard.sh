@@ -48,13 +48,88 @@ resolve_git_dir() {
 GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
 
 # ============================================================
+# Helper: heredoc本文をgit検出用にマスクする (FP-H3是正・cmd_new_backtick_safety)
+# ------------------------------------------------------------
+# 背景: 軍師がPR#122のQC作業中、報告本文(ヒアドキュメント)の中に試験名として
+# "git commit"/"git push" 等の語が地の文として含まれていただけで、
+# has_git_subcmd() の単純な文字列一致がこれを実コマンドと誤判定し、
+# 実際は `cat` によるファイル書き出しに過ぎない操作をブロックした(FP-H3)。
+# 家老も同型(「git commit」「gh pr create」という語がプロース中にあっただけ)
+# を本セッション中に2度踏んでいる。
+#
+# ★設計方針(過剰設計を避け、Hook8と同程度の一パス走査に留める):
+#   heredoc本文(<<TAG 〜 TAG行、<<-TAG 〜 タブ許容TAG行、引用符の有無を問わず)
+#   を検出し、本文中に `$(` またはバッククォートが★一切含まれない場合に限り
+#   本文全体を "HEREDOC_BODY_MASKED" に置換する。
+#   ★安全側に倒す設計: 本文が `$(...)` やバッククォートによる実際のコマンド
+#   置換を含みうる場合は、検知漏れ(FN)を避けるため★マスクせず素通しする
+#   (=そこに本物の git push/commit があれば従来どおり検知される)。
+#   これにより「地の文としての語」は消え、「実行されうる位置の語」は
+#   残るため、FPを消しつつFNを増やさない。
+#   ★全般的な引用符(単一/二重)の地の文除外は本taskの範囲外とした——
+#   heredocが実際に踏まれた事故の形であり、二重引用符内の `$(`/バック
+#   クォート実行可否を正しく見分けるには括弧の深さ追跡等が必要になり、
+#   Hook8と同程度の一パス走査を超える。追加のfollowup taskとして
+#   別途検討されたい(本コミットのコメントに正直に記録)。
+# ============================================================
+_mask_heredoc_bodies_for_git_detection() {
+  local cmd="$1"
+  awk '
+    function strip_quotes(s,    t, n) {
+      t = s
+      if (substr(t,1,1) == "\047" || substr(t,1,1) == "\"" || substr(t,1,1) == "\\") {
+        t = substr(t, 2)
+      }
+      n = length(t)
+      if (n > 0 && (substr(t,n,1) == "\047" || substr(t,n,1) == "\"")) {
+        t = substr(t, 1, n-1)
+      }
+      return t
+    }
+    BEGIN { in_hd = 0; term = ""; strip_tabs = 0; body = ""; dangerous = 0 }
+    {
+      line = $0
+      if (in_hd) {
+        chk = line
+        if (strip_tabs) sub(/^\t+/, "", chk)
+        if (chk == term) {
+          if (dangerous) {
+            printf "%s", body
+          } else {
+            print "HEREDOC_BODY_MASKED"
+          }
+          print line
+          in_hd = 0; term = ""; body = ""; dangerous = 0; strip_tabs = 0
+          next
+        } else {
+          body = body line "\n"
+          if (index(line, "$(") > 0 || index(line, "`") > 0) dangerous = 1
+          next
+        }
+      }
+      print line
+      if (match(line, /<<-?[ ]*[A-Za-z_\x27"\\][A-Za-z0-9_]*[\x27"]?/)) {
+        tok = substr(line, RSTART, RLENGTH)
+        strip_tabs = (tok ~ /^<<-/) ? 1 : 0
+        sub(/^<<-?[ ]*/, "", tok)
+        term = strip_quotes(tok)
+        if (term != "") in_hd = 1
+      }
+    }
+  ' <<<"$cmd"
+}
+
+# ============================================================
 # Helper: detect git subcommand invocation
 # Catches: direct (git push), full path (/usr/bin/git push),
 #   command/env wrapper, function alias (f(){ git "$@"; }; f push),
 #   variable alias (v=git; $v push)
+# ★FP-H3是正: cmd は呼び出し直後に heredoc本文がマスクされたものへ
+#   置き換える。呼び出し側 (Hook1/3/D003/D004) は改修不要。
 # ============================================================
 has_git_subcmd() {
-  local cmd="$1"
+  local cmd
+  cmd="$(_mask_heredoc_bodies_for_git_detection "$1")"
   local subcmd="$2"
   # Direct: git push, git commit
   echo "$cmd" | grep -qE "git\s+$subcmd\b" && return 0
