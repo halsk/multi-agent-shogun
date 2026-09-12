@@ -77,8 +77,10 @@ for arg in "$@"; do
 done
 
 # ── 定数 ──────────────────────────────────────────────────────────────────────
-# gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
-ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi)
+# gunshi2は cmd_803(2026-09-12)・軍師2人体制の復帰によりALL_AGENTSへ再追加。
+# 2026-09-08 cmd_784撤収の原因(pane不在のまま設定のみ残存)はshutsujin_departure.shの
+# pane生成改修と対で解消済み(gunshi2 paneは常設)。
+ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2)
 STATE_DIR="$SCRIPT_DIR/queue/stall_watchdog"
 LOG_FILE="$SCRIPT_DIR/logs/stall_watchdog.log"
 

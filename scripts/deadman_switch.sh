@@ -155,11 +155,11 @@ for f in "$TASKS_DIR"/*.yaml; do
   # 実測で発見(2026-09-07): queue/tasks/にはgunshi_cmd624_design.yaml等
   # エージェント名でないファイルも混在し、真の実働エージェントに絞らねば
   # 何ヶ月も前のファイルが毎回誤検知される。既知の実働名のみ対象とする。
-  # ★gunshi2は実在しないpane(2026-09-05将軍確認済み・cmd_754で誤検知の
-  # 元凶となった)ゆえ対象から除外する。旧gunshi2.yaml(完結済み実績)は
-  # 削除でなくqueue/archive/へ退避済み(cmd_783)。
+  # gunshi2は cmd_803(2026-09-12)・軍師2人体制の復帰によりpaneが常設された
+  # (shutsujin_departure.sh改修と対)。2026-09-05〜cmd_754当時の「pane不在ゆえ除外」
+  # という前提はもう成り立たないため、監視対象へ戻す。
   case "$agent" in
-    ashigaru[0-9]|gunshi|karo|shogun) ;;
+    ashigaru[0-9]|gunshi|gunshi2|karo|shogun) ;;
     *) continue ;;
   esac
   file_count=$((file_count + 1))

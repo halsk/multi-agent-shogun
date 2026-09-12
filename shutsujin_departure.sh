@@ -399,6 +399,18 @@ task:
   timestamp: ""
 EOF
 
+    # 軍師2（gunshi2・cmd_803）タスクファイルリセット
+    cat > ./queue/tasks/gunshi2.yaml << EOF
+# 軍師2専用タスクファイル
+task:
+  task_id: null
+  parent_cmd: null
+  description: null
+  target_path: null
+  status: idle
+  timestamp: ""
+EOF
+
     # 足軽レポートファイルリセット
     for i in $(seq 1 "$_ASHIGARU_COUNT"); do
         cat > ./queue/reports/ashigaru${i}_report.yaml << EOF
@@ -419,11 +431,20 @@ status: idle
 result: null
 EOF
 
+    # 軍師2（gunshi2・cmd_803）レポートファイルリセット
+    cat > ./queue/reports/gunshi2_report.yaml << EOF
+worker_id: gunshi2
+task_id: null
+timestamp: ""
+status: idle
+result: null
+EOF
+
     # ntfy inbox リセット
     echo "inbox:" > ./queue/ntfy_inbox.yaml
 
     # agent inbox リセット
-    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi; do
+    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi gunshi2; do
         echo "messages:" > "./queue/inbox/${agent}.yaml"
     done
 
@@ -550,9 +571,9 @@ echo ""
 PANE_BASE=$(tmux show-options -gv pane-base-index 2>/dev/null || echo 0)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 5.1: multiagent セッション作成（9ペイン：karo + ashigaru1-8）
+# STEP 5.1: multiagent セッション作成（10ペイン：karo + ashigaru1-7 + gunshi + gunshi2）
 # ═══════════════════════════════════════════════════════════════════════════════
-log_war "⚔️ 家老・足軽・軍師の陣を構築中（9名配備）..."
+log_war "⚔️ 家老・足軽・軍師の陣を構築中（10名配備）..."
 
 # 最初のペイン作成
 if ! tmux new-session -d -s multiagent -n "agents" 2>/dev/null; then
@@ -579,26 +600,10 @@ else
     tmux set-environment -t multiagent DISPLAY_MODE "shout"
 fi
 
-# 3x3グリッド作成（合計9ペイン）
-# ペイン番号は pane-base-index に依存（0 または 1）
-# 最初に3列に分割
-tmux split-window -h -t "multiagent:agents"
-tmux split-window -h -t "multiagent:agents"
-
-# 各列を3行に分割
-tmux select-pane -t "multiagent:agents.${PANE_BASE}"
-tmux split-window -v
-tmux split-window -v
-
-tmux select-pane -t "multiagent:agents.$((PANE_BASE+3))"
-tmux split-window -v
-tmux split-window -v
-
-tmux select-pane -t "multiagent:agents.$((PANE_BASE+6))"
-tmux split-window -v
-tmux split-window -v
-
 # ペインラベル・エージェントID・色設定 — settings.yaml から動的に構築
+# ★先にAGENT_IDSを確定させ、その要素数からペイン数を導く(ペイン生成より前に置く)。
+# 固定グリッド(3x3等)の決め打ちを廃したのはcmd_803(9→10pane化)の教訓——
+# 「N pane前提のグリッド計算」を書くと、次にNが変わるたび同じ書き直しが要る。
 PANE_LABELS=("karo")
 AGENT_IDS=("karo")
 PANE_COLORS=("red")
@@ -610,11 +615,33 @@ done
 PANE_LABELS+=("gunshi")
 AGENT_IDS+=("gunshi")
 PANE_COLORS+=("yellow")
+# cmd_803(2026-09-12)・殿ご下命により軍師2人体制へ。gunshi2 = Fable専任
+# (前提破壊・創造的立案・非cyberの最難関のみ。QC本線は引き続きgunshi/Opus)。
+# 2026-09-08 cmd_784で一度撤収した直接原因は「paneが無いのに設定だけ残った」こと
+# ——ここでpane生成側を必ず伴わせ、config/settings.yaml側の有効化と対にする。
+PANE_LABELS+=("gunshi2")
+AGENT_IDS+=("gunshi2")
+PANE_COLORS+=("yellow")
+
+TOTAL_PANES=${#AGENT_IDS[@]}
+
+# ペイン生成（合計 TOTAL_PANES 枚）
+# ペイン番号は pane-base-index に依存（0 または 1）。
+# new-session時点で既に1枚(PANE_BASE)存在するため、残り(TOTAL_PANES-1)回split。
+# 毎回 select-layout tiled で retile することで、split対象ペインが常に
+# 十分な空間を持ち、"no space for new pane" を起こさず自動的に
+# 正方形寄りの読みやすい配置へ収束する(ペイン数が今後変わっても書き直し不要)。
+for ((_pn = 1; _pn < TOTAL_PANES; _pn++)); do
+    tmux split-window -t "multiagent:agents.${PANE_BASE}"
+    tmux select-layout -t multiagent:agents tiled
+done
 
 # モデル名設定（pane-border-format で常時表示するため）- 動的構築
 MODEL_NAMES=()
 for _ai in "${AGENT_IDS[@]}"; do
-    if [[ "$_ai" == "gunshi" ]]; then
+    if [[ "$_ai" == "gunshi2" ]]; then
+        MODEL_NAMES+=("Fable")
+    elif [[ "$_ai" == "gunshi" ]]; then
         MODEL_NAMES+=("Opus")
     elif [ "$KESSEN_MODE" = true ]; then
         MODEL_NAMES+=("Opus")
@@ -786,10 +813,12 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
         log_info "  └─ 足軽1-${_ASHIGARU_COUNT}（平時の陣）、召喚完了"
     fi
 
-    # 軍師（pane _ASHIGARU_COUNT+1）: Boost tier — Sonnet + --effort max（戦略構造化専任）
+    # 軍師1（gunshi・pane _ASHIGARU_COUNT+1）: ★claude-opus-5 明示ID固定（cmd_803・2026-09-12）
+    # aliasに委ねると次にalias先が動いた時に黙って別物へ替わる(2026-06-11殿確定の趣旨)。
+    # CLI_ADAPTER_LOADED=false のフォールバック時も明示IDにしておく。
     p=$((PANE_BASE + _ASHIGARU_COUNT + 1))
     _gunshi_cli_type="claude"
-    _gunshi_cmd="claude --model sonnet --effort max $PERMISSION_FLAG"
+    _gunshi_cmd="claude --model claude-opus-5 $PERMISSION_FLAG"
     if [ "$CLI_ADAPTER_LOADED" = true ]; then
         _gunshi_cli_type=$(get_cli_type "gunshi")
         _gunshi_cmd=$(build_cli_command "gunshi")
@@ -804,12 +833,34 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
     tmux send-keys -t "multiagent:agents.${p}" Enter
     _gunshi_display=$(get_model_display_name "gunshi" 2>/dev/null || echo "Opus+T")
     tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_gunshi_display" 2>/dev/null || true
-    log_info "  └─ 軍師（${_gunshi_display}）、召喚完了"
+    log_info "  └─ 軍師1（${_gunshi_display}）、召喚完了"
+
+    # 軍師2（gunshi2・pane _ASHIGARU_COUNT+2）: ★claude-fable-5-1 明示ID固定（cmd_803・2026-09-12）
+    # 殿ご下命により軍師2人体制へ復帰。前提破壊・創造的立案・独立視点での再検討に
+    # 特化(cyber/security系はFableのUsage Policyにより拒否されるためgunshi(Opus)へ)。
+    # マシン既定(~/.claude/settings.json)には依存せず、必ず明示IDで起動する。
+    p2=$((PANE_BASE + _ASHIGARU_COUNT + 2))
+    _gunshi2_cli_type="claude"
+    _gunshi2_cmd="claude --model claude-fable-5-1 $PERMISSION_FLAG"
+    if [ "$CLI_ADAPTER_LOADED" = true ]; then
+        _gunshi2_cli_type=$(get_cli_type "gunshi2")
+        _gunshi2_cmd=$(build_cli_command "gunshi2")
+    fi
+    _startup_prompt=$(get_startup_prompt "gunshi2" 2>/dev/null)
+    if [[ -n "$_startup_prompt" ]]; then
+        _gunshi2_cmd="$_gunshi2_cmd \"$_startup_prompt\""
+    fi
+    tmux set-option -p -t "multiagent:agents.${p2}" @agent_cli "$_gunshi2_cli_type"
+    tmux send-keys -t "multiagent:agents.${p2}" "$_gunshi2_cmd"
+    tmux send-keys -t "multiagent:agents.${p2}" Enter
+    _gunshi2_display=$(get_model_display_name "gunshi2" 2>/dev/null || echo "Fable")
+    tmux set-option -p -t "multiagent:agents.${p2}" @model_name "$_gunshi2_display" 2>/dev/null || true
+    log_info "  └─ 軍師2（${_gunshi2_display}）、召喚完了"
 
     if [ "$KESSEN_MODE" = true ]; then
         log_success "✅ 決戦の陣で出陣！全軍Opus！"
     else
-        log_success "✅ 平時の陣で出陣（家老=Sonnet, 足軽=Sonnet, 軍師=Opus）"
+        log_success "✅ 平時の陣で出陣（家老=Sonnet, 足軽=Sonnet, 軍師1=Opus, 軍師2=Fable）"
     fi
     echo ""
 
@@ -902,7 +953,7 @@ NINJA_EOF
 
     # inbox ディレクトリ初期化（シンボリックリンク先のLinux FSに作成）
     mkdir -p "$SCRIPT_DIR/logs"
-    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi; do
+    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi gunshi2; do
         [ -f "$SCRIPT_DIR/queue/inbox/${agent}.yaml" ] || echo "messages:" > "$SCRIPT_DIR/queue/inbox/${agent}.yaml"
     done
 
@@ -935,14 +986,21 @@ NINJA_EOF
         disown
     done
 
-    # 軍師のwatcher
+    # 軍師1のwatcher
     p=$((PANE_BASE + _ASHIGARU_COUNT + 1))
     _gunshi_watcher_cli=$(tmux show-options -p -t "multiagent:agents.${p}" -v @agent_cli 2>/dev/null || echo "claude")
     nohup bash "$SCRIPT_DIR/scripts/inbox_watcher.sh" "gunshi" "multiagent:agents.${p}" "$_gunshi_watcher_cli" \
         >> "$SCRIPT_DIR/logs/inbox_watcher_gunshi.log" 2>&1 &
     disown
 
-    log_success "  └─ $((_ASHIGARU_COUNT + 3))エージェント分のinbox_watcher起動完了（将軍+家老+足軽${_ASHIGARU_COUNT}+軍師）"
+    # 軍師2のwatcher（cmd_803・2026-09-12）
+    p2=$((PANE_BASE + _ASHIGARU_COUNT + 2))
+    _gunshi2_watcher_cli=$(tmux show-options -p -t "multiagent:agents.${p2}" -v @agent_cli 2>/dev/null || echo "claude")
+    nohup bash "$SCRIPT_DIR/scripts/inbox_watcher.sh" "gunshi2" "multiagent:agents.${p2}" "$_gunshi2_watcher_cli" \
+        >> "$SCRIPT_DIR/logs/inbox_watcher_gunshi2.log" 2>&1 &
+    disown
+
+    log_success "  └─ $((_ASHIGARU_COUNT + 4))エージェント分のinbox_watcher起動完了（将軍+家老+足軽${_ASHIGARU_COUNT}+軍師1+軍師2）"
 
     # STEP 6.7 は廃止 — CLAUDE.md Session Start (step 1: tmux agent_id) で各自が自律的に
     # 自分のinstructions/*.mdを読み込む。検証済み (2026-02-08)。
@@ -1042,17 +1100,10 @@ echo "     ┌──────────────────────
 echo "     │  Pane 0: 将軍 (SHOGUN)      │  ← 総大将・プロジェクト統括"
 echo "     └─────────────────────────────┘"
 echo ""
-echo "     【multiagentセッション】家老・足軽・軍師の陣（3x3 = 9ペイン）"
-echo "     ┌─────────┬─────────┬─────────┐"
-echo "     │  karo   │ashigaru3│ashigaru6│"
-echo "     │  (家老) │ (足軽3) │ (足軽6) │"
-echo "     ├─────────┼─────────┼─────────┤"
-echo "     │ashigaru1│ashigaru4│ashigaru7│"
-echo "     │ (足軽1) │ (足軽4) │ (足軽7) │"
-echo "     ├─────────┼─────────┼─────────┤"
-echo "     │ashigaru2│ashigaru5│ gunshi  │"
-echo "     │ (足軽2) │ (足軽5) │ (軍師)  │"
-echo "     └─────────┴─────────┴─────────┘"
+echo "     【multiagentセッション】家老・足軽・軍師の陣（${TOTAL_PANES}ペイン・tiled配置）"
+echo "     karo, ashigaru1-${_ASHIGARU_COUNT}, gunshi(軍師1・Opus), gunshi2(軍師2・Fable)"
+echo "     ※実配置はペイン数に応じてtmux tiledレイアウトが自動決定するため固定図は持たない。"
+echo "        実際の並びは: tmux list-panes -t multiagent -F '#{pane_index} #{@agent_id}'"
 echo ""
 
 echo ""
@@ -1070,8 +1121,8 @@ if [ "$SETUP_ONLY" = true ]; then
     echo "  │  tmux send-keys -t shogun:main \\                         │"
     echo "  │    'claude ${PERMISSION_FLAG}' Enter         │"
     echo "  │                                                          │"
-    echo "  │  # 家老・足軽を一斉召喚                                  │"
-    echo "  │  for p in \$(seq $PANE_BASE $((PANE_BASE+8))); do                                 │"
+    echo "  │  # 家老・足軽・軍師1・軍師2を一斉召喚                    │"
+    echo "  │  for p in \$(seq $PANE_BASE $((PANE_BASE+TOTAL_PANES-1))); do                                 │"
     echo "  │      tmux send-keys -t multiagent:agents.\$p \\            │"
     echo "  │      'claude ${PERMISSION_FLAG}' Enter       │"
     echo "  │  done                                                    │"

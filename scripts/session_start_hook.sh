@@ -35,7 +35,7 @@ echo "[$(date -Iseconds)] $AGENT_ID session_start_hook fired" \
     >> "$LOG_DIR/session_start_hook.log" || true
 
 case "$AGENT_ID" in
-    shogun|karo|gunshi)
+    shogun|karo|gunshi|gunshi2)
         # command-layer agents: full Session Start (Step 1-5)
         cat <<EOF
 **CRITICAL: Session Start 手順を最優先で実行せよ**

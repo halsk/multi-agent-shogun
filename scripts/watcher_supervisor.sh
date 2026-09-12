@@ -66,8 +66,10 @@ start_ntfy_listener_if_missing() {
     launch_ntfy_listener "$log_file"
 }
 
-# gunshi2は2026-09-08 cmd_784で正式に畳んだ(pane不在・設定のみ残存が誤検知の元だった)。ALL_AGENTSから除外。
-ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi)
+# gunshi2は cmd_803(2026-09-12)・軍師2人体制の復帰により再度ALL_AGENTSへ加える。
+# 2026-09-08 cmd_784で一度撤収した理由(pane不在のまま設定のみ残存し誤検知の元だった)を
+# 繰り返さぬよう、今回はshutsujin_departure.shのpane生成と対で有効化している。
+ALL_AGENTS=(shogun karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi gunshi2)
 
 # ─── D006-safe watcher swap-in (cmd_760 item③) ───
 # D006 (kill系統無条件禁止) を破らずに、稼働中の inbox_watcher.sh に新しい
