@@ -99,6 +99,12 @@ cooldown_ok() {
 }
 
 mark_notified() {
+    # cmd_800 follow-up: IS_BOOTSTRAP時はnotify_dashboard/send_ntfy側で通知自体を
+    # 抑止しているが、ここでcooldownタイムスタンプだけ書いてしまうと「通知して
+    # いないのにcooldownだけ消費される」事故になり、bootstrap直後に本物の閾値
+    # 超過が起きても最大12〜24時間検知が遅れる(dry-runと同じ理屈でここも
+    # 抑止する必要がある)。
+    $IS_BOOTSTRAP && return
     state_set "${1}_ts" "$(now_epoch)"
 }
 
@@ -108,6 +114,10 @@ notify_dashboard() {
     local entry="$1"
     if $DRY_RUN; then
         log "[DRY-RUN] dashboard記録: $entry"
+        return
+    fi
+    if $IS_BOOTSTRAP; then
+        log "[BOOTSTRAP] dashboard記録を抑止(baseline扱い): $entry"
         return
     fi
     if [ -f "$DASHBOARD_FILE" ]; then
@@ -132,6 +142,10 @@ send_ntfy() {
     local msg="$1"
     if $DRY_RUN; then
         log "[DRY-RUN] ntfy送信: $msg"
+        return
+    fi
+    if $IS_BOOTSTRAP; then
+        log "[BOOTSTRAP] ntfy送信を抑止(baseline扱い): $msg"
         return
     fi
     # cmd_795・殿裁定(丙)により殿宛ntfyを停止(2026-09-11・dashboardで家老は見えるゆえ殿ntfyのみ停止)
@@ -283,6 +297,28 @@ else
     _ld="${LOCK_FILE}.d"; _i=0
     while ! mkdir "$_ld" 2>/dev/null; do sleep 0.1; _i=$((_i+1)); [ $_i -ge 300 ] && { log "already running (lock held) — exiting"; exit 0; }; done
     trap "rmdir '$_ld' 2>/dev/null" EXIT
+fi
+
+# ── 初回起動ブートストラップ・ガード ─────────────────────────────────────────
+# state.yaml が空/不在の初回実行は、現在のサイズ等をseedとして記録するのみで
+# 通知(dashboard/ntfy)は一切出さない(baseline扱い・超過とは判定しない)。
+# RunAtLoad=true な launchd 配線は「load即発火・state未seed」の初回実行を
+# 本番へそのまま書き込みかねない(cmd_800事故本体)ため、判定より前に
+# このrunがbootstrapか(=このrun開始時点でstate.yamlが空/不在だったか)を
+# 固定しておく。以降のstate_set/mark_notified呼び出しでstate.yamlが
+# 作られてもこの判定自体は変わらない(このrunの最初の一回だけ判定すればよい)。
+IS_BOOTSTRAP=false
+[ -s "$STATE_FILE" ] || IS_BOOTSTRAP=true
+if $IS_BOOTSTRAP; then
+    log "[BOOTSTRAP] state.yaml空/不在 — 本runはseedのみ・通知なし"
+    # mark_notified()はIS_BOOTSTRAP中に自身のcooldown書込を抑止するため
+    # (通知していないのにcooldownだけ消費される事故を防ぐ・cmd_800
+    # follow-up)、layer3のlast-run.jsonが無い環境ではこのrunだけでは
+    # state.yamlが一切作られない場合がある。それだと次回runも
+    # 「空/不在」のままbootstrap判定が繰り返され、実際の閾値超過が
+    # 永久に検知されない。ここで明示的にbaseline seedを書き、以後の
+    # runをbootstrap扱いから確実に外す。
+    state_set "bootstrap_seeded_ts" "$(now_epoch)"
 fi
 
 # ── メイン実行 ──────────────────────────────────────────────────────────────

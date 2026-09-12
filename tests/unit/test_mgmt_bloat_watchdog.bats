@@ -60,6 +60,17 @@ dashboard_entry_count() {
     grep -c "$pattern" "$root/dashboard.md" || true
 }
 
+seed_bootstrapped_state() {
+    # cmd_800 follow-up: IS_BOOTSTRAPガードはstate.yamlが空/不在のrunを
+    # 「初回起動」とみなし通知を抑止する。このガードの対象はあくまで
+    # launchd RunAtLoadによる本物の初回起動であり、「watchdogが既に
+    # 稼働してきた状態」を模すテストは、初回起動と混同されないよう
+    # 事前にstate.yamlへ何らかの記録があることにしておく必要がある。
+    local root="$1"
+    mkdir -p "$root/queue/mgmt_bloat_watchdog"
+    printf '_seeded: "1"\n' > "$root/queue/mgmt_bloat_watchdog/state.yaml"
+}
+
 write_last_run() {
     # write_last_run <root> <timestamp> <archived_count>
     local root="$1" ts="$2" archived="$3"
@@ -88,6 +99,7 @@ JSON
     local root
     root="$(mktemp -d "/tmp/mbw_XXXXXX")"
     build_tmp_project "$root"
+    seed_bootstrapped_state "$root"
 
     # tasks閾値=20000B。25000Bのdummyを作る(2倍=40000未満)。
     python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*25000))"
@@ -103,6 +115,7 @@ JSON
     local root
     root="$(mktemp -d "/tmp/mbw_XXXXXX")"
     build_tmp_project "$root"
+    seed_bootstrapped_state "$root"
 
     # tasks閾値=20000B。2倍=40000B超のdummyを作る。
     python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*45000))"
@@ -120,6 +133,7 @@ JSON
     local root
     root="$(mktemp -d "/tmp/mbw_XXXXXX")"
     build_tmp_project "$root"
+    seed_bootstrapped_state "$root"
 
     python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*45000))"
 
@@ -242,11 +256,47 @@ JSON
     run run_watchdog "$root" --dry-run
     [ ! -f "$root/queue/mgmt_bloat_watchdog/state.yaml" ]
 
+    # cmd_800 follow-up: dry-runの後もstate.yamlは未作成のままなので、直後の
+    # 実runはIS_BOOTSTRAPガード対象になってしまう(本テストの主眼である
+    # cooldown非汚染とは別の関心事)。本テストが検証したいのは「dry-runは
+    # cooldownを汚染しない」ことなので、bootstrap抑止と混同しないよう、
+    # ここで初めてwatchdogが稼働してきた体を模してseedする。
+    seed_bootstrapped_state "$root"
+
     # dry-runの後で実行しても、cooldownに邪魔されず初回どおりdashboard記録される。
     # cmd_795・殿裁定(丙・2026-09-11)によりntfyは常に0(送信そのものを停止)。
     run run_watchdog "$root"
     [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "1" ]
     [ "$(ntfy_call_count "$root")" = "0" ]
+
+    rm -rf "$root"
+}
+
+@test "T-MBW-013: IS_BOOTSTRAPガード・state.yaml空/不在の初回runは閾値超過でも通知を抑止しbaselineのみ記録する(cmd_800 follow-up)" {
+    local root
+    root="$(mktemp -d "/tmp/mbw_XXXXXX")"
+    build_tmp_project "$root"
+
+    # state.yamlはbuild_tmp_project時点では存在しない(=真の初回起動を模す)。
+    [ ! -f "$root/queue/mgmt_bloat_watchdog/state.yaml" ]
+
+    # 閾値の2倍超の肥大(本来ならdashboard記録+本来ntfy対象になりうる規模)を
+    # あらかじめ置いた状態での「初回起動」を模す。cmd_800事故は、これが
+    # launchd RunAtLoad直後に実際に起きたケースだった。
+    python3 -c "open('$root/queue/tasks/ashigaru4.yaml','w').write('task:\n  status: assigned\n  note: |\n' + ('x'*45000))"
+
+    run run_watchdog "$root"
+    [ "$status" -eq 0 ]
+    # 初回起動はbaseline扱い・通知は一切出さない。
+    [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "0" ]
+    [ "$(ntfy_call_count "$root")" = "0" ]
+
+    # 初回runでstate.yamlが作られる(以後は「稼働してきた」状態になる)。
+    [ -f "$root/queue/mgmt_bloat_watchdog/state.yaml" ]
+
+    # 2回目のrun(state.yamlは既に存在)は真の閾値超過として通常どおり検知する。
+    run run_watchdog "$root"
+    [ "$(dashboard_entry_count "$root" "mgmt_bloat_watchdog")" = "1" ]
 
     rm -rf "$root"
 }
