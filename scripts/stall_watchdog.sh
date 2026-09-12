@@ -375,12 +375,14 @@ notify_dashboard_e4_limit() {
     local minutes=$(( elapsed / 60 ))
     local entry="- 🚨 [e4_suppress_limit] ${agent}: human attach抑止(E4)が約${minutes}分継続中。attachしたまま放置されていないか確認せよ @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -461,13 +463,15 @@ notify_dashboard() {
     fi
     # dashboard.md の 🚨要対応 セクションに追記
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # 🚨要対応 直後の行に挿入
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -573,12 +577,14 @@ notify_dashboard_ledger_mismatch() {
     local hours=$(( age / 3600 ))
     local entry="- 🚨 [ledger_mismatch] ${cmd_id}: ${report_file##*/} はdone報告済だが台帳status=${ledger_status}のまま約${hours}時間経過 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -630,12 +636,14 @@ notify_dashboard_blocked_reason_gap() {
     ts=$(now_iso)
     local entry="- 🚨 [blocked_reason_gap] ${file_name}: status=${status}なのにblocked_on/blocked_reasonが空 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -709,12 +717,14 @@ notify_dashboard_three_way_mismatch() {
     [[ "$inbox_ok" == "0" ]] && detail="${detail}(参考: inbox通知未検出・判定には不使用)"
     local entry="- 🚨 [three_way_mismatch] ${agent}(${parent_cmd}): reportはdone報告済だが${detail}のまま約${hours}時間経過 @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -777,11 +787,13 @@ notify_dashboard_file_collision() {
     ts=$(now_iso)
     local entry="- 🚨 [file_collision/RACE-001] ${path} が複数の稼働中taskで同時に触られる割当になっている: ${agents} @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓)。一時ファイル経由へ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -820,10 +832,12 @@ notify_dashboard_undeclared_touches() {
     ts=$(now_iso)
     local entry="- 🚨 [touches_files未宣言/RACE-001] ${agent}(status=${status})が並行稼働中なのにtouches_filesを宣言していない(衝突検知の盲点)。task YAMLへ触れるファイルを列挙せよ @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -890,12 +904,14 @@ notify_dashboard_orphan_cmd() {
     ts=$(now_iso)
     local entry="- 🚨 [orphan_cmd] ${cmd_id}: 台帳status=${status}だが誰にも割り当てられていない(孤児cmd) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -950,12 +966,14 @@ notify_dashboard_heartbeat() {
     ts=$(now_iso)
     local entry="- 🚨 [heartbeat] ${job_name}: ${hb_status} — ${detail} @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -1114,10 +1132,12 @@ notify_dashboard_stale_errlog() {
     ts=$(now_iso)
     local entry="- 🚨 [stale-errlog] ${job_name}: ${detail} @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -1216,10 +1236,12 @@ notify_dashboard_unresolved_review() {
     ts=$(now_iso)
     local entry="- 🚨 [unresolved-review] ${pr_url} — 未解決の人間レビュー${count}件(最古手番変更${oldest}・${breakdown}) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -1294,10 +1316,12 @@ notify_dashboard_unreviewed_authored_pr() {
     ts=$(now_iso)
     local entry="- 🚨 [unreviewed_pr] ${pr_url} — 著者=我ら・レビュー0件のままOPEN経過約${elapsed_days}営業日(作成 ${created_at}) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -1363,10 +1387,12 @@ notify_dashboard_orphan_test() {
     ts=$(now_iso)
     local entry="- 🚨 [orphan_test/cmd_741] ${rel_path} がどのCI job/Makefileからも実行されていない(orphan test) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
@@ -1410,10 +1436,12 @@ notify_dashboard_unconsumed_report() {
     local label="${parent_cmd:-$task_id}"
     local entry="- 🚨 [unconsumed_report/cmd_741] ${agent}のreport(${label})がdone報告後約${hours}時間、dashboard.mdに一度も言及されていない(QC判定死蔵の疑い) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
-    if [[ -f "$dashboard" ]] && grep -q '🚨要対応' "$dashboard"; then
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "/🚨要対応/a\\
+        sed "${_dash_marker}a\\
 $entry
 " "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
