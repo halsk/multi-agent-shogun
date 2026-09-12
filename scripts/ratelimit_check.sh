@@ -45,7 +45,10 @@ _ashigaru_ids_str=$(get_ashigaru_ids 2>/dev/null || echo "ashigaru1 ashigaru2 as
 ALL_AGENTS=("shogun" "karo")
 for _aid in $_ashigaru_ids_str; do ALL_AGENTS+=("$_aid"); done
 ALL_AGENTS+=("gunshi")
-# gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
+# gunshi2は cmd_803(2026-09-12)・軍師2人体制の復帰によりALL_AGENTSへ再追加。
+# 2026-09-08 cmd_784撤収の原因(pane不在のまま設定のみ残存)はshutsujin_departure.shの
+# pane生成改修と対で解消済み(gunshi2 paneは常設)。
+ALL_AGENTS+=("gunshi2")
 
 # ═══════════════════════════════════════════════════════
 # Phase 1: Scan all tmux panes for metadata

@@ -506,18 +506,11 @@ bash shutsujin_departure.sh
 
 **期待**: tmux session `multiagent` 内に 10 pane 作成（karo + ashigaru1-7 + gunshi + gunshi2）、shogun session も別途。
 
-**gunshi2 手動追加手順** (shutsujin_departure.sh が 9 pane 起動のままの場合):
-```bash
-# agents window に 10 番目のペインを追加
-tmux new-window -t multiagent:agents -a  # 不要、split-pane を使う
-# または split-pane で追加
-tmux split-window -t multiagent:agents -h
-# @agent_id を設定
-tmux set-option -p -t multiagent:agents.9 @agent_id gunshi2
-tmux set-option -p -t multiagent:agents.9 @agent_cli claude
-# claude CLI 起動 (Fable 5)
-tmux send-keys -t multiagent:agents.9 "claude --model claude-fable-5 --dangerously-skip-permissions" Enter
-```
+**cmd_803(2026-09-12)以降、gunshi2は shutsujin_departure.sh が自動生成する**
+（pane生成はtiledレイアウトへ自動収束・起動モデルは `claude-fable-5-1` を明示IDで固定）。
+以前ここにあった手動追加手順は不要になったため削除した。手動で追加し直す必要が
+生じた場合は、shutsujin_departure.sh 内の `AGENT_IDS`/`PANE_LABELS` 配列と
+軍師2起動ブロック（`_gunshi2_cmd`）を参照せよ。
 
 ### 7.2 確認
 

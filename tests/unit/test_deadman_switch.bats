@@ -311,22 +311,21 @@ YAML
   [ ! -s "$CALLS_LOG" ]
 }
 
-# ── T-DM-017: gunshi2は実在しないpane(2026-09-05将軍確認済み)ゆえ停止検知の
-#   対象から除外される ──
-@test "T-DM-017: gunshi2は停止検知の対象から除外される" {
+# ── T-DM-017: gunshi2はcmd_803(2026-09-12・軍師2人体制)によりpaneが常設化され、
+#   停止検知の対象に含まれるようになった(旧T-DM-017は「pane不在ゆえ除外」を
+#   検証していたが、その前提はshutsujin_departure.shの改修で解消済み) ──
+@test "T-DM-017: gunshi2はpane常設化により停止検知の対象に含まれる" {
   cat > "$TMP_DIR/tasks/gunshi2.yaml" <<'YAML'
 task:
   status: assigned
 YAML
-  touch -t 202001010000.00 "$TMP_DIR/tasks/gunshi2.yaml"
-  touch -t 202609081359.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  touch -t 202609081000.00 "$TMP_DIR/tasks/gunshi2.yaml"
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [ ! -f "$DEADMAN_STATE_DIR/last_fire_epoch.txt" ]
+  [ -s "$KARO_CALLS_LOG" ]
   [ ! -s "$CALLS_LOG" ]
-  [ ! -s "$KARO_CALLS_LOG" ]
-  run grep -o "gunshi2" "$DEADMAN_DASHBOARD"
-  [ -z "$output" ]
+  run grep -o "gunshi2" "$KARO_CALLS_LOG"
+  [ -n "$output" ]
 }
 
 # ══════════════════════════════════════════════════════════════════════════

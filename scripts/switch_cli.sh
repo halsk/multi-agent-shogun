@@ -48,7 +48,7 @@ log() {
 usage() {
     echo "Usage: $0 <agent_id> [--type <cli_type>] [--model <model_name>]"
     echo ""
-    echo "  agent_id   karo, ashigaru1-7, gunshi"
+    echo "  agent_id   karo, ashigaru1-7, gunshi, gunshi2"
     echo "  --type     claude | codex | copilot | kimi"
     echo "  --model    claude-sonnet-4-6 | claude-opus-4-6 | gpt-5.3-codex | etc."
     echo ""
@@ -98,7 +98,7 @@ resolve_pane() {
         ashigaru6)  echo "multiagent:agents.$((pane_base + 6))" ;;
         ashigaru7)  echo "multiagent:agents.$((pane_base + 7))" ;;
         gunshi)     echo "multiagent:agents.$((pane_base + 8))" ;;
-        # gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
+        gunshi2)    echo "multiagent:agents.$((pane_base + 9))" ;;
         *)
             log "ERROR: Unknown agent_id: $agent_id"
             return 1

@@ -185,7 +185,7 @@ get_instruction_file() {
         shogun)    role="shogun" ;;
         karo)      role="karo" ;;
         gunshi)    role="gunshi" ;;
-        # gunshi2は2026-09-08 cmd_784で正式撤収済み(pane不在)。以後は追加しない。
+        gunshi2)   role="gunshi2" ;;
         ashigaru*) role="ashigaru" ;;
         *)
             echo "" >&2
@@ -288,6 +288,7 @@ get_agent_model() {
                 shogun)         echo "opus" ;;
                 karo)           echo "sonnet" ;;
                 gunshi)         echo "opus" ;;
+                gunshi2)        echo "claude-fable-5-1" ;;
                 ashigaru*)      echo "sonnet" ;;
                 *)              echo "sonnet" ;;
             esac
