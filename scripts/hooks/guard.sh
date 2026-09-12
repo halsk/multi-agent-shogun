@@ -108,12 +108,23 @@ _mask_heredoc_bodies_for_git_detection() {
         }
       }
       print line
-      if (match(line, /<<-?[ ]*[A-Za-z_\x27"\\][A-Za-z0-9_]*[\x27"]?/)) {
-        tok = substr(line, RSTART, RLENGTH)
+      # here-string (<<<word) は heredoc ではない。検出用の写しからのみ潰す。
+      probe = line
+      gsub(/<<</, "HERESTRING", probe)
+      if (match(probe, /<<-?[ ]*[A-Za-z_\x27"\\][A-Za-z0-9_]*[\x27"]?/)) {
+        tok = substr(probe, RSTART, RLENGTH)
         strip_tabs = (tok ~ /^<<-/) ? 1 : 0
         sub(/^<<-?[ ]*/, "", tok)
         term = strip_quotes(tok)
         if (term != "") in_hd = 1
+      }
+    }
+    # 終端行の無い heredoc は bash が EOF まで本文として読む(置換も展開する)。
+    # 溜めた本文を捨てず、通常の終端と同じ規則で流す(捨てると検知漏れになる)。
+    END {
+      if (in_hd) {
+        if (dangerous) printf "%s", body
+        else print "HEREDOC_BODY_MASKED"
       }
     }
   ' <<<"$cmd"

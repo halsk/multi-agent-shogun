@@ -515,6 +515,17 @@ check "FP-H3 no-regression: heredoc body containing real \$(git push) substituti
 "cat > /tmp/fph3_no_regression.yaml <<EOF
 \$(git -C $FPH3_MAIN_TMP push origin main)
 EOF"
+# 終端行の無い heredoc: bash は EOF まで本文として読み置換も展開する。溜めた本文を捨てて検知漏れにしない。
+check "FP-H3 no-regression: unterminated heredoc body with real \$(git push) still blocks" block \
+"cat > /tmp/fph3_unterminated.yaml <<EOF
+\$(git -C $FPH3_MAIN_TMP push origin main)"
+# here-string <<<word を heredoc 開始と誤認して後続行を丸ごと飲み込まない。
+check "FP-H3 no-regression: here-string <<<word must not swallow a following real push" block \
+"cat <<<EOF
+git -C $FPH3_MAIN_TMP push origin main"
+check "FP-H3: unterminated heredoc with only prose (allow)" allow \
+'cat > /tmp/fph3_unterminated_prose.yaml <<EOF
+detail: prose mentioning git commit and git push only'
 rm -rf "$FPH3_MAIN_TMP"
 
 echo ""
