@@ -491,6 +491,165 @@ check "git -C <feature repo>: commit (allow, 過剰ブロック防止)" allow "g
 rm -rf "$GITC_FEAT"
 
 echo ""
+echo "=== Hook 3 FP-H3是正: heredoc本文の地の文誤検知 (has_git_subcmd共通・軍師PR#122実地発見) ==="
+# shellcheck disable=SC2016
+check "FP-H3: quoted heredoc body citing git commit/push as prose (allow, no real git op)" allow \
+'cat > /tmp/fph3_test_report.yaml <<'"'"'EOF'"'"'
+test_name: "git commit falsely blocked test"
+detail: "Hook3 mis-detects git push string in prose"
+EOF'
+# shellcheck disable=SC2016
+check "FP-H3: unquoted heredoc body citing git push as prose (allow, no real git op)" allow \
+'cat > /tmp/fph3_test_report2.yaml <<EOF
+detail: about git push safety and git commit hygiene
+EOF'
+# shellcheck disable=SC2016
+# v2: 受け手判定ゆえ file への書き出しを伴う形にする(リダイレクト無しの cat は安全側で block・FN-H3 節参照)
+check "FP-H3: dash-form heredoc (<<-TAG, tab-indented terminator) citing git commit as prose (allow)" allow \
+'cat > /tmp/fph3_dash.txt <<-EOF
+	git commit test in prose, not a real invocation
+	EOF'
+FPH3_MAIN_TMP=$(mktemp -d)
+git -C "$FPH3_MAIN_TMP" init -q -b main
+# shellcheck disable=SC2016
+check "FP-H3 no-regression: heredoc body containing real \$(git push) substitution still blocks" block \
+"cat > /tmp/fph3_no_regression.yaml <<EOF
+\$(git -C $FPH3_MAIN_TMP push origin main)
+EOF"
+# 終端行の無い heredoc: bash は EOF まで本文として読み置換も展開する。溜めた本文を捨てて検知漏れにしない。
+check "FP-H3 no-regression: unterminated heredoc body with real \$(git push) still blocks" block \
+"cat > /tmp/fph3_unterminated.yaml <<EOF
+\$(git -C $FPH3_MAIN_TMP push origin main)"
+# here-string <<<word を heredoc 開始と誤認して後続行を丸ごと飲み込まない。
+check "FP-H3 no-regression: here-string <<<word must not swallow a following real push" block \
+"cat <<<EOF
+git -C $FPH3_MAIN_TMP push origin main"
+check "FP-H3: unterminated heredoc with only prose (allow)" allow \
+'cat > /tmp/fph3_unterminated_prose.yaml <<EOF
+detail: prose mentioning git commit and git push only'
+rm -rf "$FPH3_MAIN_TMP"
+
+echo ""
+echo "=== Hook 3 FN-H3是正(v2): heredoc本文を『実行する受け手』はマスクしない (軍師QC PR#125・N1〜N7) ==="
+# PR#125 初版は「本文に \$( もバッククォートも無ければ安全」と本文の中身だけで
+# マスクを決めていた。だが受け手が bash/sh/zsh/source/eval/パイプ先/プロセス置換なら
+# 本文は置換の有無と無関係にそのままスクリプトとして実行される。main はこの7形を
+# 止めていたが PR#125 初版は全て通した(FN)。v2 は「本文の受け手」で判定する。
+FNH3_MAIN=$(mktemp -d)
+git -C "$FNH3_MAIN" init -q -b main
+check "FN-H3 N1: bash <<EOF body with real push to main (block)" block \
+"bash <<EOF
+git -C $FNH3_MAIN push origin main
+EOF"
+check "FN-H3 N2: sh <<'EOF' quoted body still executed (block)" block \
+"sh <<'EOF'
+git -C $FNH3_MAIN push origin main
+EOF"
+check "FN-H3 N3: cat <<EOF | bash pipe receiver executes body (block)" block \
+"cat <<EOF | bash
+git -C $FNH3_MAIN push origin main
+EOF"
+# shellcheck disable=SC2016
+check "FN-H3 N4: eval \"\$(cat <<EOF …)\" — \$( on the opener line, not in body (block)" block \
+"eval \"\$(cat <<EOF
+git -C $FNH3_MAIN push origin main
+EOF
+)\""
+check "FN-H3 N5: bash <(cat <<EOF …) process substitution (block)" block \
+"bash <(cat <<EOF
+git -C $FNH3_MAIN push origin main
+EOF
+)"
+check "FN-H3 N6: source /dev/stdin <<EOF (block)" block \
+"source /dev/stdin <<EOF
+git -C $FNH3_MAIN push origin main
+EOF"
+check "FN-H3 N7: zsh <<EOF arbitrary interpreter (block)" block \
+"zsh <<EOF
+git -C $FNH3_MAIN push origin main
+EOF"
+# FN-H3-2: 同じ入口(has_git_subcmd)を使う D003/D004 にも穴が及んでいた。branch 非依存で block。
+check "FN-H3-2 D003: bash <<EOF body with git push --force (block regardless of branch)" block \
+"bash <<EOF
+git push --force origin feature
+EOF"
+check "FN-H3-2 D004: bash <<EOF body with git reset --hard (block regardless of branch)" block \
+"bash <<EOF
+git reset --hard HEAD~1
+EOF"
+# 受け手が cat のファイル書き出しでも、その file を同じコマンド内で後から実行すれば本文は走る。
+# 書き出し先が再び現れる時はマスクしない(安全側)。
+check "FN-H3 N8: cat > file <<EOF then bash file (write-then-execute, block)" block \
+"cat > /tmp/fnh3_script.sh <<EOF
+git -C $FNH3_MAIN push origin main
+EOF
+bash /tmp/fnh3_script.sh"
+# 受け手が stdout(リダイレクト無し)の cat は行き先が定まらぬ(多行の \$( ) 内かもしれぬ)ので安全側で block。
+check "FN-H3 safe-side: cat <<EOF (no redirect) with real push in body (block)" block \
+"cat <<EOF
+git -C $FNH3_MAIN push origin main
+EOF"
+# 2> は stderr のみ・stdout は受け手不明 → 安全側で block。
+check "FN-H3 safe-side: cat 2> file <<EOF (stdout not redirected) with real push (block)" block \
+"cat 2> /tmp/fnh3_err.log <<EOF
+git -C $FNH3_MAIN push origin main
+EOF"
+# 書き出し先が変数なら行き先不明 → 安全側で block。
+# shellcheck disable=SC2016
+check "FN-H3 safe-side: cat > \$F <<EOF (variable target) with real push (block)" block \
+"F=/tmp/fnh3_v.sh; cat > \$F <<EOF
+git -C $FNH3_MAIN push origin main
+EOF
+bash \$F"
+# sink 条件の陽性例: cat の書き出し先がリテラル file で、同じ行に | \$( <( >( が無く、file を再利用しない → allow。
+check "FN-H3 sink-positive: cat <<EOF > file (redirect after tag) citing git push as prose (allow)" allow \
+'cat <<EOF > /tmp/fnh3_prose_after.yaml
+detail: prose mentioning git push and git commit
+EOF'
+check "FN-H3 sink-positive: mkdir && cat > file <<EOF citing git push as prose (allow)" allow \
+'mkdir -p /tmp/fnh3_dir && cat > /tmp/fnh3_dir/prose.yaml <<EOF
+detail: prose mentioning git push and git commit
+EOF'
+check "FN-H3 sink-positive: cat > file <<EOF then unrelated command (allow)" allow \
+'cat > /tmp/fnh3_prose2.yaml <<EOF
+detail: prose mentioning git push and git commit
+EOF
+echo written'
+
+# ★N1 実行実証: fixture(main)+ローカル bare remote。guard が rc=2 で止めれば remote に main は生えない。
+# guard が allow(rc=0)した場合のみ実際に実行し「穴が実害になる」ことを同じ試験で示す(bare は一時領域・外部影響なし)。
+FNH3_EXEC=$(mktemp -d)
+FNH3_BARE="$FNH3_EXEC/bare.git"
+FNH3_REPO="$FNH3_EXEC/mainrepo"
+git init -q --bare -b main "$FNH3_BARE"
+git init -q -b main "$FNH3_REPO"
+git -C "$FNH3_REPO" -c commit.gpgsign=false -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$FNH3_REPO" remote add origin "$FNH3_BARE"
+FNH3_N1_CMD="bash <<EOF
+git -C $FNH3_REPO push -q origin main
+EOF"
+FNH3_N1_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$FNH3_N1_CMD" | jq -Rs .)}}"
+echo "$FNH3_N1_JSON" | bash "$GUARD" >/dev/null 2>&1
+FNH3_N1_RC=$?
+if [[ $FNH3_N1_RC -eq 0 ]]; then
+  # guard が通した → 本当に実行して被害を可視化する
+  bash -c "$FNH3_N1_CMD" >/dev/null 2>&1 || true
+fi
+if git -C "$FNH3_BARE" show-ref --verify --quiet refs/heads/main; then
+  FNH3_REMOTE_MAIN="grown"
+else
+  FNH3_REMOTE_MAIN="absent"
+fi
+if [[ $FNH3_N1_RC -eq 2 && "$FNH3_REMOTE_MAIN" == "absent" ]]; then
+  echo "  ✅ BLOCK: FN-H3 N1 execution proof: guard rc=2 and bare remote has no main"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: FN-H3 N1 execution proof (guard rc=$FNH3_N1_RC, bare remote main=$FNH3_REMOTE_MAIN)"
+  ((FAIL++)) || true
+fi
+rm -rf "$FNH3_EXEC" "$FNH3_MAIN"
+
+echo ""
 echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
 unset GH_TOKEN
 # BLOCK: --repo yohey-w/* を指定
