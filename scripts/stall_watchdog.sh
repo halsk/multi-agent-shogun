@@ -164,7 +164,8 @@ CI_HEARTBEAT_NTFY_DELAY=$((3 * 60 * 60))
 # 別PRで行う想定)。
 ERRLOG_MAX_AGE_DEFAULT=$((3 * 24 * 60 * 60))
 ERRLOG_REGISTRY="stall-watchdog|$SCRIPT_DIR/logs/stall_watchdog.err.log|$ERRLOG_MAX_AGE_DEFAULT|
-auto-improve|/Users/hal/workspace/automation/logs/auto_improve.log|$ERRLOG_MAX_AGE_DEFAULT|"
+auto-improve|/Users/hal/workspace/automation/logs/auto_improve.log|$ERRLOG_MAX_AGE_DEFAULT|
+mgmt-bloat-watchdog|$SCRIPT_DIR/logs/mgmt_bloat_watchdog.err.log|$ERRLOG_MAX_AGE_DEFAULT|"
 
 # heartbeatと同じ考え方: dashboard(karo/gunshi向け)は検知の都度即時、
 # ntfy(殿の端末)はこの遅延を超えて同一状態が解消しない場合のみ1回だけ発火。
