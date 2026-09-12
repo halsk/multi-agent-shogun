@@ -112,7 +112,23 @@ jobs:
       - name: Run Python tests (claude_usage_report)
         run: |
           # tests/test_claude_usage_report.py (dotted module form below runs the same file)
-          .venv/bin/python3 -m unittest tests.test_claude_usage_report -v
+          # ★unittestはskippedがあってもexit 0を返す(FAILとは別物として扱う)ため、
+          # ここで明示的にskipped>0を検出して落とす(SKIP=FAILポリシー・FR-054)。
+          # 「Verify zero unexpected SKIPs」step はbatsのみを見ており、この非bats
+          # テストは門の外にあった(cmd_new_ci_orphan_tests軍師QC F-2)。
+          set +e
+          OUTPUT=$(.venv/bin/python3 -m unittest tests.test_claude_usage_report -v 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::Python tests failed"
+            exit 1
+          fi
+          if echo "$OUTPUT" | grep -qE '\bskipped=[1-9][0-9]*'; then
+            echo "::error::Python tests reported unexpected skips. SKIP = FAIL policy (FR-054)."
+            exit 1
+          fi
 
       - name: Verify zero unexpected SKIPs (SKIP=FAIL policy)
         run: |

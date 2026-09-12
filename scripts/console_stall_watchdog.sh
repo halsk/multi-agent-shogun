@@ -26,7 +26,10 @@ cd "$SCRIPT_DIR"
 # shellcheck source=../lib/console_stall_detect.sh
 source "$SCRIPT_DIR/lib/console_stall_detect.sh"
 
-SETTINGS="$SCRIPT_DIR/config/settings.yaml"
+# ★テストが閾値等を書き換える際、実在の config/settings.yaml を直接
+# sed+mv するのではなく、この環境変数でテスト専用の一時ファイルへ差し替え
+# られるようにする(cmd_new_ci_orphan_tests軍師QC F-3)。
+SETTINGS="${CONSOLE_STALL_WATCHDOG_SETTINGS:-$SCRIPT_DIR/config/settings.yaml}"
 STATE_DIR="$SCRIPT_DIR/queue/console_stall_watchdog"
 LOG_FILE="$SCRIPT_DIR/logs/console_stall_watchdog.log"
 STATE_FILE="$STATE_DIR/state.yaml"
@@ -127,7 +130,10 @@ state_set() {
 console_commit_epoch() {
     local repo_path
     repo_path=$(load_console_setting "repo_path" "")
-    [[ -d "$repo_path/.git" ]] || { echo 0; return; }
+    # ★git worktree では .git はディレクトリでなくファイル(gitdir: ...への
+    # ポインタ)になるため、[[ -d ]] 判定では worktree 上のrepo_pathを常に
+    # 「gitリポではない」と誤判定していた(cmd_new_ci_orphan_tests軍師QC F-1)。
+    git -C "$repo_path" rev-parse --git-dir >/dev/null 2>&1 || { echo 0; return; }
     git -C "$repo_path" log -1 --format=%ct 2>/dev/null || echo 0
 }
 
