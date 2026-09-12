@@ -578,6 +578,20 @@ check "Hook8 X5: backtick between two apostrophes inside dquotes (block)" block 
 check "Hook8 X6: single unclosed apostrophe with backtick (block, no regression)" block \
   'bash scripts/inbox_write.sh karo "It'"'"'s got a `date` in it" task_assigned karo'
 
+echo ""
+echo "=== Hook 8 followup3是正 (FP-3・区間境界に改行を追加・軍師QC pass_with_followup追加探索) ==="
+# FP-3是正確認: 呼出が1行目で完結していれば、境界(引用符の外の改行)で
+# 区間が閉じるため、★次の行にあるバッククォートは巻き込まれない
+# (是正前は in_call が改行を跨いで残り、無関係な次行のバッククォートまで
+# 誤ってブロックしていた)。
+check "Hook8 FP-3: backtick on the line AFTER a completed call (allow)" allow \
+  $'bash scripts/inbox_write.sh karo "safe body" task_assigned karo\necho `date`'
+# Y1(維持確認): 二重引用符の中で改行を跨ぐ本文にバッククォートがあれば、
+# 改行境界を追加した後も引き続き block のままである(二重引用符の中の
+# 改行は state=D のままで境界にならないため、影響を受けない)。
+check "Hook8 Y1: backtick inside dquoted body spanning a newline (block, no regression)" block \
+  $'bash scripts/inbox_write.sh karo "本文が複数行にわたり\n`date`を含む" task_assigned karo'
+
 # --- FN-1追加実証: 引用符なし(bare)のバッククォートが、guardのblockにより
 #     一度も評価されない(=対象ファイルが作られない)ことを実際に確かめる。
 #     ★実際の inbox_write.sh は呼ばず(karo の実inboxを汚さぬため)、
