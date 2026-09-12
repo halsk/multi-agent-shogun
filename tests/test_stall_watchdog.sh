@@ -178,7 +178,6 @@ DRY_RUN=false
 
 # 1n: notify_dashboard() の挿入位置
 _heading_line=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$DASH_FIXTURE" | cut -d: -f1)
-_body_line=$(grep -m1 -n '要対応' "$DASH_FIXTURE" | head -1 | cut -d: -f1)
 notify_dashboard "test_agent" "idle"
 _inserted_line=$(grep -n 'stall_watchdog\] test_agent が idle' "$DASH_FIXTURE" | cut -d: -f1)
 _expect_line=$(( _heading_line + 1 ))
