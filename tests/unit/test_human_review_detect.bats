@@ -547,3 +547,150 @@ setup() {
   grep -qE "detect_unreviewed_authored_pr_for_pr" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
   grep -qE "^geolonia/geonicdb" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── FU-1b是正(2026-09-12・PR#123軍師QC申し送り): reviews(last:50)の窓依存を
+# 解消する真の是正。fetch_pr_review_dataがGraphQLのpageInfo(hasNextPage/
+# endCursor)でreviews・reviewThreadsを全件ページングすることを、gh本体を
+# モック(サーバ側のページ幅を50件に固定した振る舞い)して検証する。
+# モックは引数中の query= と cursor= を読み、初回(cursor無し)は1ページ目、
+# 以降はcursorに応じた続きページを返す。呼出回数は$BATS_TEST_TMPDIR/gh_calls
+# へ1行ずつ追記して数える。
+
+_hrd_mock_gh_parse_args() {
+  # 使い方: _hrd_mock_gh_parse_args "$@" → MOCK_QUERY / MOCK_CURSOR を設定
+  MOCK_QUERY=""; MOCK_CURSOR=""
+  local a
+  for a in "$@"; do
+    case "$a" in
+      query=*)  MOCK_QUERY="${a#query=}" ;;
+      cursor=*) MOCK_CURSOR="${a#cursor=}" ;;
+    esac
+  done
+  echo "call query_has_cursor=$([[ "$MOCK_QUERY" == *'$cursor'* ]] && echo yes || echo no) cursor=${MOCK_CURSOR}" >> "$BATS_TEST_TMPDIR/gh_calls"
+}
+
+# ── T-HREV-037: FU-1b核心回帰——reviews totalCount=60・1ページ目(50件)が全てbot・
+# 2ページ目に人間レビュー1件。修正前(単発クエリ)は「人間レビュー0件」と誤判定して
+# 🚨を出すが、修正後はページングで全60件を取り、人間レビューを認識して非検知となる ──
+
+@test "T-HREV-037: detect_unreviewed_authored_pr_for_pr paginates reviews past a 50-item first page and recognises a human review on page 2 (FU-1b regression guard)" {
+  source "$LIB_FILE"
+
+  gh() {
+    _hrd_mock_gh_parse_args "$@"
+    local bots50 bots9
+    bots50=$(jq -nc '[range(50) | {author:{login:"coderabbitai"},state:"COMMENTED",body:null,createdAt:"2026-08-05T0\(. % 10):00:00Z"}]')
+    bots9=$(jq -nc '[range(9) | {author:{login:"coderabbitai"},state:"COMMENTED",body:null,createdAt:"2026-08-05T09:0\(.):00Z"}]')
+    if [[ -z "$MOCK_CURSOR" ]]; then
+      jq -nc --argjson b "$bots50" '{data:{repository:{pullRequest:{state:"OPEN",author:{login:"halsk"},createdAt:"2026-09-07T00:00:00Z",reviewDecision:null,
+        reviewThreads:{totalCount:0,pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+        reviews:{totalCount:60,pageInfo:{hasNextPage:true,endCursor:"cursor-50"},nodes:$b},
+        commits:{nodes:[]}}}}}'
+    elif [[ "$MOCK_CURSOR" == "cursor-50" && "$MOCK_QUERY" == *"reviews("* ]]; then
+      jq -nc --argjson b "$bots9" '{data:{repository:{pullRequest:{
+        reviews:{totalCount:60,pageInfo:{hasNextPage:false,endCursor:"cursor-60"},nodes:($b + [{author:{login:"dkastl"},state:"COMMENTED",body:null,createdAt:"2026-08-05T09:45:44Z"}])}}}}}'
+    else
+      echo "unexpected mock call: cursor=$MOCK_CURSOR" >&2
+      return 1
+    fi
+  }
+
+  run --separate-stderr detect_unreviewed_authored_pr_for_pr "geolonia" "skills" 81 \
+    "https://github.com/geolonia/skills/pull/81" "halsk" 3 "$BOTS"
+  [ "$status" -eq 0 ]
+  # 人間レビュー(dkastl・2ページ目)が存在するため非検知でなければならない
+  [ -z "$output" ]
+  # 全件取れているため取りこぼし警告も出ない
+  [[ "$stderr" != *"totalCount不足"* ]]
+  # ghは1ページ目+2ページ目の計2回呼ばれる
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')" -eq 2 ]
+}
+
+# ── T-HREV-038: 無限ループ防止——サーバが常にhasNextPage=trueを返しても
+# HRD_MAX_PAGES(追加ページ数の上限)で打ち止めし、なお不足ならcheck_pagination_
+# shortfallが「上限到達でなお不足」として警告する(警告は上限到達時だけ出る形へ整合) ──
+
+@test "T-HREV-038: fetch_pr_review_data stops after HRD_MAX_PAGES extra pages and check_pagination_shortfall still reports the remaining shortfall" {
+  source "$LIB_FILE"
+  export HRD_MAX_PAGES=2
+
+  gh() {
+    _hrd_mock_gh_parse_args "$@"
+    local n
+    n=$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')
+    if [[ -z "$MOCK_CURSOR" ]]; then
+      jq -nc --arg c "c$n" '{data:{repository:{pullRequest:{state:"OPEN",author:{login:"halsk"},createdAt:"2026-09-07T00:00:00Z",reviewDecision:null,
+        reviewThreads:{totalCount:0,pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+        reviews:{totalCount:1000,pageInfo:{hasNextPage:true,endCursor:$c},nodes:[{author:{login:"coderabbitai"},state:"COMMENTED",body:null,createdAt:"2026-08-05T01:00:00Z"}]},
+        commits:{nodes:[]}}}}}'
+    else
+      jq -nc --arg c "c$n" '{data:{repository:{pullRequest:{
+        reviews:{totalCount:1000,pageInfo:{hasNextPage:true,endCursor:$c},nodes:[{author:{login:"coderabbitai"},state:"COMMENTED",body:null,createdAt:"2026-08-05T02:00:00Z"}]}}}}}'
+    fi
+  }
+
+  run fetch_pr_review_data "geolonia" "skills" 81
+  [ "$status" -eq 0 ]
+  # 1ページ目 + 追加2ページ = 計3回で打ち止め
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')" -eq 3 ]
+  # 3ページ分のnodesが結合されている
+  [ "$(printf '%s' "$output" | jq '.data.repository.pullRequest.reviews.nodes | length')" -eq 3 ]
+  # 上限到達でなお不足 → 警告が出る
+  run check_pagination_shortfall "$output"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "reviews: fetched 3/1000" ]]
+}
+
+# ── T-HREV-039: reviewThreads側も同じ窓(first:100)を持つ兄弟経路——2ページ目に
+# ある人間の未解決スレッドをdetect_review_ball_holders_for_prが拾えること ──
+
+@test "T-HREV-039: detect_review_ball_holders_for_pr paginates reviewThreads and finds a human unresolved thread on page 2" {
+  source "$LIB_FILE"
+
+  gh() {
+    _hrd_mock_gh_parse_args "$@"
+    if [[ -z "$MOCK_CURSOR" ]]; then
+      jq -nc '{data:{repository:{pullRequest:{state:"OPEN",author:{login:"halsk"},createdAt:"2026-09-07T00:00:00Z",reviewDecision:null,
+        reviewThreads:{totalCount:3,pageInfo:{hasNextPage:true,endCursor:"t2"},nodes:[
+          {isResolved:true,comments:{nodes:[{author:{login:"coderabbitai"},createdAt:"2026-08-21T06:52:50Z"}]}},
+          {isResolved:true,comments:{nodes:[{author:{login:"coderabbitai"},createdAt:"2026-08-21T06:53:50Z"}]}}]},
+        reviews:{totalCount:0,pageInfo:{hasNextPage:false,endCursor:null},nodes:[]},
+        commits:{nodes:[]}}}}}'
+    elif [[ "$MOCK_CURSOR" == "t2" && "$MOCK_QUERY" == *"reviewThreads("* ]]; then
+      jq -nc '{data:{repository:{pullRequest:{
+        reviewThreads:{totalCount:3,pageInfo:{hasNextPage:false,endCursor:"t3"},nodes:[
+          {isResolved:false,comments:{nodes:[{author:{login:"yuiseki"},createdAt:"2026-06-27T06:19:54Z"}]}}]}}}}}'
+    else
+      echo "unexpected mock call: cursor=$MOCK_CURSOR" >&2
+      return 1
+    fi
+  }
+
+  run --separate-stderr detect_review_ball_holders_for_pr "geolonia" "somewhere" 1 \
+    "https://github.com/geolonia/somewhere/pull/1" "$BOTS"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "https://github.com/geolonia/somewhere/pull/1|1|2026-06-27T06:19:54Z|差し戻し中(足軽)x1" ]]
+  [[ "$stderr" != *"totalCount不足"* ]]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')" -eq 2 ]
+}
+
+# ── T-HREV-040: hasNextPage=falseなら追加の呼出は一切行わない(費用不変)。
+# 1ページ目のJSONがそのまま返ること ──
+
+@test "T-HREV-040: fetch_pr_review_data makes exactly one gh call when no connection has a next page" {
+  source "$LIB_FILE"
+
+  gh() {
+    _hrd_mock_gh_parse_args "$@"
+    jq -nc '{data:{repository:{pullRequest:{state:"OPEN",author:{login:"halsk"},createdAt:"2026-09-07T00:00:00Z",reviewDecision:null,
+      reviewThreads:{totalCount:1,pageInfo:{hasNextPage:false,endCursor:"t1"},nodes:[{isResolved:true,comments:{nodes:[]}}]},
+      reviews:{totalCount:1,pageInfo:{hasNextPage:false,endCursor:"r1"},nodes:[{author:{login:"dkastl"},state:"APPROVED",body:null,createdAt:"2026-08-05T01:00:00Z"}]},
+      commits:{nodes:[]}}}}}'
+  }
+
+  run fetch_pr_review_data "geolonia" "skills" 81
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -c '.data.repository.pullRequest.reviews.nodes | length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.data.repository.pullRequest.reviews.nodes[0].author.login')" == "dkastl" ]
+}
