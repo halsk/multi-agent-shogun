@@ -492,7 +492,7 @@ fi
 _has_unescaped_backtick_in_inbox_write_args() {
   local cmd="$1"
   printf '%s' "$cmd" | awk -v pat='inbox_write.sh' '
-    BEGIN { RS="\0" }
+    BEGIN { RS="\001" }
     {
       n = length($0)
       plen = length(pat)

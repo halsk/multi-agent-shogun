@@ -592,6 +592,34 @@ check "Hook8 FP-3: backtick on the line AFTER a completed call (allow)" allow \
 check "Hook8 Y1: backtick inside dquoted body spanning a newline (block, no regression)" block \
   $'bash scripts/inbox_write.sh karo "本文が複数行にわたり\n`date`を含む" task_assigned karo'
 
+echo ""
+echo "=== Hook 8 FN-3是正 (severity high・awk paragraph mode・軍師追加探索) ==="
+# 真因: awkの BEGIN{RS="\0"} は"\0"が空文字列と等価に扱われるため、実際には
+# RS=""(段落モード)として動作していた。段落モードは空行がレコード区切りとなり、
+# awkスクリプトは最初のレコード(=最初の空行より前)だけを処理してexitするため、
+# ★コマンド文字列に空行が含まれると、それより後ろは一度も走査されなかった。
+# 是正: RS="\0" → RS="\001"(コマンド文字列に現れ得ぬ制御文字)へ変更し、
+# コマンド全体を確実に単一レコードとして扱う。
+
+# FN-3現実形: ヒアドキュメントで報告文(本文に空行を含む)を書いた直後の行で
+# inbox_write.shをバッククォート入りの本文で呼ぶ、swarmで最も頻出する書き方。
+# 是正前はheredoc内の空行でレコードが分断され、後続のinbox_write.sh呼出が
+# 一度も走査されず素通りしていた(軍師実証)。
+check "Hook8 FN-3: heredoc containing a blank line, followed by a dangerous call on the next line (block)" block \
+  $'cat <<\'EOF\' > /tmp/report.md\nline one\n\nline two\nEOF\nbash scripts/inbox_write.sh karo "text `date` here" cmd_new shogun'
+
+# Z7相当: 呼出の2行上に空行を挟んだ形(ヒアドキュメントを介さない最小形)。
+# FN-3と同根(段落モードの分断)であることを、より単純な形でも確認する。
+check "Hook8 Z7: a blank line two lines above a dangerous call (block)" block \
+  $'echo "unrelated safe line"\n\nbash scripts/inbox_write.sh karo "text `date` here" cmd_new shogun'
+
+# Z1相当(軍師followup T-1): 行継続(バックスラッシュ+改行)の先に危険な
+# バッククォートがある形。バックスラッシュは改行を含めた次の1文字を読み飛ばす
+# ためin_callが途切れず、是正前後を問わずblockされるはずである
+# ——明示的な回帰テストとして収載する。
+check "Hook8 Z1: backslash line-continuation before the dangerous body (block, no regression)" block \
+  $'bash scripts/inbox_write.sh karo \\\n  "text `date` here" cmd_new shogun'
+
 # --- FN-1追加実証: 引用符なし(bare)のバッククォートが、guardのblockにより
 #     一度も評価されない(=対象ファイルが作られない)ことを実際に確かめる。
 #     ★実際の inbox_write.sh は呼ばず(karo の実inboxを汚さぬため)、
