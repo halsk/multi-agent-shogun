@@ -207,7 +207,14 @@ notify_dashboard() {
     local body="$1"
     local ts entry dashboard
     ts=$(date '+%Y-%m-%dT%H:%M:%S')
-    entry="- 🚨 [console_stall_watchdog] geonicdb-consoleが停滞 @ $ts\n  $(echo "$body" | tr '\n' ' ')"
+    # ★entryは単一行に限定する(stall_watchdog.shのnotify_dashboard()と同じ
+    # 慣習)。以前は"\n"を地の文字列として埋め込んでいたが、これはbashの
+    # 二重引用符内では改行にならずリテラルな`\n`2文字のままである一方、
+    # GNU sed(ubuntu-latest)の`a\`はこれを実改行として解釈し、見出し直後の
+    # 1行に収まるべき通知が2行に分裂して見出し直後判定がずれる
+    # (subtask_ci_orphan_tests_wiringでCI接続した際に実測発覚・BSD sedの
+    # macOSでは再現しないため見過ごされていた)。
+    entry="- 🚨 [console_stall_watchdog] geonicdb-consoleが停滞 @ $ts  $(echo "$body" | tr '\n' ' ')"
     if $DRY_RUN; then
         log "[DRY-RUN] dashboard 🚨追記: $entry"
         return

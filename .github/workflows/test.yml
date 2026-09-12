@@ -33,7 +33,12 @@ jobs:
       - name: Install GNU tools (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install bash coreutils fswatch
+          # flock: macOSには標準で存在しない(scripts/stall_watchdog.shの
+          # 単一起動ロックが要求。subtask_ci_orphan_tests_wiringで
+          # tests/test_stall_watchdog.shを実際にmacos-latest CIへ接続する
+          # まで検知されていなかった——ソースするだけのテストはflockの
+          # ある行をスキップするため気づかれなかった)。
+          brew install bash coreutils fswatch flock
           echo "$(brew --prefix)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH
 

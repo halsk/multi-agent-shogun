@@ -4,10 +4,15 @@
 # scripts/console_stall_watchdog.sh 経由でこのパスを直接読むため、CIでは
 # 本サンプルを config/settings.yaml としてコピーしてから実行する
 # (.github/workflows/test.yml「Prepare config/settings.yaml fixture (CI only)」)。
-# ここに書く値はテストの期待値と一致させること(repo_path/repo_slug/ntfy_topic
-# 等の秘匿・環境固有値は未設定でも安全に既定動作するため含めない)。
+# ここに書く値はテストの期待値と一致させること(repo_slug/ntfy_topic等の
+# 秘匿・環境固有値は未設定でも安全に既定動作するため含めない)。
+# repo_path のみ例外的に「.」(このリポ自身)を指す——console_commit_epoch()
+# が最終活動時刻を得るのに実在するgitリポが要るため(強制停滞テストが
+# last_activity=0のフォールバック分岐に落ちて偽の"OK"を返すのを防ぐ・
+# subtask_ci_orphan_tests_wiringで実測発覚)。
 console_stall_watchdog:
   stall_threshold_hours: 4
   night_start_hour: 22
   night_end_hour: 8
   throttle_hours: 6
+  repo_path: .
