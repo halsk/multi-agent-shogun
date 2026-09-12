@@ -178,6 +178,17 @@ bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せ�
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**
 
+### メッセージ本文のバッククォート事故防止（2026-09-12 事故を受けて）
+
+**背景**: 2026-09-12朝、家老・将軍の双方が★独立に同じ事故を起こした。`bash scripts/inbox_write.sh <agent> "..."` の二重引用符で囲んだメッセージ本文の中でコマンド名・設定値をバッククォートで引用したところ、bash がそれをコマンド置換として実際に実行してしまった（家老の事故は `.git/config` の意図的な gpgsign 設定を消失させ、将軍の事故は `brew install --cask 1password` を意図せず実行させた）。二重引用符内のバッククォートは、`inbox_write.sh` が呼ばれる★前の引数展開時にシェルが評価するため、スクリプト側では原理的に防げない。呼び出す側の作法で防ぐ。
+
+**作法（全エージェント・殿ご自身も含め例外なし）**:
+- メッセージ本文にバッククォート（`` ` ``）を使うな。コマンド名・設定値を引用したい時は「 」で囲むか、引用符なしの地の文で書け。
+- 長い本文・記号を含む本文は、いったんファイルに書いてから `"$(cat file)"` で渡せ。
+- どうしても本文に記号を直接埋め込む必要がある場合は、本文全体を単一引用符（`'...'`）で囲め（単一引用符内はシェルが一切展開しない）。
+
+**仕組みによる検出**: `scripts/hooks/guard.sh`（PreToolUse hook）が、Bash ツールへ渡される実行前のコマンド文字列を検査し、`inbox_write.sh` を呼ぶコマンドの二重引用符内に未エスケープのバッククォートが含まれる場合はブロックする。これは実行前に検出できる唯一の層であり（`inbox_write.sh` 自身のコード内では、コマンド置換は呼び出しより前に完了済みのため検知できない）、回帰テストは `scripts/hooks/test_hooks.sh` を参照。
+
 ## Delivery Mechanism
 
 Two layers:
@@ -421,6 +432,8 @@ main へ merge するのは、CI が機能しているかを確かめるまで�
 | 4 | git push 前に npm typecheck & lint を実行 | Post-Review Completion Rule |
 | 5 | GH_TOKEN 設定時に gh コマンドをブロック | Lessons Learned |
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
+| 7 | 上流 repo (yohey-w/* / digital-go-jp/*) への `gh pr create` をブロック | Prompt Injection Defense |
+| 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォートがあればブロック | メッセージ本文のバッククォート事故防止 |
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）

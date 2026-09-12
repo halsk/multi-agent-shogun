@@ -513,6 +513,62 @@ check "Hook7: gh pr create without --repo (block)" block \
   "gh pr create --title \"no-repo-flag\""
 
 echo ""
+echo "=== Hook 8: inbox_write.sh 呼出時のバッククォート事故防止 (2026-09-12) ==="
+# BLOCK: 二重引用符内に未エスケープのバッククォート
+#   (2026-09-12 家老・将軍が独立に起こした事故と同型のパターン)
+check "Hook8: inbox_write.sh with backtick in dquotes (block)" block \
+  'bash scripts/inbox_write.sh karo "設定は `brew install --cask 1password` を実行する" cmd_new shogun'
+# ALLOW: 対処法どおり本文全体を単一引用符で囲めば安全
+check "Hook8: inbox_write.sh with backtick wrapped in single quotes (allow)" allow \
+  'bash scripts/inbox_write.sh karo '"'"'設定は `brew install --cask 1password` を実行する'"'"' cmd_new shogun'
+# ALLOW: バッククォートを使わない通常の呼出
+check "Hook8: inbox_write.sh without backtick (allow)" allow \
+  'bash scripts/inbox_write.sh karo "タスクYAMLを読んで作業開始せよ。" task_assigned karo'
+# ALLOW: inbox_write.sh を呼ばない他コマンドの二重引用符内バッククォートはブロック対象外
+check "Hook8: unrelated command with backtick in dquotes (allow)" allow \
+  'echo "value is `date`"'
+
+# --- 実証テスト: 危険な本文がguardにブロックされ、コマンド置換が一度も
+#     評価されないこと(=対象ファイルが作られないこと)を実際に確かめる。
+#     ハーネスの実際の動作を模す: guard.sh が exit 2 を返す限り、その
+#     コマンド文字列は bash -c へ一切渡らない(=評価されない)。
+#     ★実際の inbox_write.sh は呼ばず(karo の実inboxを汚さぬため)、
+#     "inbox_write.sh" という文字列を含む echo で検出対象パターンのみ再現する。
+MARKER_FILE="/tmp/should_not_exist_hook8_test_$$"
+rm -f "$MARKER_FILE"
+DANGEROUS_CMD="echo \"inbox_write.sh 呼出のつもり: 設定は \`touch $MARKER_FILE\` を実行する\""
+DANGEROUS_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$DANGEROUS_CMD" | jq -Rs .)}}"
+echo "$DANGEROUS_JSON" | bash "$GUARD" >/dev/null 2>&1
+DANGEROUS_EXIT=$?
+if [[ $DANGEROUS_EXIT -eq 2 && ! -e "$MARKER_FILE" ]]; then
+  echo "  ✅ Hook8実証: バッククォート入り本文はguardにblockされ、touchが一度も評価されず対象ファイルは作られなかった"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: Hook8実証(guard exit=$DANGEROUS_EXIT, marker_exists=$([[ -e "$MARKER_FILE" ]] && echo yes || echo no))"
+  ((FAIL++)) || true
+fi
+rm -f "$MARKER_FILE"
+
+# --- 対照テスト: 単一引用符で全体を囲む対処法は guard に許可され、かつ
+#     実際に bash へ渡って評価されても(単一引用符内は展開されないため)
+#     touch が実行されないことを確かめる。
+SAFE_CMD='echo '"'"'inbox_write.sh 呼出のつもり: 設定は `touch '"$MARKER_FILE"'` を実行する'"'"''
+SAFE_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$SAFE_CMD" | jq -Rs .)}}"
+echo "$SAFE_JSON" | bash "$GUARD" >/dev/null 2>&1
+SAFE_EXIT=$?
+if [[ $SAFE_EXIT -eq 0 ]]; then
+  eval "$SAFE_CMD" >/dev/null 2>&1 || true
+fi
+if [[ $SAFE_EXIT -eq 0 && ! -e "$MARKER_FILE" ]]; then
+  echo "  ✅ Hook8対照: 単一引用符で囲めばguardに許可され、実行してもバッククォートは展開されず対象ファイルは作られない"
+  ((PASS++)) || true
+else
+  echo "  ❌ FAIL: Hook8対照(guard exit=$SAFE_EXIT, marker_exists=$([[ -e "$MARKER_FILE" ]] && echo yes || echo no))"
+  ((FAIL++)) || true
+fi
+rm -f "$MARKER_FILE"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
