@@ -137,7 +137,10 @@ PY
     ) 200>"$LOCKFILE"
 }
 
-echo "[$(date)] ntfy listener started — topic: $TOPIC (auth: ${NTFY_TOKEN:+token}${NTFY_USER:+basic}${NTFY_TOKEN:-${NTFY_USER:-none}})" >&2
+# cmd_811: topicを出力しない(2026-09-13にlogs/ntfy_listener.logへ平文で3回
+# 漏れていた件・殿ご裁定=甲(topic継続使用)。過去ログの値は削除せず、今後
+# 書かないようにするだけ)。
+echo "[$(date)] ntfy listener started (auth: ${NTFY_TOKEN:+token}${NTFY_USER:+basic}${NTFY_TOKEN:-${NTFY_USER:-none}})" >&2
 
 while true; do
     # Stream new messages (long-lived connection, blocks until message arrives)
