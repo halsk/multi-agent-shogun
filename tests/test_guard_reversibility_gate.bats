@@ -1,0 +1,522 @@
+#!/usr/bin/env bats
+# test_guard_reversibility_gate.bats — guard.sh Hook 9(可逆性ゲート)回帰テスト
+# cmd_813 / subtask_813_night_rule_reversibility_gate
+#
+# 背景: 2026-09-13 02:10、config/settings.yaml が消失した実タスク
+# (subtask_pr129_followups_f1_f2_f3・bloom_level=L3・risk_flag=false)。
+# 旧来の夜間ルールは「重さ」(bloom_level/risk_flag)で新規着手の可否を
+# 判じており、この事故そのものを「軽い」として夜間発注を許していた。
+# 本テストは、殿ご裁可により guard.sh へ新設した「可逆性」軸のHook
+# (④常駐設定ファイル・②worktree外・③外部不可逆操作・裁可オーバーライド)
+# を、実際のインシデント再現(隔離複製・本物のsettings.yamlには一切触れない)
+# を含めて検証する。
+#
+# CI wiring: このファイルは tests/*.bats に置かれており、
+# .github/workflows/test.yml の "Run root-level tests (except
+# agent_selfwatch)" ステップ(ROOT_TESTS=$(ls tests/*.bats ...))が
+# 自動的に拾って実行する(ワークフロー変更不要・orphan testにならない)。
+
+setup_file() {
+    export PROJECT_ROOT
+    PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+    export GUARD="$PROJECT_ROOT/scripts/hooks/guard.sh"
+    [ -f "$GUARD" ] || return 1
+}
+
+setup() {
+    export TEST_TMPDIR
+    TEST_TMPDIR="$(mktemp -d "$BATS_TMPDIR/guard_reversibility_test.XXXXXX")"
+    # 隔離複製リポ(本物のconfig/settings.yamlには一切触れない)
+    export ISO_REPO="$TEST_TMPDIR/iso_repo"
+    mkdir -p "$ISO_REPO"
+    git -C "$ISO_REPO" init -q -b main
+}
+
+teardown() {
+    [ -n "$TEST_TMPDIR" ] && [ -d "$TEST_TMPDIR" ] && rm -rf "$TEST_TMPDIR"
+}
+
+# guard.sh へコマンド文字列を渡しexit codeを返す(jq -Rsで安全にJSONエンコード)。
+# bats の `run` と組み合わせて使う前提(素で呼ぶとexit 2でテスト自体がabortする)。
+guard_rc() {
+    local cmd="$1" json
+    json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}"
+    echo "$json" | bash "$GUARD"
+}
+
+# 軍師QC是正(check_4・C4b): .guard-authorized はgit追跡下(commit済み)で
+# なければ裁可と認められない。ISO_REPO内へ設置してcommitするヘルパ。
+commit_guard_authorized() {
+    local task_id="$1" expires="$2"
+    cat > "$ISO_REPO/.guard-authorized" <<EOF
+task_id: ${task_id}
+expires: ${expires}
+EOF
+    git -C "$ISO_REPO" add .guard-authorized >/dev/null
+    git -C "$ISO_REPO" \
+        -c user.name=test -c user.email=test@test -c commit.gpgsign=false \
+        commit -q -m "test: add .guard-authorized"
+}
+
+# --- (a) 実インシデント再現: サンプル上書き→rm -f (acceptance_criteria①) ---
+
+@test "reversibility gate: cp config/settings.yaml.sample -> config/settings.yaml is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    echo "sample_value: template" > "$ISO_REPO/config/settings.yaml.sample"
+
+    run guard_rc "cd $ISO_REPO && cp config/settings.yaml.sample config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "reversibility gate: rm -f config/settings.yaml is blocked (2026-09-13 02:10 incident reproduction)" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "reversibility gate: full incident sequence (sample overwrite then rm -f) both blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    echo "sample_value: template" > "$ISO_REPO/config/settings.yaml.sample"
+
+    run guard_rc "cd $ISO_REPO && cp config/settings.yaml.sample config/settings.yaml"
+    [ "$status" -eq 2 ]
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+
+    # 実データはブロックにより一度も上書き/削除されず残っている(実出力での確認)
+    run cat "$ISO_REPO/config/settings.yaml"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"real_data"* ]]
+}
+
+@test "reversibility gate: .claude/settings.json deletion is blocked" {
+    mkdir -p "$ISO_REPO/.claude"
+    echo '{"hooks":{}}' > "$ISO_REPO/.claude/settings.json"
+
+    run guard_rc "cd $ISO_REPO && rm -f .claude/settings.json"
+    [ "$status" -eq 2 ]
+}
+
+# --- セルフレビュー是正の回帰テスト(1巡目で発見された実バイパス3件) ---
+
+@test "QC fix: rm -rf on the parent directory containing a guarded config file is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf config/"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix: rm with a glob pattern matching a guarded config file (same directory) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/*.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix: mv -t DIR (GNU target-directory form) writing outside the worktree is blocked" {
+    echo x > "$ISO_REPO/src1.txt"
+    echo y > "$ISO_REPO/src2.txt"
+    local outside="$TEST_TMPDIR/outside_target_dir"
+    mkdir -p "$outside"
+
+    run guard_rc "cd $ISO_REPO && mv -t $outside src1.txt src2.txt"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix regression guard: bare 'rm -rf *' at repo root (pre-existing allowed pattern) is still allowed" {
+    # config/settings.yaml が存在してもディレクトリを跨ぐ裸ワイルドカードは
+    # 本Hookの対象外(既存test_hooks.shの「相対glob」allowテストと同じ前提)。
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf *"
+    [ "$status" -eq 0 ]
+}
+
+# --- セルフレビュー是正の回帰テスト(2巡目で発見されたバイパス3件) ---
+
+@test "QC fix round2: rm -rf on a glob matching the guarded directory's own name is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf con*"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round2: heredoc prose merely mentioning 'rm -f config/settings.yaml' is NOT blocked" {
+    run guard_rc $'cat > /tmp/qc2_test_notes.md <<EOF\n手順: rm -f config/settings.yaml を実行して初期化する\nEOF'
+    [ "$status" -eq 0 ]
+    rm -f /tmp/qc2_test_notes.md
+}
+
+@test "QC fix round2: heredoc prose merely mentioning 'gh pr merge' is NOT blocked" {
+    run guard_rc $'cat > /tmp/qc2_test_notes2.md <<EOF\n参考: 承認後は gh pr merge 42 --squash を実行すること\nEOF'
+    [ "$status" -eq 0 ]
+    rm -f /tmp/qc2_test_notes2.md
+}
+
+@test "QC fix round2: a guarded-config-named file in an unrelated external repo is NOT blocked" {
+    git -C "$ISO_REPO" remote add origin "https://github.com/example/some-other-app.git"
+    mkdir -p "$ISO_REPO/config"
+    echo "unrelated_app_config: true" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 0 ]
+}
+
+@test "QC fix round2: the guarded-config gate still applies when this repo's own origin remote is set" {
+    git -C "$ISO_REPO" remote add origin "https://github.com/halsk/multi-agent-shogun.git"
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+# --- セルフレビュー是正の回帰テスト(3巡目で発見されたバイパス3件) ---
+
+@test "QC fix round3: rm -rf . (whole worktree from inside, sweeping up a guarded file) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf ."
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: rm -rf <absolute worktree path> (whole worktree, sweeping up a guarded file) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "rm -rf $ISO_REPO"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: mv of a guarded config file away (source, not destination) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && mv config/settings.yaml config/settings.yaml.bak"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: ln -f overwriting a guarded config file (ln was entirely unscanned) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    echo "other" > "$ISO_REPO/config/other.txt"
+
+    run guard_rc "cd $ISO_REPO && ln -f config/other.txt config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3 regression guard: ordinary mv/ln between non-guarded files is still allowed" {
+    echo x > "$ISO_REPO/a.txt"
+    run guard_rc "cd $ISO_REPO && mv a.txt b.txt"
+    [ "$status" -eq 0 ]
+
+    echo y > "$ISO_REPO/c.txt"
+    run guard_rc "cd $ISO_REPO && ln -f c.txt d.txt"
+    [ "$status" -eq 0 ]
+}
+
+# --- セルフレビュー是正の回帰テスト(4巡目で発見された変数エイリアス迂回) ---
+
+@test "QC fix round4: variable-alias indirection for gh pr merge (GH=gh; \$GH pr merge) is blocked" {
+    run guard_rc 'GH=gh; $GH pr merge 42 --squash'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4: variable-alias indirection for launchctl load is blocked" {
+    run guard_rc 'LC=launchctl; $LC load /tmp/foo.plist'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4: variable-alias indirection for crontab -e is blocked" {
+    run guard_rc 'CT=crontab; $CT -e'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4 regression guard: variable-alias to an unrelated command is still allowed" {
+    run guard_rc 'X=echo; $X hello'
+    [ "$status" -eq 0 ]
+}
+
+# --- 軍師QC(gunshi_report.yaml subtask_qc_pr134_cmd813_reversibility_gate)是正の
+#     回帰テスト(check_2・C2必須条件・13形のバイパスのうちX1-X5・X14・X17) ---
+
+@test "gunshi QC C2 X17: absolute-path /bin/rm targeting a guarded config file is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && /bin/rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "gunshi QC C2 X1: bash -c 'rm ...' re-scans the inner body and is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && bash -c 'rm -f config/settings.yaml'"
+    [ "$status" -eq 2 ]
+}
+
+@test "gunshi QC C2 X2: eval \"rm ...\" re-scans the inner body and is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && eval \"rm -f config/settings.yaml\""
+    [ "$status" -eq 2 ]
+}
+
+@test "gunshi QC C2 X3: backslash-escaped \\\\rm (alias evasion) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && \\rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test 'gunshi QC C2 X4: quoted "rm" is blocked' {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && \"rm\" -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test 'gunshi QC C2 X5: variable-alias for rm (R=rm; $R ...) is blocked' {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && R=rm; \$R -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "gunshi QC C2 X14: unlink (direct rm synonym) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    run guard_rc "cd $ISO_REPO && unlink config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "gunshi QC C2 regression guard: the same 4 forms on an ordinary non-guarded file still allow" {
+    echo x > "$ISO_REPO/ordinary.txt"
+    run guard_rc "cd $ISO_REPO && /bin/rm -f ordinary.txt"
+    [ "$status" -eq 0 ]
+
+    echo x > "$ISO_REPO/ordinary2.txt"
+    run guard_rc "cd $ISO_REPO && unlink ordinary2.txt"
+    [ "$status" -eq 0 ]
+
+    run guard_rc "bash -c 'echo hello'"
+    [ "$status" -eq 0 ]
+}
+
+@test "gunshi QC C2 regression guard: heredoc prose mentioning backslash-rm/unlink is NOT blocked" {
+    run guard_rc $'cat > /tmp/qc_gunshi_notes.md <<EOF\n手順: \\rm や unlink を使わないこと\nEOF'
+    [ "$status" -eq 0 ]
+    rm -f /tmp/qc_gunshi_notes.md
+}
+
+@test "gunshi QC C4: override use is logged to logs/ and appended to dashboard.md" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    commit_guard_authorized "cmd_813_qc" "2099-01-01T00:00:00Z"
+    cat > "$ISO_REPO/dashboard.md" <<'EOF'
+# Dashboard
+
+## 🚨要対応(殿のご判断)
+- existing item
+EOF
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 0 ]
+
+    run cat "$ISO_REPO/logs/guard_override.log"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"GUARD_OVERRIDE_USED"* ]]
+    [[ "$output" == *"cmd_813_qc"* ]]
+
+    run cat "$ISO_REPO/dashboard.md"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"guard.sh Hook9 override使用"* ]]
+}
+
+@test "gunshi QC C3: config/ntfy_auth.env and config/projects.yaml are guarded, *.sample is not" {
+    mkdir -p "$ISO_REPO/config"
+    echo secret > "$ISO_REPO/config/ntfy_auth.env"
+    echo yaml > "$ISO_REPO/config/projects.yaml"
+    echo sample > "$ISO_REPO/config/ntfy_auth.env.sample"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/ntfy_auth.env"
+    [ "$status" -eq 2 ]
+
+    run guard_rc "cd $ISO_REPO && rm -f config/projects.yaml"
+    [ "$status" -eq 2 ]
+
+    run guard_rc "cd $ISO_REPO && rm -f config/ntfy_auth.env.sample"
+    [ "$status" -eq 0 ]
+}
+
+# --- (b) worktree内の通常作業は従来通り通ること(acceptance_criteria②・過剰ブロック防止) ---
+
+@test "normal work: rm -rf build (in-tree, gitignore-typical) is still allowed" {
+    run guard_rc "cd $ISO_REPO && rm -rf build"
+    [ "$status" -eq 0 ]
+}
+
+@test "normal work: rm -r node_modules (in-tree, gitignore-typical) is still allowed" {
+    run guard_rc "cd $ISO_REPO && rm -r node_modules"
+    [ "$status" -eq 0 ]
+}
+
+@test "normal work: rm -f README.md (tracked in-tree file) is still allowed" {
+    run guard_rc "cd $ISO_REPO && rm -f README.md"
+    [ "$status" -eq 0 ]
+}
+
+@test "normal work: cp src.txt dest.txt within worktree is still allowed" {
+    run guard_rc "cd $ISO_REPO && cp src.txt dest.txt"
+    [ "$status" -eq 0 ]
+}
+
+# --- ②worktree外への書込み(新しい捕捉: 非再帰rmはD002が見落としていた) ---
+
+@test "outside-worktree gate: non-recursive rm targeting a path outside the git toplevel is blocked" {
+    local outside="$TEST_TMPDIR/outside_dir"
+    mkdir -p "$outside"
+    echo x > "$outside/somefile"
+
+    run guard_rc "cd $ISO_REPO && rm -f $outside/somefile"
+    [ "$status" -eq 2 ]
+}
+
+@test "outside-worktree gate: mv destination outside the git toplevel is blocked" {
+    echo x > "$ISO_REPO/localfile.txt"
+    local outside="$TEST_TMPDIR/outside_dir2"
+    mkdir -p "$outside"
+
+    run guard_rc "cd $ISO_REPO && mv localfile.txt $outside/localfile.txt"
+    [ "$status" -eq 2 ]
+}
+
+@test "outside-worktree gate: rm within session scratchpad allow-zone is still allowed" {
+    # ★CI移植性(実測・是正): /private/tmp はmacOS固有(/tmpの実体)であり、
+    # Linux(ubuntu-latest CI)には/private自体が存在せずmkdir -pが失敗する
+    # (実際にCIで検出・失敗ログ: "mkdir -p ... failed")。_in_allowed_zone は
+    # /private/tmp/claude-*/*/scratchpad/* と /tmp/claude-*/*/scratchpad/* の
+    # 両方を許可ゾーンとして見るため、両OSで実在する /tmp 側の形を使う。
+    local scratch="/tmp/claude-999/fake-session-guardtest/scratchpad/tmpdir"
+    mkdir -p "$scratch"
+    echo x > "$scratch/f.txt"
+
+    run guard_rc "cd $ISO_REPO && rm -f $scratch/f.txt"
+    [ "$status" -eq 0 ]
+    rm -rf "/tmp/claude-999/fake-session-guardtest"
+}
+
+# --- ③外部への不可逆操作 ---
+
+@test "irreversible external op: gh pr merge is blocked" {
+    run guard_rc "gh pr merge 42 --squash"
+    [ "$status" -eq 2 ]
+}
+
+@test "irreversible external op: gh pr close is blocked" {
+    run guard_rc "gh pr close 42"
+    [ "$status" -eq 2 ]
+}
+
+@test "irreversible external op: gh issue close is blocked" {
+    run guard_rc "gh issue close 7"
+    [ "$status" -eq 2 ]
+}
+
+@test "irreversible external op: gh repo archive is blocked" {
+    run guard_rc "gh repo archive halsk/some-repo"
+    [ "$status" -eq 2 ]
+}
+
+@test "read-only gh ops (pr view / issue list) are not affected" {
+    run guard_rc "gh pr view 42"
+    [ "$status" -eq 0 ]
+}
+
+# --- ④常駐機構(daemon)設定変更 ---
+
+@test "daemon config: launchctl load is blocked" {
+    run guard_rc "launchctl load ~/Library/LaunchAgents/com.example.plist"
+    [ "$status" -eq 2 ]
+}
+
+@test "daemon config: crontab -e is blocked" {
+    run guard_rc "crontab -e"
+    [ "$status" -eq 2 ]
+}
+
+@test "daemon config: crontab -l (read-only) is still allowed" {
+    run guard_rc "crontab -l"
+    [ "$status" -eq 0 ]
+}
+
+# --- 裁可(門であって禁止でないこと・acceptance_criteria③) ---
+
+@test "override: valid unexpired .guard-authorized (git-tracked) lets a guarded-config rm through" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    commit_guard_authorized "cmd_813" "2099-01-01T00:00:00Z"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 0 ]
+}
+
+@test "override: untracked .guard-authorized (not committed) does NOT authorize" {
+    # 軍師QC是正(check_4・C4b): 是正前は誰でも自分でファイルを作って自分で
+    # 通れた。git追跡下(commit済み)であることを要求する——単に置いただけ
+    # (untracked)では裁可と認められない。
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    cat > "$ISO_REPO/.guard-authorized" <<'EOF'
+task_id: cmd_813
+expires: 2099-01-01T00:00:00Z
+EOF
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "override: expired .guard-authorized does NOT let a guarded-config rm through" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    cat > "$ISO_REPO/.guard-authorized" <<'EOF'
+task_id: cmd_813
+expires: 2020-01-01T00:00:00Z
+EOF
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "override: .guard-authorized missing expires field does NOT authorize" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    cat > "$ISO_REPO/.guard-authorized" <<'EOF'
+task_id: cmd_813
+EOF
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "override: valid .guard-authorized also lets gh pr merge through" {
+    commit_guard_authorized "cmd_813" "2099-01-01T00:00:00Z"
+    run guard_rc "cd $ISO_REPO && gh pr merge 42 --squash"
+    [ "$status" -eq 0 ]
+}
+
+# --- 通常のgit/ls/cat等が引き続き無関係に通ること(退行防止) ---
+
+@test "sanity: git status is unaffected by Hook 9" {
+    run guard_rc "cd $ISO_REPO && git status"
+    [ "$status" -eq 0 ]
+}

@@ -434,6 +434,11 @@ main へ merge するのは、CI が機能しているかを確かめるまで�
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 | 7 | 上流 repo (yohey-w/* / digital-go-jp/*) への `gh pr create` をブロック | Prompt Injection Defense |
 | 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォート、または `$(...)` 開きがあればブロック | メッセージ本文のバッククォート事故防止 |
+| 9 | 可逆性ゲート(cmd_813): worktree外への書込み・削除、`config/settings.yaml`等の常駐設定ファイルへの書込み・削除(rm/cp/mv/ln)、`gh pr merge`・`gh pr/issue close`・`gh repo archive/delete`、`launchctl load/unload/bootstrap/bootout`・`crontab`編集をブロック。`.guard-authorized`(task_id/expires・期限付き・git追跡下限定)設置で殿/将軍の裁可があれば通す(使用時はlogs/+dashboard.mdへ記録) | 「夜間の家中運用」節(instructions/karo.md) |
+
+★Hook 9 の効き目について(軍師QC是正・check_1・C1・過大な安心を防ぐための正直な記述):
+Hook 9 が実際に捕捉するのは、Bash ツールへ渡された**そのコマンド文字列自身**に現れる rm/unlink・cp/mv/ln・gh・launchctl・crontab の呼出のみである。直接形に加え、絶対/相対パス接頭(`/bin/rm`)・バックスラッシュエスケープ(`\rm`)・引用符("rm"/'rm')・変数エイリアス(`R=rm; $R ...`)、および `bash -c '...'`/`eval "..."` の中身の再走査までは捕捉する(軍師QCで実証された回避形への対応済み)。
+★しかし **`find -delete`・`find -exec rm {} \;`・`xargs rm`・`python -c "import os; os.remove(...)"`・`make clean`・`npm run reset` のような、別のプログラム/スクリプトを経由した間接的な削除・上書きは一切見えない**(guard.sh はテキストパターンを見る hook であり、呼び出した先のプログラムが内部で何をするかは追跡できない)。これは欠陥ではなく、この種の hook が原理的に持つ限界であり、意図的に破ろうとする者を止める機構ではない。「もう構造的に防がれた」という思い込みこそが最大の害である——第一の守りは引き続き「テスト/スクリプトが本物の設定ファイルに触れない設計にすること」と「git管理外の一点物には控えを持つこと」であり、本Hookはあくまで第二の層である。
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
