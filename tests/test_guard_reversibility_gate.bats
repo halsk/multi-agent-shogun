@@ -166,6 +166,51 @@ guard_rc() {
     [ "$status" -eq 2 ]
 }
 
+# --- 軍師QC是正の回帰テスト(3巡目レビューで発見されたバイパス3件) ---
+
+@test "QC fix round3: rm -rf . (whole worktree from inside, sweeping up a guarded file) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf ."
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: rm -rf <absolute worktree path> (whole worktree, sweeping up a guarded file) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "rm -rf $ISO_REPO"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: mv of a guarded config file away (source, not destination) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && mv config/settings.yaml config/settings.yaml.bak"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3: ln -f overwriting a guarded config file (ln was entirely unscanned) is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+    echo "other" > "$ISO_REPO/config/other.txt"
+
+    run guard_rc "cd $ISO_REPO && ln -f config/other.txt config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round3 regression guard: ordinary mv/ln between non-guarded files is still allowed" {
+    echo x > "$ISO_REPO/a.txt"
+    run guard_rc "cd $ISO_REPO && mv a.txt b.txt"
+    [ "$status" -eq 0 ]
+
+    echo y > "$ISO_REPO/c.txt"
+    run guard_rc "cd $ISO_REPO && ln -f c.txt d.txt"
+    [ "$status" -eq 0 ]
+}
+
 # --- (b) worktree内の通常作業は従来通り通ること(acceptance_criteria②・過剰ブロック防止) ---
 
 @test "normal work: rm -rf build (in-tree, gitignore-typical) is still allowed" {

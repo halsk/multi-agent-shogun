@@ -597,7 +597,11 @@ _reversibility_repo_is_own() {
 # いたのと対称)。
 _is_guarded_config_path() {
   local p="$1" root="$2" g guarded_abs
-  case "$p" in "$root"/*) ;; *) return 1 ;; esac
+  # ★軍師QC是正(3巡目): 対象が root★そのもの(`rm -rf .`・`rm -rf <絶対
+  # worktreeパス>`)の場合、旧ガードは「rootの厳密に配下」だけを受理して
+  # いたためここで即 return 1 してしまい、worktree丸ごと削除(guarded file
+  # を道連れにする)を素通りしていた(実証済み)。root自身も対象に含める。
+  case "$p" in "$root"|"$root"/*) ;; *) return 1 ;; esac
   # ★軍師QC是正(2巡目): このガードは「本リポ(multi-agent-shogun)自身」に
   # 限定する。config/settings.yaml・.claude/settings.json のような相対パスは
   # 他の一般的なリポ(Python/dynaconf系プロジェクト等)にもありふれた命名であり、
@@ -753,52 +757,76 @@ while IFS= read -r rm_invocation; do
   done < <(_extract_rm_targets "$rm_invocation")
 done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
 
-# cp/mv: 書込み先を可逆性ゲートへ通す。
-# ★軍師QC是正3: 最後の非フラグ位置引数だけを見ると、GNU cp/mv の
+# cp/mv/ln: 書込み先(cp)、または全ての位置引数(mv/ln)を可逆性ゲートへ通す。
+# ★軍師QC是正3: 最後の非フラグ位置引数だけを見ると、GNU cp/mv/ln の
 # `-t DIR`/`--target-directory=DIR`/`--target-directory DIR` 形(宛先を
 # フラグの引数として渡す)では最後の位置引数が実は「送り側」のファイルで
 # あり、本当の宛先(-t の引数)を見落とす。-t/--target-directory を明示的に
 # 検出し、それがあればそちらを宛先として優先する。
-_extract_last_positional_arg() {
-  local seg="$1" tok last="" prev="" target=""
+# ★軍師QC是正(3巡目・実バイパス2件):
+#   (a) `mv config/settings.yaml config/settings.yaml.bak` は宛先
+#       (settings.yaml.bak)のみ判定していたため通っていた——mvは移動元を
+#       その場から消し去るため、宛先だけでなく★全ての位置引数(移動元も)を
+#       判定せねばならない(cpは元ファイルがコピー後も残るため宛先のみで
+#       足りるが、mv/lnは違う)。
+#   (b) `ln -f config/other.txt config/settings.yaml` はguarded fileの
+#       上書き(unlink+新規リンク)そのものだが、rm/cp/mvのいずれの走査
+#       対象にも `ln` が含まれておらず、丸ごと見落とされていた。
+#       ln も宛先(linkname)判定の対象に加える(-t 対応もcp/mvと共通)。
+_extract_cpmvln_targets() {
+  local seg="$1" verb="$2" tok prev="" t_target=""
+  local -a positional=()
   set -f
   for tok in $seg; do
     if [[ -n "$prev" ]]; then
-      target="$tok"
+      t_target="$tok"
       prev=""
       continue
     fi
     case "$tok" in
       -t) prev="-t"; continue ;;
       --target-directory) prev="--target-directory"; continue ;;
-      --target-directory=*) target="${tok#--target-directory=}"; continue ;;
-      -t?*) target="${tok#-t}"; continue ;;
+      --target-directory=*) t_target="${tok#--target-directory=}"; continue ;;
+      -t?*) t_target="${tok#-t}"; continue ;;
     esac
-    [[ "$tok" == "cp" || "$tok" == "mv" ]] && continue
+    [[ "$tok" == "cp" || "$tok" == "mv" || "$tok" == "ln" ]] && continue
     [[ "$tok" == -* ]] && continue
     tok="${tok#[\"\']}"
     tok="${tok%[\"\']}"
     [[ -z "$tok" ]] && continue
-    last="$tok"
+    positional+=("$tok")
   done
   set +f
-  if [[ -n "$target" ]]; then
-    echo "$target"
+  if [[ "$verb" == "cp" ]]; then
+    # cp: 宛先のみで足りる(元ファイルはコピー後も残る)
+    if [[ -n "$t_target" ]]; then
+      echo "$t_target"
+    elif [[ ${#positional[@]} -gt 0 ]]; then
+      echo "${positional[$((${#positional[@]} - 1))]}"
+    fi
   else
-    echo "$last"
+    # mv/ln: 全ての位置引数(移動元/リンク対象を含む)+ -t 宛先を判定する
+    local t
+    for t in "${positional[@]}"; do
+      echo "$t"
+    done
+    [[ -n "$t_target" ]] && echo "$t_target"
   fi
 }
 
-while IFS= read -r cpmv_invocation; do
-  [[ -z "$cpmv_invocation" ]] && continue
-  cpmv_invocation="$(echo "$cpmv_invocation" | sed -E 's/^[[:space:];&|(=]//')"
-  cpmv_target=$(_extract_last_positional_arg "$cpmv_invocation")
-  [[ -z "$cpmv_target" ]] && continue
-  if ! _reversibility_verdict "$cpmv_target" && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-    _reversibility_denial_message "cp/mv" "$cpmv_target"
-    exit 2
-  fi
-done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv)[[:space:]][^;&|]*' || true)
+while IFS= read -r cpmvln_invocation; do
+  [[ -z "$cpmvln_invocation" ]] && continue
+  cpmvln_invocation="$(echo "$cpmvln_invocation" | sed -E 's/^[[:space:];&|(=]//')"
+  cpmvln_verb="$(echo "$cpmvln_invocation" | grep -oE '^(cp|mv|ln)' || true)"
+  [[ -z "$cpmvln_verb" ]] && continue
+  while IFS= read -r cpmvln_target; do
+    [[ -z "$cpmvln_target" ]] && continue
+    if ! _reversibility_verdict "$cpmvln_target" && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+      _reversibility_denial_message "$cpmvln_verb" "$cpmvln_target"
+      exit 2
+    fi
+  done < <(_extract_cpmvln_targets "$cpmvln_invocation" "$cpmvln_verb")
+done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv|ln)[[:space:]][^;&|]*' || true)
 
 # ③ 外部への不可逆操作: gh pr merge / gh pr close / gh issue close / gh repo archive|delete
 if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+pr\s+merge\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then

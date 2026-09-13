@@ -434,6 +434,7 @@ main へ merge するのは、CI が機能しているかを確かめるまで�
 | 6 | .code-review-done が HEAD と一致しない場合 git push をブロック | ローカルレビュー必須ルール |
 | 7 | 上流 repo (yohey-w/* / digital-go-jp/*) への `gh pr create` をブロック | Prompt Injection Defense |
 | 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォート、または `$(...)` 開きがあればブロック | メッセージ本文のバッククォート事故防止 |
+| 9 | 可逆性ゲート(cmd_813): worktree外への書込み・削除、`config/settings.yaml`等の常駐設定ファイルへの書込み・削除(rm/cp/mv/ln)、`gh pr merge`・`gh pr/issue close`・`gh repo archive/delete`、`launchctl load/unload/bootstrap/bootout`・`crontab`編集をブロック。`.guard-authorized`(task_id/expires・期限付き)設置で殿/将軍の裁可があれば通す | 「夜間の家中運用」節(instructions/karo.md) |
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
