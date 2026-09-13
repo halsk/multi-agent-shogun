@@ -126,6 +126,46 @@ guard_rc() {
     [ "$status" -eq 0 ]
 }
 
+# --- 軍師QC是正の回帰テスト(2巡目レビューで発見されたバイパス3件) ---
+
+@test "QC fix round2: rm -rf on a glob matching the guarded directory's own name is blocked" {
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -rf con*"
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round2: heredoc prose merely mentioning 'rm -f config/settings.yaml' is NOT blocked" {
+    run guard_rc $'cat > /tmp/qc2_test_notes.md <<EOF\n手順: rm -f config/settings.yaml を実行して初期化する\nEOF'
+    [ "$status" -eq 0 ]
+    rm -f /tmp/qc2_test_notes.md
+}
+
+@test "QC fix round2: heredoc prose merely mentioning 'gh pr merge' is NOT blocked" {
+    run guard_rc $'cat > /tmp/qc2_test_notes2.md <<EOF\n参考: 承認後は gh pr merge 42 --squash を実行すること\nEOF'
+    [ "$status" -eq 0 ]
+    rm -f /tmp/qc2_test_notes2.md
+}
+
+@test "QC fix round2: a guarded-config-named file in an unrelated external repo is NOT blocked" {
+    git -C "$ISO_REPO" remote add origin "https://github.com/example/some-other-app.git"
+    mkdir -p "$ISO_REPO/config"
+    echo "unrelated_app_config: true" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 0 ]
+}
+
+@test "QC fix round2: the guarded-config gate still applies when this repo's own origin remote is set" {
+    git -C "$ISO_REPO" remote add origin "https://github.com/halsk/multi-agent-shogun.git"
+    mkdir -p "$ISO_REPO/config"
+    echo "custom_value: real_data" > "$ISO_REPO/config/settings.yaml"
+
+    run guard_rc "cd $ISO_REPO && rm -f config/settings.yaml"
+    [ "$status" -eq 2 ]
+}
+
 # --- (b) worktree内の通常作業は従来通り通ること(acceptance_criteria②・過剰ブロック防止) ---
 
 @test "normal work: rm -rf build (in-tree, gitignore-typical) is still allowed" {

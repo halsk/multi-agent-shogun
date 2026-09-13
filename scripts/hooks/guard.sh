@@ -555,6 +555,20 @@ _reversibility_guard_root() {
   git -C "$GIT_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$GIT_TARGET_DIR"
 }
 
+# origin remoteでリポを識別できる場合のみ「multi-agent-shogunでない」と
+# 確定させる(判定不能なら安全側=本リポ扱い)。GUARDED_CONFIG判定でのみ使う
+# ——②worktree外・③外部不可逆操作・④daemon設定は本リポに限定しない
+# (これらの性質はリポの種類を問わず危険であるため)。
+_reversibility_repo_is_own() {
+  local remote
+  remote=$(git -C "$_REVERSIBILITY_ROOT" remote get-url origin 2>/dev/null || echo "")
+  [[ -z "$remote" ]] && return 0
+  case "$remote" in
+    *multi-agent-shogun*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # 常駐設定ファイル(④)に該当するか。git管理下/外・worktree内/外を問わず
 # 名指しの少数パスのみを対象とする(スコープを絞った理由は上記コメント参照)。
 # ★軍師QC是正1: 完全一致だけでは `rm -rf config/` のような親ディレクトリ
@@ -571,24 +585,70 @@ _reversibility_guard_root() {
 # させ、globパターンは★同じディレクトリ内のbasenameにのみ適用することで、
 # `config/*.yaml`(同一ディレクトリ内)は捕捉しつつ`rm -rf *`(ディレクトリを
 # 跨ぐ裸ワイルドカード)は誤検知しない。
+# ★軍師QC是正(2巡目・自己是正): 祖先ディレクトリ判定 `case "$guarded_abs" in
+# "$p"/*)` は $p を★クォート付きで使っていたため、bashのcaseパターン規則
+# (クォートされた展開内のglob文字はリテラル一致にしかならない)により、
+# $p自体にglob文字が含まれる場合(`rm -rf con*` 等・ディレクトリ名そのものを
+# globで指定する形)にワイルドカードとして機能せず、実シェルでは
+# `config`ディレクトリへ展開されうる `con*` がguarded_abs(.../config/...)と
+# 一致せずすり抜けていた(実証: `cd <repo> && rm -rf con*` が是正前は exit 0)。
+# $p を★クォート無しでcaseパターン位置に置くことで、glob文字を意図通り
+# ワイルドカードとして機能させる(basename側の判定で既にこの流儀を使って
+# いたのと対称)。
 _is_guarded_config_path() {
-  local p="$1" root="$2" g guarded_abs p_dir p_base g_dir g_base
+  local p="$1" root="$2" g guarded_abs
   case "$p" in "$root"/*) ;; *) return 1 ;; esac
+  # ★軍師QC是正(2巡目): このガードは「本リポ(multi-agent-shogun)自身」に
+  # 限定する。config/settings.yaml・.claude/settings.json のような相対パスは
+  # 他の一般的なリポ(Python/dynaconf系プロジェクト等)にもありふれた命名であり、
+  # CLAUDE.md の External Repo Context Rule に従って外部リポのworktreeへcdして
+  # 作業する足軽の通常業務(そのリポ自身の無関係なconfig/settings.yaml操作)を
+  # 誤って阻害しかねない。origin remoteでリポを識別できる場合のみ「他リポと
+  # 確定できたら対象外」とし、判定不能(remote未設定・隔離テストrepo等)の
+  # 場合は安全側(=対象とする)に倒す。
+  _reversibility_repo_is_own || return 1
   for g in "${REVERSIBILITY_GUARDED_RELPATHS[@]}"; do
     guarded_abs="$root/$g"
-    case "$guarded_abs" in "$p"/*) return 0 ;; esac
-  done
-  p_dir="${p%/*}"
-  p_base="${p##*/}"
-  for g in "${REVERSIBILITY_GUARDED_RELPATHS[@]}"; do
-    guarded_abs="$root/$g"
-    g_dir="${guarded_abs%/*}"
-    g_base="${guarded_abs##*/}"
-    [[ "$p_dir" == "$g_dir" ]] || continue
-    # shellcheck disable=SC2053  # $p_base は意図的にglobパターンとして展開させる
-    [[ "$g_base" == $p_base ]] && return 0
+    _reversibility_path_glob_matches "$p" "$guarded_abs" && return 0
   done
   return 1
+}
+
+# ★軍師QC是正(3巡目・自己是正・回帰再発見): 上記コメントの祖先ディレクトリ
+# 判定を単純に `$p/*`(クォート無しcaseパターン)へ直しただけでは、`*`が
+# 実シェルのglob展開と異なり `/` を跨いで一致してしまう問題が別の形で再発した
+# ——`rm -rf *`(プロジェクト直下の裸ワイルドカード)が `$root/*` という
+# パターンとなり、`/*`を後ろに足した`$root/*/*`が`$root/config/settings.yaml`
+# に(*がconfigとsettings.yamlの間の/を跨いで)一致してしまい、既存の
+# 「rm -rf *はallow」回帰テストを壊した(2度目の同型の罠)。
+# ★正しい解: 実シェルのglobは"/"をまたがない(1セグメント=1階層にしか
+# 効かない)。パスをセグメント(=path component)ごとに分解し、対応する
+# セグメント同士だけでglobマッチさせる。パターンの方がセグメント数が
+# 少なければ「祖先ディレクトリの部分一致」とみなす(その場合、境界となる
+# 最終セグメントが★裸の"*"一語だけ(文字情報が皆無)であれば、`rm -rf *`の
+# ような従来allowの広域ワイルドカードとして扱い、一致させない——`con*`
+# のように文字を伴うセグメントは、境界であっても意図的な指定とみなし
+# 通常どおりマッチさせる)。
+_reversibility_path_glob_matches() {
+  local p="$1" guarded_abs="$2"
+  local -a p_segs g_segs
+  IFS='/' read -ra p_segs <<< "$p"
+  IFS='/' read -ra g_segs <<< "$guarded_abs"
+  local n=${#p_segs[@]} m=${#g_segs[@]}
+  [[ $n -gt $m ]] && return 1
+  local i pseg gseg
+  for ((i = 0; i < n; i++)); do
+    pseg="${p_segs[$i]}"
+    gseg="${g_segs[$i]}"
+    if [[ $n -lt $m && $i -eq $((n - 1)) && "$pseg" == "*" ]]; then
+      # 祖先ディレクトリ境界の最終セグメントが裸の"*"のみ→広域ワイルドカード
+      # として不一致扱い(rm -rf * 等の既存allow挙動を保つ)。
+      return 1
+    fi
+    # shellcheck disable=SC2053  # $pseg は意図的にglobパターンとして展開させる
+    [[ "$gseg" == $pseg ]] || return 1
+  done
+  return 0
 }
 
 # rm/cp/mv 共通の絶対パス解決。_rm_target_verdict の $HOME展開・~展開・
@@ -619,6 +679,15 @@ _resolve_reversibility_target() {
 # guard.sh実行で複数回呼ばれうる(rm対象複数・cp/mv・gh/launchctl/crontab)。
 # 1コマンドにつき1回だけ計算しキャッシュする。
 _REVERSIBILITY_ROOT=$(_reversibility_guard_root)
+
+# ★軍師QC是正(2巡目・FP-H3/FN-H3の教訓を未適用だった穴): has_git_subcmd は
+# heredoc本文の地の文(例: 報告書に「手順: rm -f config/settings.yaml」と
+# 書いただけ)を実コマンドと誤認しないよう既に _mask_heredoc_bodies_for_git_detection
+# でマスクしているが、Hook 9 の rm/cp/mv/gh/launchctl/crontab 検知は素の
+# $COMMAND を直接grepしており、この対策が適用されていなかった(実証: heredoc
+# 本文に "gh pr merge" 等の語を含むだけの安全なファイル書き出しがblockされる
+# FP)。同じマスク済みコマンド文字列を使い回す。
+_REVERSIBILITY_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
 
 REVERSIBILITY_BLOCK_REASON=""
 _reversibility_verdict() {
@@ -682,7 +751,7 @@ while IFS= read -r rm_invocation; do
       exit 2
     fi
   done < <(_extract_rm_targets "$rm_invocation")
-done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
+done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
 
 # cp/mv: 書込み先を可逆性ゲートへ通す。
 # ★軍師QC是正3: 最後の非フラグ位置引数だけを見ると、GNU cp/mv の
@@ -729,28 +798,28 @@ while IFS= read -r cpmv_invocation; do
     _reversibility_denial_message "cp/mv" "$cpmv_target"
     exit 2
   fi
-done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv)[[:space:]][^;&|]*' || true)
+done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv)[[:space:]][^;&|]*' || true)
 
 # ③ 外部への不可逆操作: gh pr merge / gh pr close / gh issue close / gh repo archive|delete
-if echo "$COMMAND" | grep -qE '\bgh\s+pr\s+merge\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+pr\s+merge\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
   echo "❌ 可逆性ゲート(cmd_813): gh pr merge は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
   exit 2
 fi
-if echo "$COMMAND" | grep -qE '\bgh\s+(pr|issue)\s+close\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+(pr|issue)\s+close\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
   echo "❌ 可逆性ゲート(cmd_813): gh pr/issue close は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
   exit 2
 fi
-if echo "$COMMAND" | grep -qE '\bgh\s+repo\s+(archive|delete)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+repo\s+(archive|delete)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
   echo "❌ 可逆性ゲート(cmd_813): gh repo archive/delete は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
   exit 2
 fi
 
 # ④ 常駐機構(daemon)の設定変更: launchctl load/unload/bootstrap/bootout・crontab編集
-if echo "$COMMAND" | grep -qE '\blaunchctl\s+(load|unload|bootstrap|bootout|remove)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\blaunchctl\s+(load|unload|bootstrap|bootout|remove)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
   echo "❌ 可逆性ゲート(cmd_813): launchctlによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
   exit 2
 fi
-if echo "$COMMAND" | grep -qE '\bcrontab\b' && ! echo "$COMMAND" | grep -qE '\bcrontab\s+(-l|--list)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bcrontab\b' && ! echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bcrontab\s+(-l|--list)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
   echo "❌ 可逆性ゲート(cmd_813): crontabによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
   exit 2
 fi
