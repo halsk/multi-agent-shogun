@@ -320,6 +320,56 @@ fi
 
 rm -rf "$TMPDIR_TEST12"
 
+# ── Section 13: console_commit_epoch — repo_path空時にswarm自身を誤検知しない ──
+# 実バグ回帰(cmd_807 軍師QC R-4)。config/settings.yaml消失(または
+# repo_path未設定)時、`git -C "$repo_path" ...`のrepo_pathが空文字だと
+# cwdへフォールバックし、swarmリポ自身の最終commit時刻を誤って返していた
+# (2026-09-13 02:50〜08:25の約5.5h、本番で実発現・consoleの停滞を隠す
+# 向きに働いた)。repo_path欠如/空文字時はcommit_epoch=0(停滞側)を
+# 返すことを実測で確認する。
+echo ""
+echo "=== Section 13: console_commit_epoch — repo_path空時は0を返す(実バグ回帰・cmd_807 R-4) ==="
+
+TMPDIR_TEST13=$(mktemp -d)
+
+# 13a: repo_path行そのものが無い設定ファイル → commit_epoch=0
+_settings_no_repo_path="$TMPDIR_TEST13/settings_no_repo_path.yaml"
+grep -v '^  repo_path:' "$SCRIPT_DIR/config/settings.yaml" > "$_settings_no_repo_path"
+result_13a=$(
+    set -euo pipefail
+    export CONSOLE_STALL_WATCHDOG_SETTINGS="$_settings_no_repo_path"
+    source "$SCRIPT_DIR/scripts/console_stall_watchdog.sh"
+    console_commit_epoch
+)
+assert_eq "13a: repo_path行が無い設定 → commit_epoch=0" "0" "$result_13a"
+
+# 13b: repo_pathキーはあるが値が空文字 → commit_epoch=0
+_settings_empty_repo_path="$TMPDIR_TEST13/settings_empty_repo_path.yaml"
+sed 's|^  repo_path:.*|  repo_path: |' "$SCRIPT_DIR/config/settings.yaml" > "$_settings_empty_repo_path"
+result_13b=$(
+    set -euo pipefail
+    export CONSOLE_STALL_WATCHDOG_SETTINGS="$_settings_empty_repo_path"
+    source "$SCRIPT_DIR/scripts/console_stall_watchdog.sh"
+    console_commit_epoch
+)
+assert_eq "13b: repo_path値が空文字 → commit_epoch=0" "0" "$result_13b"
+
+# 13c(対照): repo_pathが正しく設定されていれば従来通り0以外を返す
+#   (本回帰是正が正常系を壊していないことの確認)
+result_13c=$(
+    set -euo pipefail
+    export CONSOLE_STALL_WATCHDOG_SETTINGS="$SCRIPT_DIR/config/settings.yaml"
+    source "$SCRIPT_DIR/scripts/console_stall_watchdog.sh"
+    console_commit_epoch
+)
+if [[ "$result_13c" != "0" ]]; then
+    assert_eq "13c(対照): repo_path正常時は0以外を返す" "nonzero" "nonzero"
+else
+    assert_eq "13c(対照): repo_path正常時は0以外を返す" "nonzero" "0"
+fi
+
+rm -rf "$TMPDIR_TEST13"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 echo ""
 echo "========================================"
