@@ -211,6 +211,28 @@ guard_rc() {
     [ "$status" -eq 0 ]
 }
 
+# --- 軍師QC是正の回帰テスト(4巡目レビューで発見された変数エイリアス迂回) ---
+
+@test "QC fix round4: variable-alias indirection for gh pr merge (GH=gh; \$GH pr merge) is blocked" {
+    run guard_rc 'GH=gh; $GH pr merge 42 --squash'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4: variable-alias indirection for launchctl load is blocked" {
+    run guard_rc 'LC=launchctl; $LC load /tmp/foo.plist'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4: variable-alias indirection for crontab -e is blocked" {
+    run guard_rc 'CT=crontab; $CT -e'
+    [ "$status" -eq 2 ]
+}
+
+@test "QC fix round4 regression guard: variable-alias to an unrelated command is still allowed" {
+    run guard_rc 'X=echo; $X hello'
+    [ "$status" -eq 0 ]
+}
+
 # --- (b) worktree内の通常作業は従来通り通ること(acceptance_criteria②・過剰ブロック防止) ---
 
 @test "normal work: rm -rf build (in-tree, gitignore-typical) is still allowed" {

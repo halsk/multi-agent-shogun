@@ -828,29 +828,46 @@ while IFS= read -r cpmvln_invocation; do
   done < <(_extract_cpmvln_targets "$cpmvln_invocation" "$cpmvln_verb")
 done < <(echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv|ln)[[:space:]][^;&|]*' || true)
 
-# ③ 外部への不可逆操作: gh pr merge / gh pr close / gh issue close / gh repo archive|delete
-if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+pr\s+merge\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-  echo "❌ 可逆性ゲート(cmd_813): gh pr merge は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
-  exit 2
-fi
-if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+(pr|issue)\s+close\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-  echo "❌ 可逆性ゲート(cmd_813): gh pr/issue close は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
-  exit 2
-fi
-if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bgh\s+repo\s+(archive|delete)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-  echo "❌ 可逆性ゲート(cmd_813): gh repo archive/delete は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
-  exit 2
-fi
+# ③④ 外部への不可逆操作・常駐機構(daemon)の設定変更
+# ★軍師QC是正(4巡目・実証): has_git_subcmd が git に対して持つ変数エイリアス
+# 経由の検知(`v=git; $v push`)と同型の迂回が gh/launchctl/crontab には
+# 無かった(実証: `GH=gh; $GH pr merge 42 --squash` が是正前は exit 0)。
+# 直接呼出のパターンに加え、「baseコマンド名への変数エイリアスが存在し・
+# その変数が実際に使われており・関連キーワードが本文に現れる」場合も
+# 危険と判定する(has_git_subcmdの「サブコマンド語がどこかにあれば」という
+# 緩い基準と同じ精度感——多少広めに倒すが、誤検知時は.guard-authorizedで
+# 通せる)。6つの似た if ブロックを1つの関数へ集約(将軍QC是正・PR初版で
+# 2度指摘された「7つ目の不可逆コマンドを足す度にif блокをコピペする」構造
+# 上の指摘にも対応)。
+_reversibility_check_irreversible_op() {
+  local base="$1" direct_regex="$2" msg="$3" exclude_regex="$4" alias_keyword_regex="$5"
+  local hit=0
+  if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE "$direct_regex"; then
+    hit=1
+  elif echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE "\\w+=$base(\\s|;|&|\$)" \
+       && echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\$\w+' \
+       && { [[ -z "$alias_keyword_regex" ]] || echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE "$alias_keyword_regex"; }; then
+    hit=1
+  fi
+  if [[ -n "$exclude_regex" ]] && echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE "$exclude_regex"; then
+    hit=0
+  fi
+  if [[ $hit -eq 1 && "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+    echo "❌ 可逆性ゲート(cmd_813): $msg" >&2
+    exit 2
+  fi
+}
 
-# ④ 常駐機構(daemon)の設定変更: launchctl load/unload/bootstrap/bootout・crontab編集
-if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\blaunchctl\s+(load|unload|bootstrap|bootout|remove)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-  echo "❌ 可逆性ゲート(cmd_813): launchctlによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
-  exit 2
-fi
-if echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bcrontab\b' && ! echo "$_REVERSIBILITY_MASKED_COMMAND" | grep -qE '\bcrontab\s+(-l|--list)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
-  echo "❌ 可逆性ゲート(cmd_813): crontabによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
-  exit 2
-fi
+_reversibility_check_irreversible_op "gh" '\bgh\s+pr\s+merge\b' \
+  "gh pr merge は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" "" '\bmerge\b'
+_reversibility_check_irreversible_op "gh" '\bgh\s+(pr|issue)\s+close\b' \
+  "gh pr/issue close は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" "" '\bclose\b'
+_reversibility_check_irreversible_op "gh" '\bgh\s+repo\s+(archive|delete)\b' \
+  "gh repo archive/delete は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" "" '\b(archive|delete)\b'
+_reversibility_check_irreversible_op "launchctl" '\blaunchctl\s+(load|unload|bootstrap|bootout|remove)\b' \
+  "launchctlによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" "" '\b(load|unload|bootstrap|bootout|remove)\b'
+_reversibility_check_irreversible_op "crontab" '\bcrontab\b' \
+  "crontabによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" '\bcrontab\s+(-l|--list)\b' ""
 
 # D003: git push --force / -f (without --force-with-lease)
 if has_git_subcmd "$COMMAND" "push" && echo "$COMMAND" | grep -qE '\-\-force\b' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
