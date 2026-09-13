@@ -130,6 +130,10 @@ state_set() {
 console_commit_epoch() {
     local repo_path
     repo_path=$(load_console_setting "repo_path" "")
+    # ★repo_pathが空文字の場合、`git -C ""`はcwdへフォールバックし、
+    # swarm自身(multi-agent-shogunリポ)の最終commit時刻を誤って返す
+    # (cmd_807軍師QC R-4)。空ならcommit_epoch=0を返し停滞側へ倒す。
+    [[ -n "$repo_path" ]] || { echo 0; return; }
     # ★git worktree では .git はディレクトリでなくファイル(gitdir: ...への
     # ポインタ)になるため、[[ -d ]] 判定では worktree 上のrepo_pathを常に
     # 「gitリポではない」と誤判定していた(cmd_new_ci_orphan_tests軍師QC F-1)。
