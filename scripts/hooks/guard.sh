@@ -381,6 +381,13 @@ _has_recursive_flag() {
 # は引用符除去だけで正しく捕捉できる)。
 _extract_rm_targets() {
   local seg="$1" tok
+  # ★軍師QC是正2: `for tok in $seg` は素のword-splitのためglob文字(*?[)を
+  # 含むトークン(例: `rm -f config/*.yaml`)がguard.sh自身のプロセスのcwd
+  # 相手に実際にglob展開されてしまい、意図した文字列(可逆性ゲートの照合
+  # 対象)ではなく guard.sh 実行時cwd依存の別ファイル名に化ける恐れがある。
+  # このループは常に process substitution `<(...)` 経由(サブシェル内)で
+  # 呼ばれるため、ここで `set -f` してもこの呼出元シェルの状態には漏れない。
+  set -f
   for tok in $seg; do
     [[ "$tok" == "rm" ]] && continue
     [[ "$tok" == -* ]] && continue
@@ -389,6 +396,7 @@ _extract_rm_targets() {
     [[ -z "$tok" ]] && continue
     echo "$tok"
   done
+  set +f
 }
 
 # 許可ゾーン三点: (a) 対象repoのgit toplevel配下 (b) セッションscratchpad配下
@@ -489,6 +497,263 @@ while IFS= read -r rm_invocation; do
     fi
   done < <(_extract_rm_targets "$rm_invocation")
 done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
+
+# ============================================================
+# Hook 9: 可逆性ゲート (cmd_813・殿ご裁可2026-09-13深夜)
+# ------------------------------------------------------------
+# 背景: 本日02:10、config/settings.yaml が消失した(subtask_pr129_followups_f1_f2_f3・
+# bloom_level=L3・risk_flag=false)。旧来の夜間ルールは「重さ」(bloom_level/risk_flag)
+# で新規着手の可否を判じており、この事故そのものは「軽い」として夜間発注を許して
+# いた。軸が逆を向いていた——判ずるべきは「重さ」でなく「元に戻せるか」である。
+#
+# ★新しい軸(殿ご指示): 次のいずれかに該当する操作は昼夜を問わず門の対象とする。
+#   ② worktree外(git toplevel外・scratchpad/isolated以外)への書込み・削除
+#   ④ 常駐設定ファイル(config/settings.yaml・.claude/settings.json等)への
+#      書込み・削除、および launchd/cron の変更
+#   (③ 外部への不可逆操作は本Hookの末尾で別途扱う——gh pr merge/close等)
+#
+# ★スコープを絞った理由(実測に基づく判断・過剰ブロック防止):
+#   「①gitignore対象すべてを門にする」案は採らなかった。既存の許可テスト
+#   (`rm -rf $PROJ_ROOT/build`・`rm -r $PROJ_ROOT/node_modules` 等・いずれも
+#   gitignore対象)が示すとおり、build成果物・node_modules・ログ等の使い捨て
+#   gitignoreファイルの削除は worktree 内の通常作業そのものであり、これを
+#   門にすると「誤検知で家中が止まる」(過去のguard.sh FP是正の教訓)を
+#   再現する。ゆえに①は「git管理外か」ではなく「常駐設定として名指しされた
+#   少数の重要ファイルか」(④)へ限定して実装する。これにより build/
+#   node_modules 等は従来どおり素通りし、config/settings.yaml 等の一点物は
+#   場所(git管理下/外・worktree内/外)を問わず門に掛かる。
+#   また `>` によるファイル上書きリダイレクトの検知は本Hookでは実装しない
+#   (heredoc受け手判定=FP-H3/FN-H3是正と衝突しうる一般化のコストが高く、
+#   acceptance_criteriaの実証対象=rm/cpの範囲を超えるため)。同様に
+#   `sed -i` in-place編集も対象外とした(sed起動の位置引数解析はcp/mvより
+#   曖昧で誤検知リスクが高い)。いずれも既知のギャップとして報告に明記する。
+#   ★既知のギャップ(軍師QC是正・PR初版で発見): rm/cp/mv の対象パス抽出は
+#   `for tok in $seg` による素の word-split(IFS区切り)であり、スペースを
+#   含む引用符付きパス(例: `mv "a file.txt" "/outside/b file.txt"`)は
+#   正しく1トークンへ復元されない。これは D001/D002(_extract_rm_targets)
+#   が既に持つのと同じ既知の限界であり、正しく解くには実shell文法を解釈する
+#   トークナイザが要る(evalによる再解釈は、まさにHook8が塞いでいる
+#   コマンド置換注入のリスクを本Hookに持ち込むため採らない)。本PRの範囲では
+#   解決せず、follow-upとして正直に記す。
+#
+
+# ★裁可の通し方(門であって禁止ではない): リポルートに `.guard-authorized`
+# ファイル(task_id: <cmd_id> / expires: <ISO8601 UTC>)を置けば、期限内に
+# 限り本Hookのみ(他のHookは従来どおり有効)を通す。口頭・inbox文言では
+# 通さず、機械が確認できるファイルの存在と期限のみを根拠とする——
+# 既存の `.guard-skip`(全hook無効・恒久)と異なり、本マーカーは
+# 「このHookだけ・期限付き」に絞ってある。
+# ============================================================
+
+REVERSIBILITY_GUARDED_RELPATHS=(
+  "config/settings.yaml"
+  ".claude/settings.json"
+  ".claude/settings.local.json"
+)
+
+_reversibility_guard_root() {
+  git -C "$GIT_TARGET_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$GIT_TARGET_DIR"
+}
+
+# 常駐設定ファイル(④)に該当するか。git管理下/外・worktree内/外を問わず
+# 名指しの少数パスのみを対象とする(スコープを絞った理由は上記コメント参照)。
+# ★軍師QC是正1: 完全一致だけでは `rm -rf config/` のような親ディレクトリ
+# 丸ごと削除(guarded fileを内包する)を見落とす。「対象がguarded fileそのもの」
+# 「対象がguarded fileを内包するディレクトリ」の両方を判定する。
+# ★軍師QC是正2: 完全一致(文字列比較)だけでは `rm -f config/*.yaml` のような
+# glob指定が「config/settings.yaml」という文字列と一致せずすり抜ける。
+# ★是正2のfollow-up(自己是正・回帰発見): 当初 `[[ guarded_abs == $p ]]` で
+# 素朴にパターン一致させたところ、bashの `[[ == ]]` は`*`が`/`を跨いで
+# 一致してしまう(実際のシェルglob展開とは異なる)ため、`rm -rf *`(プロジェクト
+# 直下の裸ワイルドカード・test_hooks.shが従来からallowとして固定してきた
+# 正当な操作)まで誤ってguarded configに一致し、既存回帰テストを壊した。
+# 実際のシェルglob展開は`*`が`/`をまたがない——ディレクトリ部を先に完全一致
+# させ、globパターンは★同じディレクトリ内のbasenameにのみ適用することで、
+# `config/*.yaml`(同一ディレクトリ内)は捕捉しつつ`rm -rf *`(ディレクトリを
+# 跨ぐ裸ワイルドカード)は誤検知しない。
+_is_guarded_config_path() {
+  local p="$1" root="$2" g guarded_abs p_dir p_base g_dir g_base
+  case "$p" in "$root"/*) ;; *) return 1 ;; esac
+  for g in "${REVERSIBILITY_GUARDED_RELPATHS[@]}"; do
+    guarded_abs="$root/$g"
+    case "$guarded_abs" in "$p"/*) return 0 ;; esac
+  done
+  p_dir="${p%/*}"
+  p_base="${p##*/}"
+  for g in "${REVERSIBILITY_GUARDED_RELPATHS[@]}"; do
+    guarded_abs="$root/$g"
+    g_dir="${guarded_abs%/*}"
+    g_base="${guarded_abs##*/}"
+    [[ "$p_dir" == "$g_dir" ]] || continue
+    # shellcheck disable=SC2053  # $p_base は意図的にglobパターンとして展開させる
+    [[ "$g_base" == $p_base ]] && return 0
+  done
+  return 1
+}
+
+# rm/cp/mv 共通の絶対パス解決。_rm_target_verdict の $HOME展開・~展開・
+# 相対パス絶対化ロジックを一般化(verdict早期return最適化は持たず常に
+# realpath -m まで通す——rm以外の呼出元でも同じ基準で判定するため)。
+_resolve_reversibility_target() {
+  local raw="$1" root="$2"
+  raw="${raw//\$\{HOME\}/$HOME}"
+  if [[ "$raw" == *'$HOME'* ]]; then
+    local _home_esc="${HOME//&/\\&}"
+    raw="$(printf '%s' "$raw" | sed -E "s#\\\$HOME([^A-Za-z0-9_]|\$)#${_home_esc}\\1#g")"
+  fi
+  case "$raw" in
+    "~") raw="$HOME" ;;
+    "~/"*) raw="$HOME/${raw#\~/}" ;;
+  esac
+  if [[ "$raw" != /* ]]; then
+    if [[ -n "$root" ]]; then
+      raw="$root/$raw"
+    else
+      raw="$GIT_TARGET_DIR/$raw"
+    fi
+  fi
+  _realpath_m "$raw"
+}
+
+# ★軍師QC是正5(性能): git rev-parse / .guard-authorized の読取りは1回の
+# guard.sh実行で複数回呼ばれうる(rm対象複数・cp/mv・gh/launchctl/crontab)。
+# 1コマンドにつき1回だけ計算しキャッシュする。
+_REVERSIBILITY_ROOT=$(_reversibility_guard_root)
+
+REVERSIBILITY_BLOCK_REASON=""
+_reversibility_verdict() {
+  local raw="$1" p
+  p=$(_resolve_reversibility_target "$raw" "$_REVERSIBILITY_ROOT")
+  if _is_guarded_config_path "$p" "$_REVERSIBILITY_ROOT"; then
+    REVERSIBILITY_BLOCK_REASON="GUARDED_CONFIG(④常駐設定ファイル)"
+    return 1
+  fi
+  if _in_allowed_zone "$p"; then
+    return 0
+  fi
+  REVERSIBILITY_BLOCK_REASON="OUTSIDE_WORKTREE(②worktree外)"
+  return 1
+}
+
+# ISO8601(UTC・Z終端)→epoch秒。GNU date(-d)優先、無ければBSD date(-j -f)。
+_iso8601_to_epoch() {
+  local iso="$1" out
+  if out=$(date -u -d "$iso" +%s 2>/dev/null); then echo "$out"; return 0; fi
+  if out=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null); then echo "$out"; return 0; fi
+  return 1
+}
+
+# `.guard-authorized`(task_id: <id> / expires: <ISO8601 UTC>)が存在し、
+# 期限内であれば本Hookのみ通す。存在しない/期限切れ/フィールド欠如は
+# 全て「裁可なし」として扱う(安全側)。
+_reversibility_override_active() {
+  local file="$_REVERSIBILITY_ROOT/.guard-authorized" task_id expires now_epoch exp_epoch
+  [[ -f "$file" ]] || return 1
+  task_id=$(grep -E '^task_id:' "$file" | head -1 | sed -E 's/^task_id:[[:space:]]*//')
+  expires=$(grep -E '^expires:' "$file" | head -1 | sed -E 's/^expires:[[:space:]]*//')
+  [[ -z "$task_id" || -z "$expires" ]] && return 1
+  exp_epoch=$(_iso8601_to_epoch "$expires") || return 1
+  now_epoch=$(date -u +%s)
+  [[ "$now_epoch" -lt "$exp_epoch" ]]
+}
+
+# 1コマンドにつき1回だけ判定してキャッシュ(軍師QC是正5)。
+if _reversibility_override_active; then
+  _REVERSIBILITY_OVERRIDE_ACTIVE=1
+else
+  _REVERSIBILITY_OVERRIDE_ACTIVE=0
+fi
+
+_reversibility_denial_message() {
+  local verb="$1" target="$2"
+  echo "❌ 可逆性ゲート(cmd_813): $verb がgit管理外/worktree外/常駐設定ファイルを対象 ($target)。REASON=$REVERSIBILITY_BLOCK_REASON" >&2
+  echo "   殿または将軍の明示裁可がある場合、リポルートに .guard-authorized (task_id/expires) を設置せよ。" >&2
+}
+
+# rm: 全形(非再帰も含む・D001/D002は再帰のみが対象のため取りこぼす)を
+# 可逆性ゲートへ通す。
+while IFS= read -r rm_invocation; do
+  [[ -z "$rm_invocation" ]] && continue
+  rm_invocation="$(echo "$rm_invocation" | sed -E 's/^[[:space:];&|(=]//')"
+  while IFS= read -r target; do
+    [[ -z "$target" ]] && continue
+    if ! _reversibility_verdict "$target" && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+      _reversibility_denial_message "rm" "$target"
+      exit 2
+    fi
+  done < <(_extract_rm_targets "$rm_invocation")
+done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])rm[[:space:]][^;&|]*' || true)
+
+# cp/mv: 書込み先を可逆性ゲートへ通す。
+# ★軍師QC是正3: 最後の非フラグ位置引数だけを見ると、GNU cp/mv の
+# `-t DIR`/`--target-directory=DIR`/`--target-directory DIR` 形(宛先を
+# フラグの引数として渡す)では最後の位置引数が実は「送り側」のファイルで
+# あり、本当の宛先(-t の引数)を見落とす。-t/--target-directory を明示的に
+# 検出し、それがあればそちらを宛先として優先する。
+_extract_last_positional_arg() {
+  local seg="$1" tok last="" prev="" target=""
+  set -f
+  for tok in $seg; do
+    if [[ -n "$prev" ]]; then
+      target="$tok"
+      prev=""
+      continue
+    fi
+    case "$tok" in
+      -t) prev="-t"; continue ;;
+      --target-directory) prev="--target-directory"; continue ;;
+      --target-directory=*) target="${tok#--target-directory=}"; continue ;;
+      -t?*) target="${tok#-t}"; continue ;;
+    esac
+    [[ "$tok" == "cp" || "$tok" == "mv" ]] && continue
+    [[ "$tok" == -* ]] && continue
+    tok="${tok#[\"\']}"
+    tok="${tok%[\"\']}"
+    [[ -z "$tok" ]] && continue
+    last="$tok"
+  done
+  set +f
+  if [[ -n "$target" ]]; then
+    echo "$target"
+  else
+    echo "$last"
+  fi
+}
+
+while IFS= read -r cpmv_invocation; do
+  [[ -z "$cpmv_invocation" ]] && continue
+  cpmv_invocation="$(echo "$cpmv_invocation" | sed -E 's/^[[:space:];&|(=]//')"
+  cpmv_target=$(_extract_last_positional_arg "$cpmv_invocation")
+  [[ -z "$cpmv_target" ]] && continue
+  if ! _reversibility_verdict "$cpmv_target" && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+    _reversibility_denial_message "cp/mv" "$cpmv_target"
+    exit 2
+  fi
+done < <(echo "$COMMAND" | grep -oE '(^|[[:space:];&|(=])(cp|mv)[[:space:]][^;&|]*' || true)
+
+# ③ 外部への不可逆操作: gh pr merge / gh pr close / gh issue close / gh repo archive|delete
+if echo "$COMMAND" | grep -qE '\bgh\s+pr\s+merge\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+  echo "❌ 可逆性ゲート(cmd_813): gh pr merge は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
+  exit 2
+fi
+if echo "$COMMAND" | grep -qE '\bgh\s+(pr|issue)\s+close\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+  echo "❌ 可逆性ゲート(cmd_813): gh pr/issue close は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
+  exit 2
+fi
+if echo "$COMMAND" | grep -qE '\bgh\s+repo\s+(archive|delete)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+  echo "❌ 可逆性ゲート(cmd_813): gh repo archive/delete は不可逆操作です。裁可があれば .guard-authorized を設置せよ。" >&2
+  exit 2
+fi
+
+# ④ 常駐機構(daemon)の設定変更: launchctl load/unload/bootstrap/bootout・crontab編集
+if echo "$COMMAND" | grep -qE '\blaunchctl\s+(load|unload|bootstrap|bootout|remove)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+  echo "❌ 可逆性ゲート(cmd_813): launchctlによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
+  exit 2
+fi
+if echo "$COMMAND" | grep -qE '\bcrontab\b' && ! echo "$COMMAND" | grep -qE '\bcrontab\s+(-l|--list)\b' && [[ "$_REVERSIBILITY_OVERRIDE_ACTIVE" -eq 0 ]]; then
+  echo "❌ 可逆性ゲート(cmd_813): crontabによる常駐設定変更です。裁可があれば .guard-authorized を設置せよ。" >&2
+  exit 2
+fi
 
 # D003: git push --force / -f (without --force-with-lease)
 if has_git_subcmd "$COMMAND" "push" && echo "$COMMAND" | grep -qE '\-\-force\b' && ! echo "$COMMAND" | grep -q 'force-with-lease'; then
