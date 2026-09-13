@@ -276,13 +276,18 @@ guard_rc() {
 }
 
 @test "outside-worktree gate: rm within session scratchpad allow-zone is still allowed" {
-    local scratch="/private/tmp/claude-999/fake-session-guardtest/scratchpad/tmpdir"
+    # ★CI移植性(実測・是正): /private/tmp はmacOS固有(/tmpの実体)であり、
+    # Linux(ubuntu-latest CI)には/private自体が存在せずmkdir -pが失敗する
+    # (実際にCIで検出・失敗ログ: "mkdir -p ... failed")。_in_allowed_zone は
+    # /private/tmp/claude-*/*/scratchpad/* と /tmp/claude-*/*/scratchpad/* の
+    # 両方を許可ゾーンとして見るため、両OSで実在する /tmp 側の形を使う。
+    local scratch="/tmp/claude-999/fake-session-guardtest/scratchpad/tmpdir"
     mkdir -p "$scratch"
     echo x > "$scratch/f.txt"
 
     run guard_rc "cd $ISO_REPO && rm -f $scratch/f.txt"
     [ "$status" -eq 0 ]
-    rm -rf "/private/tmp/claude-999/fake-session-guardtest"
+    rm -rf "/tmp/claude-999/fake-session-guardtest"
 }
 
 # --- ③外部への不可逆操作 ---
