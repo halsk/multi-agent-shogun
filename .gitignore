@@ -157,6 +157,11 @@
 !scripts/stall_watchdog_report.sh
 !scripts/deadman_switch.sh
 !scripts/com.swarm.deadman.plist
+!scripts/branch_drift_check.sh
+!scripts/pre_deploy_verify.sh
+!scripts/auto_merge_short_lived.sh
+!scripts/com.swarm.branch-drift-check.plist
+!scripts/com.swarm.pre-deploy-verify.plist
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/

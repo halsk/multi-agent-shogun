@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # Layer 3: merge stale short-lived remote branches into the configured primary branch.
+#
+# ★cmd_815時点で意図的に定期実行(launchd等)へ接続していない。本スクリプトには
+# 自動mergeを無効化する設定キーが存在しない(branch_policyの4キー
+# [allowed_long_lived/max_age_seconds/short_lived_pattern/monitored_repos]とは
+# 別の話で、有効/無効を切り替える仕組み自体が未実装)。config/settings.yamlの
+# branch_policyブロック直下のコメント(cmd_814殿へお伺い中)も参照。
+# 「PR未作成/未レビューのままmainへ入る」経路が生まれうるため、殿の最終判断
+# (有効化するか否か)が出るまでは繋がない——見張り2本(branch_drift_check.sh・
+# pre_deploy_verify.sh)のみ定期実行化する。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

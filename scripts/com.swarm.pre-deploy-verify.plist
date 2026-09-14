@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.swarm.pre-deploy-verify</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/hal/tools/multi-agent-shogun/scripts/pre_deploy_verify.sh</string>
+    <string>--repo</string>
+    <string>/Users/hal/tools/multi-agent-shogun</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/pre_deploy_verify.launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/hal/tools/multi-agent-shogun/logs/pre_deploy_verify.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
