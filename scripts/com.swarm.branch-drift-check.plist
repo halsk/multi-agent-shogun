@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- /opt/homebrew/bin/bash を明示(cmd_815実証): 本スクリプトはmapfile builtinを
+     使うため、macOS標準/bin/bash(3.2・bash4以降の機能を持たない)では
+     `mapfile: command not found` で失敗する。他のcom.swarm.*.plistが
+     /bin/bashで動くのは対象スクリプトがmapfileを使わないため——本スクリプトの
+     固有事情であり、テンプレートを一律で変える話ではない。 -->
 <dict>
   <key>Label</key>
   <string>com.swarm.branch-drift-check</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
+    <string>/opt/homebrew/bin/bash</string>
     <string>/Users/hal/tools/multi-agent-shogun/scripts/branch_drift_check.sh</string>
   </array>
   <key>StartInterval</key>
