@@ -103,6 +103,20 @@ workflow:
 
       ビジーペインは絶対に触らない。アイドルペインはCLI切り替えOK。
       target_agentが別CLIを使う場合、shutsujin互換コマンドで再起動してから割り当てる。
+  - step: 6.7
+    action: model_field_effectuation
+    condition: "常に実行(bloom_routingのon/offとは無関係。cmd_816・殿ご裁可2026-09-14「甲」)"
+    mandatory: true
+    note: |
+      【必須】task YAMLのmodel欄を割当直前に実効化せよ。詳細手順は本ファイル
+      「## Task-Level Model Override 実効化」節を見よ。要点のみ:
+      1. task YAMLのmodel欄 vs 対象エージェントの★実稼働モデルを突き合わせる。
+      2. 食い違い、かつtask YAMLにmodel欄と対になる理由(なぜ既定sonnetでなく
+         このモデルが要るか)が明記されている場合のみmodel_switchを送る。
+         理由が無ければ切替えない(既定=sonnet・過剰切替の戒め)。
+      3. 送っただけで済ませるな。切替後、実稼働モデルが実際に変わったことを
+         実測で確認せよ(tmux capture-paneでの実出力確認・手順は同節)。
+      4. 一致していれば何もしない。
   - step: 7
     action: inbox_write
     target: "ashigaru{N}"
@@ -1018,7 +1032,10 @@ These checks supplement Gunshi's QC. They do **not** replace the Ashigaru → Gu
 | Gunshi | Opus | multiagent:agents.9 | Strategic thinking |
 
 **Default: Assign implementation to ashigaru.** Route strategy/analysis to Gunshi (Opus).
-足軽のモデルは settings.yaml で個別定義。bloom_routing: "auto" 時は Step 6.5 で動的切替を実行せよ。
+足軽のモデルは settings.yaml で個別定義。bloom_routing: "auto" 時は Step 6.5 で動的切替を実行せよ
+(★現在 `bloom_routing: off` — 殿ご裁可2026-09-14・詳細=config/settings.yamlコメント)。
+task YAMLの `model:` 欄はbloom_routingのon/offとは独立に、Step 6.7「Task-Level Model
+Override 実効化」節(本ファイル後述)で毎回実効化せよ。
 
 ### Bloom Level → Agent Mapping
 
@@ -1036,6 +1053,145 @@ These checks supplement Gunshi's QC. They do **not** replace the Ashigaru → Gu
 
 **Exception**: If the L4+ task is simple enough (e.g., small code review), an ashigaru can handle it.
 Use Gunshi for tasks that genuinely need deep thinking — don't over-route trivial analysis.
+
+## Task-Level Model Override 実効化(cmd_816・殿ご裁可2026-09-14「甲」)
+
+### 背景(なぜこの節が要るか)
+
+将軍の実測(2026-09-14朝)で判明した事実: `get_agent_model()`(lib/cli_adapter.sh)が
+読むのは **`config/settings.yaml` の `cli.agents.{id}.model` のみ**であり、
+**task YAMLの `model:` 欄を読む実装はどこにも存在しない**。ゆえに家老が
+task YAMLへ「このtaskは難しいゆえOpusで」と書いても、それは記録として
+残るだけで実際のモデル割当には一切効いていなかった。
+
+本節は、task YAMLの `model:` 欄を**判断の記録に留めず実効あるもの**にするため、
+家老がtask割当の直前に必ず踏む段取りを定める(狙い=家老の判断を殺さず効かせる)。
+`lib/cli_adapter.sh` の実装そのものは変更しない——本節は運用の段取りである。
+
+### 段取り(task割当直前・毎回)
+
+1. **突き合わせ**: 割り当てようとしているtask YAMLの `model:` 欄と、割当先
+   エージェントの★実稼働モデルを突き合わせる(実稼働モデルの調べ方は次項)。
+2. **食い違い時の判定**:
+   - task YAMLの `model:` 欄に、既定(sonnet)ではなくそのモデルが要る
+     **理由が明記されている**場合のみ → model_switchを送る(次々項)。
+   - 理由が書かれていない食い違いは「切替の意図なし」とみなし、**切替えない**
+     (既定sonnetのまま進める)。理由の書き方は例:
+     `model: claude-opus-5  # 理由: 複数リポの依存関係分析を伴うL4設計判断のため`
+   - ★この判定自体が「過剰な切替を戒める」条項である。家老が気軽にmodel欄へ
+     値を置くだけで実際に切替が起きるようにはしない。
+3. **一致していれば何もしない**(無用な切替をしない)。
+
+### 実稼働モデルの調べ方(機械的に確認できる形・「家老の記憶」を根拠にするな)
+
+pane_pidの子プロセスの起動引数を見る。将軍が2026-09-14に実測し、
+`config/settings.yaml` の割当と全一致することを確認済みの方法:
+
+```bash
+# 1. 対象エージェントのpane_pidを取得
+pane_pid=$(tmux list-panes -t multiagent -F '#{pane_pid} #{@agent_id}' | awk -v a="ashigaru3" '$2==a{print $1}')
+
+# 2. そのpaneで動くCLIプロセスの起動引数を見る(--model フラグが実稼働モデル)
+ps -o pid,command -p "$(pgrep -P "$pane_pid")"
+# 例の出力: 24350 claude --model sonnet --dangerously-skip-permissions
+```
+
+★注意(2026-09-14 ashigaru3実測で判明した限界): 上記は**プロセス起動時に
+渡された `--model` フラグ**を見るものである。起動後にセッション内で
+`/model` コマンドにより実行時切替が行われていた場合、その変更はプロセスの
+起動引数には反映されない(psは起動時点のスナップショットのまま)。
+
+★軍師QC発見のK1是正(2026-09-14・本節を以下のとおり改める): 軍師の実測で、
+ps法は対象によって取得できない場合が実際にある(gunshiでps法がヒット0件)。
+加えてps法は起動時フラグしか見ないため、`/model` による実行時切替後は
+古い値を返す(2026-09-12のgunshi自身のFable→Opus 5実行時切替が実例)。
+ゆえに**優先順位を入れ替える**:
+
+1. **第一**: `tmux capture-pane` でTUI上部のバナー行(`Sonnet 5 · Claude Team`等)
+   を読む——実行時切替が反映されるのはこちらのみ。「現状把握のための素の
+   突き合わせ」「直前のmodel_switch確認」のいずれもこれを第一手段とする。
+2. **裏取り**: ps法(起動引数の`--model`フラグ)は補助的な裏取りに留める
+   (bloom_routing/settings.yamlの割当と一致するかの確認に有用だが、
+   実行時切替後は古い値を返しうることを踏まえて読むこと)。
+3. **いずれの方法でも読めなかった場合**(軍師実測: capture-paneがヒット0件、
+   ps法もプロセスが取得できない、等): **切替えない**。task YAMLへ
+   「実稼働モデル不明」と記録し、既定(sonnet)のまま進める。不明時に
+   既定へ倒すのは本節全体の思想(過剰切替の戒め)と同じ向きであり、
+   分からぬまま切替を強行して余計な混乱を生まないための措置である。
+
+### 食い違いを直す(model_switch)
+
+CLAUDE.md通信規約どおり、model_switch inboxを送る:
+
+```bash
+bash scripts/inbox_write.sh ashigaru3 "/model claude-opus-5" model_switch karo
+```
+
+`inbox_watcher.sh` が `type: model_switch` を検知し、対象paneへ `/model <name>`
+を送る(text→Enterを0.3秒間隔で分離送信・CLAUDE.md「Delivery Mechanism」節と同じ作法)。
+**ビジーペインには送るな**——対象エージェントがidle(❯待機)であることを
+確認してから送ること(bloom_routing節と同じ「ビジーペインは絶対に触らない」原則)。
+
+### 切替の成否を実測で確かめる(2026-09-12 Fable移行の作法の成文化)
+
+★2026-09-12のFable一時移行の折、将軍は「送った」で終わらせず、9名全員に
+ついてClaude Code自身の確認応答をtmux capture-paneで実測した。この作法を
+以下のとおり成文化する(属人の手柄で終わらせない)。
+
+1. model_switchを送った後、少し待つ(目安2秒。対象がinbox_watcher経由で
+   `/model` を受け取り処理する時間)。
+2. `tmux capture-pane -t <pane> -p -S -20` で直近の出力を取得する。
+3. **Claude Code自身の確認応答**が出ているかを確認する。実例
+   (2026-09-14 ashigaru3が隔離テストpaneで実証・本文そのまま):
+   ```
+   ❯ /model claude-opus-5
+     ⎿  Set model to Opus 5 and saved as your default for new sessions
+   ```
+   加えて、TUI上部のバナー行(`Sonnet 5 · Claude Team` 等)が新モデル名に
+   変わっていることも確認する——確認応答の文言だけでなくバナーの両方を見よ。
+4. 確認応答・バナーのいずれかが確認できない場合は「切替失敗」として扱い、
+   再送 or paneの状態確認(busyのまま固着していないか)に進む。「送ったから
+   のはず」で done 扱いにしてはならない(Iron Law 1・8)。
+5. ★注意: `/model` の確認応答には「saved as your default for new sessions」
+   と表示される——これは**そのCLIアカウントのユーザーレベル既定値**も
+   合わせて更新することを意味する。ただし当swarmの各pane起動スクリプトは
+   `lib/cli_adapter.sh` 経由で毎回明示的に `--model <値>` フラグを渡して
+   起動する設計であり、起動時の明示フラグは保存された既定値より優先される
+   ため、次回起動時に意図せぬモデルへ引きずられる実害はない
+   (2026-09-14 ashigaru3が隔離テストpaneで実証済み)。次に読む者への注記
+   として残す。
+
+### 実証記録(2026-09-14・cmd_816・ashigaru3)
+
+上記手順の(A)実稼働モデル検出法、(B)model_switch+capture-pane確認法の
+両方を、本番の稼働中paneには触れず、隔離した使い捨てtmuxセッション
+(`cmd816_demo`・本番swarmの一部ではない)上の実CLIインスタンスで実証した。
+
+- 切替前バナー: `Sonnet 5 · Claude Team`
+- `/model claude-opus-5` 送信 → 確認応答:
+  `⎿  Set model to Opus 5 and saved as your default for new sessions`
+  → バナー: `Opus 5 · Claude Team` に変化(実出力で確認)
+- `/model sonnet` で復元 → 確認応答:
+  `⎿  Set model to Sonnet 5 and saved as your default for new sessions`
+  → バナー: `Sonnet 5 · Claude Team` に復元(実出力で確認)
+- 検証後、隔離セッションは `/exit` で正常終了させ後片付け済み(本番paneには
+  一切触れていない)。
+
+### K1是正(軍師QC・2026-09-14・ashigaru3・ドキュメントのみ)
+
+軍師QCがPR#136へのfollow-upとして発見: ps法・capture-pane法いずれも
+「その時々で答えが無い」ことが実際にある(軍師実測: gunshiはps法で取得
+できず、gunshi2はcapture-pane法でヒット0件)。加えてps法は起動時フラグの
+みを見るため、実行時切替(`/model`)後は古い値を返す実例が9/12に実際に
+あった(gunshi自身のFable→Opus 5切替)。
+
+これを受け「実稼働モデルの調べ方」節を改め、(1)capture-paneを第一手段
+・ps法を裏取りへ格下げ、(2)いずれの方法でも読めない場合は切替えず
+「不明」と記録して既定(sonnet)で進める、の2点を明記した(詳細=同節)。
+コード変更は無し(`lib/cli_adapter.sh`・`config/settings.yaml`とも今回の
+commitでは触れていない)。
+
+詳細=`queue/reports/ashigaru3_report.yaml`(subtask_816_model_assignment_activation)。
 
 ## Merge 裁可の線引き(暫定運用・殿確定 2026-08-13・cmd_717)
 
