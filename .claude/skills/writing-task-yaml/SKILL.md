@@ -26,6 +26,12 @@ status: assigned          # assigned → work → done / blocked / failed
 # (queue/・config/・projects/配下等)へ書き込む場合はそのパスを列挙。無ければ []
 touches_files: []
 
+# staging検証テナント必須フィールド(cmd_826)— ステージングで実ブラウザ確認を伴う
+# taskは必ずどのテナントで確認するかを明記せよ。「テナントアドミンで確認せよ」
+# だけでは不十分(cmd_821/cmd_826で殿確認と足軽実測が食い違って見えた事故の因)。
+# 該当しないtaskはnullのまま可。
+staging_tenant: null   # 例: console_qa (geonicdb-console)
+
 # 作業ディレクトリ — git worktree 必須
 target_path: /home/hal/workspace/<repo>-wt<N>
 
@@ -143,6 +149,24 @@ changelog:
   厳禁(=単一テナント非スコープでcurrentTenant空→403偽陰性の常習原因。cmd_656/cmd_661参照)。
   ```
 - 参照: memory `feedback_console_e2e_tenant_admin_required`
+
+### staging 検証手順には「どのテナントで」を必須明記せよ（cmd_826 postmortem・殿確定 2026-09-15）
+
+- cmd_821/cmd_826 で、殿が確認した「20件超のエンティティ」と足軽が実測した「console_qa
+  テナントで0件」が食い違って見える騒ぎがあった。★原因は両者とも正しく、確認していた
+  **テナントが違っていただけ**だった(console_qa は検証専用の空テナント、殿がご覧に
+  なったのは実データを持つ別テナント)。手順に「どのテナントで確認するか」が書かれて
+  いなかったことが、食い違いに気づくまでの時間を長引かせた根本原因である。
+- **★ staging 検証・e2e タスクの instructions / acceptance_criteria には、必ず具体的な
+  テナント名を明記すること**(例: 「console_qa テナントで確認せよ」)。「テナントアドミン
+  で」だけでは不十分――*どの*テナントアドミンかまで書け(§「console e2e/検証タスクの規律」
+  と両輪)。
+- **人の記憶に頼るな**: 上記テンプレートの `staging_tenant:` フィールド(cmd_826 で追加)を
+  必須で埋めよ。staging でのブラウザ確認を伴う task にこのフィールドが `null` のまま
+  dispatch してはならない。touches_files(RACE-001)と同じく、テンプレートに固定欄として
+  組み込むことで「書き忘れ」を構造的に防ぐ。
+- テナント名と認証情報の対応表は `context/geonicdb-console-issue-order.md` の
+  「staging検証の認証情報」節を正典とする(project 固有の対応表がある場合はそちらも参照)。
 
 ### 認証を要する作業と要さぬ作業を同一 subtask に束ねるな（殿確定 2026-08-13・cmd_716）
 
@@ -282,6 +306,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
 | `reviewThreads(unresolved=0)` のみ確認して完了と報告 | latestReviews body の Outside diff range comments も確認必須 (cmd_499 subtask_499a で Critical 見落とし事例) |
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
+| staging 検証 task に `staging_tenant:` を埋めず dispatch | どのテナントを見ているか取り違え、殿確認と足軽実測が食い違って見える(cmd_826) |
 
 ## 関連
 

@@ -22,6 +22,12 @@ project: <project-id>
 assigned_to: ashigaru<N>
 status: assigned          # assigned → work → done / blocked / failed
 
+# staging検証テナント必須フィールド(cmd_826)— ステージングで実ブラウザ確認を伴う
+# taskは必ずどのテナントで確認するかを明記せよ。「テナントアドミンで確認せよ」
+# だけでは不十分(cmd_821/cmd_826で殿確認と足軽実測が食い違って見えた事故の因)。
+# 該当しないtaskはnullのまま可。
+staging_tenant: null   # 例: console_qa (geonicdb-console)
+
 # 作業ディレクトリ — git worktree 必須
 target_path: /home/hal/workspace/<repo>-wt<N>
 
@@ -156,6 +162,23 @@ acceptance_criteria:
   ```
 - 参照: memory `feedback_console_e2e_tenant_admin_required`
 
+### staging 検証手順には「どのテナントで」を必須明記せよ（cmd_826 postmortem・殿確定 2026-09-15）
+
+- cmd_821/cmd_826 で、殿が確認した「20件超のエンティティ」と足軽が実測した「console_qa
+  テナントで0件」が食い違って見える騒ぎがあった。★原因は両者とも正しく、確認していた
+  **テナントが違っていただけ**だった(console_qa は検証専用の空テナント、殿がご覧に
+  なったのは実データを持つ別テナント)。手順に「どのテナントで確認するか」が書かれて
+  いなかったことが、食い違いに気づくまでの時間を長引かせた根本原因である。
+- **★ staging 検証・e2e タスクの instructions / acceptance_criteria には、必ず具体的な
+  テナント名を明記すること**(例: 「console_qa テナントで確認せよ」)。「テナントアドミン
+  で」だけでは不十分――*どの*テナントアドミンかまで書け(上記「console e2e/検証タスクの
+  規律」と両輪)。
+- **人の記憶に頼るな**: 上記テンプレートの `staging_tenant:` フィールド(cmd_826 で追加)を
+  必須で埋めよ。staging でのブラウザ確認を伴う task にこのフィールドが `null` のまま
+  dispatch してはならない。
+- テナント名と認証情報の対応表は `context/geonicdb-console-issue-order.md` の
+  「staging検証の認証情報」節を正典とする(project 固有の対応表がある場合はそちらも参照)。
+
 ### 認証を要する作業と要さぬ作業を同一 subtask に束ねるな（殿確定 2026-08-13・cmd_716）
 
 - 1Password / AWS / Touch ID 等の認証を要する工程と、要さぬ工程を **同一 subtask に束ねてはならない**。
@@ -280,6 +303,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
 | statusCheckRollup=SUCCESS を CR 完了と誤認する | 2度連続違反事例あり (subtask_497a + 497a3)。必ず reviewThreads を gh api graphql で実証せよ |
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
+| staging 検証 task に `staging_tenant:` を埋めず dispatch | どのテナントを見ているか取り違え、殿確認と足軽実測が食い違って見える(cmd_826) |
 
 ## 関連
 
