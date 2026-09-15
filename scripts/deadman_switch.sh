@@ -352,7 +352,17 @@ last_fire=0
 # agent全員 を使ってはならない・バグ①の再発防止)
 escalate_detail=$(IFS=', '; echo "${escalate_agents[*]}")
 msg="🚨【死者確認スイッチ】status:blocked以外で放置中(家老通知後15分以上未解消): ${escalate_detail} @ $now_iso"
-bash "$NTFY_SCRIPT" "$msg"
+# ★cmd_811: ntfy.sh は失敗時に非0で終わるようになった(以前は黙って成功したかの
+# ように返っていた)。見張り自体が通知失敗で死ぬのは本末転倒なので、set -e は
+# 使わず(本ファイルは元々未使用)戻り値を明示的に捕まえて生き延びつつ、成功した
+# かのように記録することだけは避ける(黙殺しない・die もしない)。
+ntfy_rc=0
+bash "$NTFY_SCRIPT" "$msg" || ntfy_rc=$?
 echo "$now_epoch" > "$LAST_FIRE_FILE"
-printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中(15分未解消): %s→ntfy送信 @ %s\n' "$escalate_detail" "$now_iso" >> "$DASHBOARD"
-echo "[deadman_switch] $now_iso FIRED escalated=${escalate_agents[*]}" >> "$LOG_FILE"
+if [ "$ntfy_rc" -eq 0 ]; then
+  printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中(15分未解消): %s→ntfy送信 @ %s\n' "$escalate_detail" "$now_iso" >> "$DASHBOARD"
+  echo "[deadman_switch] $now_iso FIRED escalated=${escalate_agents[*]}" >> "$LOG_FILE"
+else
+  printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中(15分未解消): %s→ntfy送信失敗(rc=%s・logs/ntfy_send.log参照) @ %s\n' "$escalate_detail" "$ntfy_rc" "$now_iso" >> "$DASHBOARD"
+  echo "[deadman_switch] $now_iso FIRED escalated=${escalate_agents[*]} ntfy_send_failed rc=${ntfy_rc}" >> "$LOG_FILE"
+fi
