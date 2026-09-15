@@ -201,3 +201,37 @@ EOF
   run grep -qE 'launchctl (load|bootstrap)' "${LIB_FILE}"
   [ "$status" -ne 0 ]
 }
+
+# ── cmd_827 軍師QC N1是正: 語彙表の穴(「待ち」欠如・「判断」の裸形不一致) ──
+# 実害2件(cmd_740・cmd_748)の実際のdashboard.md文言(家老が✅解決済みへ
+# 書き換える★前)を再現して検証する。
+
+@test "T-LT-014: cmd_740 wording (bare 判断, no ご/要 prefix) is now a candidate" {
+  source "$LIB_FILE"
+
+  run lord_turn_is_candidate "- 🚨【cmd_740・将軍判断求む】PR#125 mergeコンフリクト解消済み・残る判断は「main既存の赤10件」の扱い"
+  [ "$status" -eq 0 ]
+}
+
+@test "T-LT-015: cmd_748 wording (待ち, no 判断/裁可/承認 keyword) is now a candidate" {
+  source "$LIB_FILE"
+
+  run lord_turn_is_candidate "- 🚨【cmd_748】Cursor Composer 2.5実測・殿のブラウザログイン待ち(1回のみ・金銭発生なし)"
+  [ "$status" -eq 0 ]
+}
+
+@test "T-LT-016: bare 判断/待ち keywords still require 殿/将軍 (no over-broad match)" {
+  source "$LIB_FILE"
+
+  # 「判断」「待ち」を含むが「殿」「将軍」を含まない → 依然として非候補
+  run lord_turn_is_candidate "- 🚨【discipline・cmd_800派生】レビュー待ち。マージ判断はチームで行う。"
+  [ "$status" -eq 1 ]
+}
+
+@test "T-LT-017: auto-tag entries with 判断/待ち in body are still excluded (regression)" {
+  source "$LIB_FILE"
+
+  # 機械生成entry([tag]形式)は「殿」「判断」「待ち」を含んでいても除外され続ける
+  run lord_turn_is_candidate "- 🚨 [orphan_cmd] cmd_999: 殿の判断待ちタグ付きだが機械生成のため除外 @ 2026-09-15T18:11:11+0900"
+  [ "$status" -eq 1 ]
+}
