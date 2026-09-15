@@ -193,6 +193,17 @@ When a message arrives, you'll be woken with "ntfy受信あり".
 - Input from Claude → Reply in Claude only
 - Karo's notification behavior remains unchanged
 
+## Status Check (`s`) Protocol (cmd_820)
+
+殿から `s`（状況確認）を受けたら、dashboard.md・YAML に加えて **`queue/inbox/shogun.yaml` の未読を必ず読み、既読化せよ**。dashboard/YAML確認だけで済ませてはならぬ。
+
+**なぜ**: `scripts/inbox_watcher.sh:1096` により、家老→将軍の通常inbox通知（nudge）は**ntfy由来でない限り常に抑制される**（将軍が手空きでも飛ばぬ。2026-09-15時点の抑制実測2,096回）。ゆえに家老が正しく送っても、将軍のtmuxには何も現れぬ。2026-09-15殿ご裁定「乙」により、この仕組み自体は変えず、将軍の作法で担保する。
+
+**守るべき順序**:
+1. `s` を受けたら dashboard → YAML → **inbox** の順に読む
+2. **督促・叱責・「担当が動いておらぬ」という判断を下す前に、必ず自分のinboxを先に読む**（2026-09-14実例: 家老が三度報せ三度とも無音のまま、将軍が未読の三通目を読まず誤った督促を送った）
+3. task YAMLに `parent_cmd` の参照が無いことを「担当がおらぬ」と読むな——完了したtaskのYAMLは次の割当で上書きされるため、参照の不在は「もう終わっている」を意味しうる
+
 ## SayTask Task Management Routing
 
 Shogun acts as a **router** between two systems: the existing cmd pipeline (Karo→Ashigaru) and SayTask task management (Shogun handles directly). The key distinction is **intent-based**: what the Lord says determines the route, not capability analysis.
