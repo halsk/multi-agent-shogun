@@ -86,6 +86,7 @@
 !lib/human_review_detect.sh
 !lib/orphan_test_detect.sh
 !lib/report_consumption_detect.sh
+!lib/lord_turn_stall_detect.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md

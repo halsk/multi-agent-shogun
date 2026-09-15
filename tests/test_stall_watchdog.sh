@@ -660,6 +660,181 @@ assert_eq "12c: 他フィールドは|衝突の影響を受けない" "0" "$read
 
 rm -rf "$TMPDIR_TEST12"
 
+# ── Section 13: cmd_827 案4 — 「殿/将軍の手番待ち」entry滞留検知の統合テスト ──
+# HC_PING_URL_SWEEP(Healthchecks.io Keychain登録)が「殿/将軍の手番待ち」
+# としてdashboard.mdに置かれたまま9日以上放置され誰も気づかなかった件
+# (cmd_824調査)への対応。check_lord_turn_stalls()の実際のdashboard書込・
+# state管理までを通しで検証する(純関数のみのテストはtests/unit/
+# test_lord_turn_stall_detect.batsが担当)。
+
+echo ""
+echo "=== Section 13: 殿/将軍手番待ちentry滞留検知(check_lord_turn_stalls) ==="
+echo ""
+
+TMPDIR_TEST13=$(mktemp -d)
+_ORIG_SCRIPT_DIR13="$SCRIPT_DIR"
+_ORIG_STATE_DIR13="$STATE_DIR"
+_ORIG_LOG_FILE13="$LOG_FILE"
+SCRIPT_DIR="$TMPDIR_TEST13"
+STATE_DIR="$TMPDIR_TEST13/state"
+LOG_FILE="$TMPDIR_TEST13/stall_watchdog.log"
+mkdir -p "$STATE_DIR"
+DRY_RUN=false
+
+make_lord_turn_fixture() {
+    cat > "$SCRIPT_DIR/dashboard.md" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required)
+- 🚨 [heartbeat] job-x: stale — 直近実行から経過 @ 2026-09-15T00:00:00+0900
+- 🚨【cmd_test・お願い】新機能の設計方針をご確認いただきたい。殿のご判断を仰ぐ。
+
+## ❓ 伺い事項 (Questions for Lord)
+なし (None)
+EOF
+}
+
+# 13a: 初回検知 → まだ通知しない(first_seen_atを記録するのみ)
+make_lord_turn_fixture
+check_lord_turn_stalls
+before_count=$(grep -c 'lord_turn_stall' "$SCRIPT_DIR/dashboard.md" 2>/dev/null) || before_count=0
+assert_eq "13a: 初回観測は通知しない(first_seen_atのみ記録)" "0" "$before_count"
+
+_hash13=$(lord_turn_candidates "$SCRIPT_DIR/dashboard.md" | grep 'cmd_test・お願い' | cut -d'|' -f1)
+first_seen_after_13a=$(state_get "lord_turn__${_hash13}" "first_seen_at" "")
+if [[ -n "$first_seen_after_13a" ]]; then
+    assert_eq "13a2: first_seen_atが記録される" "recorded" "recorded"
+else
+    assert_eq "13a2: first_seen_atが記録される" "recorded" "NOT recorded"
+fi
+
+# 13b(誤検知の実測・最重要): 直近に観測されたばかり(閾値未満)では再度呼んでも通知しない
+check_lord_turn_stalls
+after_count_fresh=$(grep -c 'lord_turn_stall' "$SCRIPT_DIR/dashboard.md" 2>/dev/null) || after_count_fresh=0
+assert_eq "13b: 閾値未満(観測直後)では発火しない(誤検知しない)" "0" "$after_count_fresh"
+
+# 13c(★最重要・擬似的に古いentryを置いて実際に発火することの実測):
+# first_seen_atを3日前に書き換えて再実行 → dashboardへ通知が追記される
+old_ts=$(date -v-3d '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d '-3 days' '+%Y-%m-%dT%H:%M:%S%z')
+state_set "lord_turn__${_hash13}" "first_seen_at" "$old_ts"
+check_lord_turn_stalls
+if grep -q 'lord_turn_stall.*約[0-9]*日経過' "$SCRIPT_DIR/dashboard.md"; then
+    assert_eq "13c: 3日前のentryは閾値(2日)超過で発火する" "found" "found"
+else
+    assert_eq "13c: 3日前のentryは閾値(2日)超過で発火する" "found" "NOT FOUND: $(cat "$SCRIPT_DIR/dashboard.md")"
+fi
+
+# 13d: 同一bucket内での再実行は重複通知しない(dedup)
+count_after_13c=$(grep -c 'lord_turn_stall' "$SCRIPT_DIR/dashboard.md")
+check_lord_turn_stalls
+count_after_13d=$(grep -c 'lord_turn_stall' "$SCRIPT_DIR/dashboard.md")
+assert_eq "13d: 同一bucket内の再実行は重複通知しない(dedup)" "$count_after_13c" "$count_after_13d"
+
+# 13e: 機械生成entry([heartbeat]等)は候補から除外され続ける(誤検知回帰)
+if grep -q 'lord_turn_stall.*\[heartbeat\]' "$SCRIPT_DIR/dashboard.md"; then
+    assert_eq "13e: [heartbeat]等の機械生成entryはlord_turn_stall対象にならない" "excluded" "INCLUDED (誤検知)"
+else
+    assert_eq "13e: [heartbeat]等の機械生成entryはlord_turn_stall対象にならない" "excluded" "excluded"
+fi
+
+# 13f: entryが解決・削除されるとstateも削除される(再出現時に経過時間がリセット)
+cat > "$SCRIPT_DIR/dashboard.md" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required)
+- 🚨 [heartbeat] job-x: stale — 直近実行から経過 @ 2026-09-15T00:00:00+0900
+
+## ❓ 伺い事項 (Questions for Lord)
+なし (None)
+EOF
+check_lord_turn_stalls
+if [[ -f "$STATE_DIR/lord_turn__${_hash13}.yaml" ]]; then
+    assert_eq "13f: 解決済みentryのstateが削除される" "deleted" "STILL EXISTS"
+else
+    assert_eq "13f: 解決済みentryのstateが削除される" "deleted" "deleted"
+fi
+
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR13"
+STATE_DIR="$_ORIG_STATE_DIR13"
+LOG_FILE="$_ORIG_LOG_FILE13"
+rm -rf "$TMPDIR_TEST13"
+
+# ── Section 14: cmd_827 案2 — dashboard埋没対策(heartbeat/health定期再表示) ──
+# heartbeat/health系entryは状態不変のままだと検知の瞬間しかdashboardへ
+# 挿入されず、後続の別種entryに押し流されて埋没する(cmd_824実例:
+# HC_PING_URL_SWEEPの🚨entryが9日間放置)。DASHBOARD_HEALTH_REDISPLAY_INTERVAL
+# を超えたら状態不変でも再掲示されることを検証する。
+
+echo ""
+echo "=== Section 14: heartbeat/health entryの定期再表示(dashboard埋没対策) ==="
+echo ""
+
+TMPDIR_TEST14=$(mktemp -d)
+_ORIG_SCRIPT_DIR14="$SCRIPT_DIR"
+_ORIG_STATE_DIR14="$STATE_DIR"
+_ORIG_LOG_FILE14="$LOG_FILE"
+SCRIPT_DIR="$TMPDIR_TEST14"
+STATE_DIR="$TMPDIR_TEST14/state"
+LOG_FILE="$TMPDIR_TEST14/stall_watchdog.log"
+mkdir -p "$STATE_DIR"
+DRY_RUN=false
+
+cat > "$SCRIPT_DIR/dashboard.md" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required)
+- (既存の項目)
+
+## ❓ 伺い事項 (Questions for Lord)
+なし (None)
+EOF
+
+# 14a: 初回notify_dashboard_heartbeatで1件挿入・last_redisplay_atが記録される
+notify_dashboard_heartbeat "redisplay-test-job" "stale" "テスト用検知"
+state_set "heartbeat__redisplay-test-job" "notified_status" "stale"
+last_redisplay_14a=$(state_get "heartbeat__redisplay-test-job" "last_redisplay_at" "")
+count_14a=$(grep -c 'redisplay-test-job' "$SCRIPT_DIR/dashboard.md")
+assert_eq "14a: 初回notify_dashboard_heartbeatで1件挿入" "1" "$count_14a"
+
+# 14b(誤検知の実測): 再表示間隔(6h)未満では should_redisplay_dashboard_entry は false
+state_set "heartbeat__redisplay-test-job" "last_redisplay_at" "$(now_iso)"
+if should_redisplay_dashboard_entry "heartbeat__redisplay-test-job" "$(now_epoch)" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+    assert_eq "14b: 再表示間隔未満では再表示しない(誤検知しない)" "false" "true (誤検知)"
+else
+    assert_eq "14b: 再表示間隔未満では再表示しない(誤検知しない)" "false" "false"
+fi
+
+# 14c(★最重要・擬似的に古い再表示時刻を置いて実際に発火することの実測):
+# last_redisplay_atを7時間前(閾値6h超)に設定 → should_redisplay_dashboard_entry は true
+old_redisplay_ts=$(date -v-7H '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d '-7 hours' '+%Y-%m-%dT%H:%M:%S%z')
+state_set "heartbeat__redisplay-test-job" "last_redisplay_at" "$old_redisplay_ts"
+if should_redisplay_dashboard_entry "heartbeat__redisplay-test-job" "$(now_epoch)" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+    assert_eq "14c: 再表示間隔(6h)超過で再表示が発火する" "true" "true"
+else
+    assert_eq "14c: 再表示間隔(6h)超過で再表示が発火する" "true" "false (発火しない)"
+fi
+
+# 14d: 14cの呼出でlast_redisplay_atが更新され、直後の再呼出では再度falseになる(スパム防止)
+if should_redisplay_dashboard_entry "heartbeat__redisplay-test-job" "$(now_epoch)" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+    assert_eq "14d: 再表示直後の再呼出はfalse(連続再掲示のスパム防止)" "false" "true (スパム)"
+else
+    assert_eq "14d: 再表示直後の再呼出はfalse(連続再掲示のスパム防止)" "false" "false"
+fi
+
+# 14e: check_heartbeats() が実際に埋没対策(should_redisplay_dashboard_entry)を
+# 呼び出していることをコードで確認(統合の相乗り確認)
+if grep -q 'should_redisplay_dashboard_entry' "$SCRIPT_DIR/scripts/stall_watchdog.sh" 2>/dev/null || \
+   grep -q 'should_redisplay_dashboard_entry' "$_ORIG_SCRIPT_DIR14/scripts/stall_watchdog.sh"; then
+    assert_eq "14e: check_heartbeats等がshould_redisplay_dashboard_entryを呼ぶ(相乗り確認)" "found" "found"
+else
+    assert_eq "14e: check_heartbeats等がshould_redisplay_dashboard_entryを呼ぶ(相乗り確認)" "found" "not found"
+fi
+
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR14"
+STATE_DIR="$_ORIG_STATE_DIR14"
+LOG_FILE="$_ORIG_LOG_FILE14"
+rm -rf "$TMPDIR_TEST14"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""

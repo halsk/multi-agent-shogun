@@ -63,6 +63,13 @@ source "$SCRIPT_DIR/lib/orphan_test_detect.sh"
 # していないか(実例⑤「軍師のsubtask_739のQC判定が2日間死蔵」相当)を
 # 検知する。★単独の新規監視機構は作らず本watchdogへ相乗り。
 source "$SCRIPT_DIR/lib/report_consumption_detect.sh"
+# shellcheck source=../lib/lord_turn_stall_detect.sh
+# cmd_827 案4(最優先): dashboard.md🚨要対応節の「殿/将軍の手番待ち」自由記述
+# entryが放置されていないかの検知。cmd_824調査で判明した「一次・二次いずれの
+# 検知層も殿手番待ちのdashboard放置という同じ死因で機能しなかった」を直接
+# 埋める(HC_PING_URL_SWEEP Keychain登録が9日間放置された実例への対応)。
+# ★単独の新規監視機構は作らず本watchdogへ相乗り。
+source "$SCRIPT_DIR/lib/lord_turn_stall_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -125,6 +132,15 @@ console-stall-watchdog|$SCRIPT_DIR/logs/console-stall-watchdog-last-run.json|540
 # (殿の端末へ届く)はこの遅延を超えて同一問題が解消しない場合のみ発火する
 # (cmd_771 fix_eのE4_SUPPRESS_LIMITと同じ「first_seen+上限+1回だけ通知」作法)。
 HEARTBEAT_NTFY_DELAY=$((20 * 60))
+
+# cmd_827 案2(dashboard埋没対策): heartbeat/health系(heartbeat・
+# ci-self-repo・stale-errlog)のentryが状態不変のまま埋没しないよう、
+# この間隔を超えるたびに1回だけ再掲示する。閾値=6hの根拠:
+# HEARTBEAT_NTFY_DELAY(20分)ほど即応的である必要は無い(既にdashboardへ
+# 出ている既知の問題の「埋没防止」が目的であり新規検知ではない)一方、
+# ERRLOG_MAX_AGE_DEFAULT(3日)ほど間隔を空けると1日1回のdashboard巡回でも
+# 見落としうるため、「1日に数回は巡回すれば必ず目に入る」を狙って6hとした。
+DASHBOARD_HEALTH_REDISPLAY_INTERVAL=$((6 * 60 * 60))
 
 # subtask_767_771_self_ci_heartbeat: 自リポCI心拍。last-run.jsonのような
 # 実行痕跡ファイルが無いため registry 行では表現できず、専用定数+専用関数
@@ -243,6 +259,17 @@ ORPHAN_TEST_TESTS_DIR="$SCRIPT_DIR/tests"
 UNCONSUMED_REPORT_GLOB="gunshi_report.yaml"
 UNCONSUMED_REPORT_THRESHOLD=$((24 * 60 * 60))
 
+# cmd_827 案4: 🚨要対応節の「殿/将軍の手番待ち」自由記述entryが、watchdog自身が
+# 最初に観測してから何日放置されたら再エスカレーションするか。
+# 閾値=2日の根拠: 本件の実例(HC_PING_URL_SWEEP Keychain登録)は9日間放置
+# されて誰も気づかなかった。ledger_mismatch(6h)ほど即応的である必要は
+# 無い(殿/将軍の手番であり自動修復できる性質の項目ではない)一方、
+# stale-errlog(3日)より短く設定し、「dashboard巡回が数日おきになっても
+# 見落とさない」という同ファイルの既存閾値設計方針(ERRLOG_REGISTRY
+# コメント参照)より一段厳しく倒す——本件はまさに「dashboard巡回だけに
+# 頼ると見落とす」ことが実証された事案そのものであるため。
+LORD_TURN_STALL_THRESHOLD_DAYS=2
+
 mkdir -p "$STATE_DIR" logs
 
 # ── ユーティリティ関数 ──────────────────────────────────────────────────────
@@ -334,6 +361,37 @@ state_set() {
     else
         printf '%s: %s\n' "$field" "$value" >> "$state_file"
     fi
+}
+
+# cmd_827 案2(dashboard埋没対策): heartbeat/health系entryは検知の都度
+# (状態が変わった時のみ)しか再挿入されないため、後続の別種entry
+# (orphan_cmd・three_way_mismatch・mgmt_bloat_watchdog等)が同じ挿入位置
+# (見出し直後)へ次々割り込むと、状態不変のまま日数が経ったheartbeat entryは
+# dashboard内で下方へ押し流され続け、結果的に埋没する(cmd_824調査で
+# 実例確認: HC_PING_URL_SWEEP Keychain登録の🚨entryが9日間放置)。
+# ★新規の別建て通知経路は作らず、既存のnotify_dashboard_*関数をそのまま
+# 再呼出しして「見出し直後」へ再挿入させることで、経過時間の定期再表示を
+# 実現する(相乗り)。redisplay_interval_sec間隔を超えたら1回だけtrueを
+# 返し、呼出側がnotify_dashboard_*を再度呼ぶ。
+should_redisplay_dashboard_entry() {
+    local state_key="$1"
+    local now_epoch="$2"
+    local redisplay_interval_sec="$3"
+
+    local last_redisplay_at last_redisplay_epoch since_redisplay
+    last_redisplay_at=$(state_get "$state_key" "last_redisplay_at" "")
+    if [[ -z "$last_redisplay_at" ]]; then
+        state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        return 1
+    fi
+
+    last_redisplay_epoch=$(iso_to_epoch "$last_redisplay_at")
+    since_redisplay=$(( now_epoch - last_redisplay_epoch ))
+    if [[ "$since_redisplay" -ge "$redisplay_interval_sec" ]]; then
+        state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        return 0
+    fi
+    return 1
 }
 
 # state をリセット (escalation_phase=0)
@@ -1016,6 +1074,15 @@ check_heartbeats() {
             state_set "$state_key" "notified_status" "$problem_id"
             state_set "$state_key" "first_bad_at" "$(now_iso)"
             state_set "$state_key" "ntfy_sent" "false"
+            state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        elif should_redisplay_dashboard_entry "$state_key" "$now" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+            # cmd_827 案2: 状態は変わっていないが埋没防止のため定期再掲示
+            log "[HEARTBEAT-REDISPLAY] $job_name: $hb_status 継続中 → dashboard再掲示"
+            if ! $DRY_RUN; then
+                notify_dashboard_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would redisplay dashboard for $job_name ($hb_status)"
+            fi
         fi
 
         local first_bad_at first_bad_epoch elapsed
@@ -1057,6 +1124,7 @@ reset_recovered_heartbeats() {
                 state_set "$state_key" "notified_status" ""
                 state_set "$state_key" "first_bad_at" ""
                 state_set "$state_key" "ntfy_sent" "false"
+                state_set "$state_key" "last_redisplay_at" ""
             fi
         fi
     done <<< "$HEARTBEAT_REGISTRY"
@@ -1092,6 +1160,15 @@ check_ci_heartbeat() {
             state_set "$state_key" "notified_status" "$problem_id"
             state_set "$state_key" "first_bad_at" "$(now_iso)"
             state_set "$state_key" "ntfy_sent" "false"
+            state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        elif should_redisplay_dashboard_entry "$state_key" "$now" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+            # cmd_827 案2: 状態は変わっていないが埋没防止のため定期再掲示
+            log "[CI-HEARTBEAT-REDISPLAY] $job_name: $hb_status 継続中 → dashboard再掲示"
+            if ! $DRY_RUN; then
+                notify_dashboard_heartbeat "$job_name" "$hb_status" "$detail"
+            else
+                log "[DRY-RUN] would redisplay dashboard for $job_name ($hb_status)"
+            fi
         fi
 
         local first_bad_at first_bad_epoch elapsed
@@ -1118,6 +1195,7 @@ check_ci_heartbeat() {
             state_set "$state_key" "notified_status" ""
             state_set "$state_key" "first_bad_at" ""
             state_set "$state_key" "ntfy_sent" "false"
+            state_set "$state_key" "last_redisplay_at" ""
         fi
     fi
 }
@@ -1177,6 +1255,15 @@ check_stale_errlogs() {
             state_set "$state_key" "notified_status" "$problem_id"
             state_set "$state_key" "first_bad_at" "$(now_iso)"
             state_set "$state_key" "ntfy_sent" "false"
+            state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        elif should_redisplay_dashboard_entry "$state_key" "$now" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+            # cmd_827 案2: 状態は変わっていないが埋没防止のため定期再掲示
+            log "[STALE-ERRLOG-REDISPLAY] $job_name: $errlog_status 継続中 → dashboard再掲示"
+            if ! $DRY_RUN; then
+                notify_dashboard_stale_errlog "$job_name" "$detail"
+            else
+                log "[DRY-RUN] would redisplay dashboard for $job_name (stale-errlog)"
+            fi
         fi
 
         local first_bad_at first_bad_epoch elapsed
@@ -1220,6 +1307,7 @@ reset_recovered_errlogs() {
                 state_set "$state_key" "notified_status" ""
                 state_set "$state_key" "first_bad_at" ""
                 state_set "$state_key" "ntfy_sent" "false"
+                state_set "$state_key" "last_redisplay_at" ""
             fi
         fi
     done <<< "$ERRLOG_REGISTRY"
@@ -1473,6 +1561,104 @@ check_unconsumed_reports() {
     done < <(detect_unconsumed_reports "$SCRIPT_DIR/queue/reports" "$UNCONSUMED_REPORT_GLOB" "$SCRIPT_DIR/dashboard.md" "$UNCONSUMED_REPORT_THRESHOLD")
 }
 
+# ── cmd_827 案4相乗り: 🚨要対応節「殿/将軍の手番待ち」entryの滞留検知 ──────────
+# dashboard.md🚨要対応節の自由記述entry(- 🚨【...】形式)には(実測確認済み・
+# lib/lord_turn_stall_detect.sh コメント参照)機械可読なタイムスタンプが
+# 付いていないため、entry本文をparseするのではなく、本watchdog自身が
+# 候補entryを初めて観測した時刻をqueue/stall_watchdog/配下のstateへ記録し、
+# 以後そのentryが存在し続ける経過時間を計測する(cmd_766 ledger_mismatch・
+# cmd_767 heartbeat・cmd_771 E4_SUPPRESS_LIMITと同じ「first_seen/first_bad_at
+# 自己記録」idiomへの相乗り)。dashboard(karo/gunshi向け)のみに通知し、
+# ntfy(殿の端末)は発火させない(案3=ntfy条件付き再有効化は本cmdでは
+# 実装しない・cmd_795原則を維持)。
+
+notify_dashboard_lord_turn_stall() {
+    local snippet="$1"
+    local elapsed_days="$2"
+    local ts
+    ts=$(now_iso)
+    local short="$snippet"
+    if [[ "${#short}" -gt 140 ]]; then
+        short="${short:0:140}…"
+    fi
+    local entry="- 🚨 [lord_turn_stall] 殿/将軍の手番待ちのまま約${elapsed_days}日経過(検知から起算): ${short} @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "${_dash_marker}a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+# 候補entryごとにstate(lord_turn__<hash>)のfirst_seen_atを管理し、
+# 閾値超過(LORD_TURN_STALL_THRESHOLD_DAYS)を検知するたびに
+# (閾値の倍数ごとに1回だけ)dashboardへ再通知する。候補から消えた
+# (karoが解決・削除した)entryはstateを削除し、同一文言が再度書かれた
+# 場合に経過時間がリセットされるようにする。
+check_lord_turn_stalls() {
+    local now
+    now=$(now_epoch)
+
+    local seen_keys_file
+    seen_keys_file=$(mktemp)
+
+    local hash line
+    while IFS='|' read -r hash line; do
+        [[ -z "$hash" ]] && continue
+        echo "$hash" >> "$seen_keys_file"
+
+        local state_key="lord_turn__${hash}"
+        local first_seen
+        first_seen=$(state_get "$state_key" "first_seen_at" "")
+
+        if [[ -z "$first_seen" ]]; then
+            log "[LORD-TURN-STALL] $state_key: 新規候補を観測 → first_seen_at記録"
+            state_set "$state_key" "first_seen_at" "$(now_iso)"
+            state_set "$state_key" "notified_bucket" "0"
+            continue
+        fi
+
+        local result status elapsed_days
+        result=$(lord_turn_check_one "$first_seen" "$now" "$LORD_TURN_STALL_THRESHOLD_DAYS")
+        status="${result%%|*}"
+        elapsed_days="${result#*|}"
+
+        if [[ "$status" == "stale" ]]; then
+            local bucket notified_bucket
+            bucket=$(( elapsed_days / LORD_TURN_STALL_THRESHOLD_DAYS ))
+            notified_bucket=$(state_get "$state_key" "notified_bucket" "0")
+            if [[ "$bucket" -gt "$notified_bucket" ]]; then
+                log "[LORD-TURN-STALL] $state_key: ${elapsed_days}日経過(閾値${LORD_TURN_STALL_THRESHOLD_DAYS}日) → dashboard再通知"
+                if $DRY_RUN; then
+                    log "[DRY-RUN] would notify lord_turn_stall for $state_key (${elapsed_days}d)"
+                else
+                    notify_dashboard_lord_turn_stall "$line" "$elapsed_days"
+                fi
+                state_set "$state_key" "notified_bucket" "$bucket"
+            fi
+        fi
+    done < <(lord_turn_candidates "$SCRIPT_DIR/dashboard.md")
+
+    # 候補から消えたentryのstateを削除(解決済み・再出現時に経過時間をリセット)
+    local f base hash_part
+    for f in "$STATE_DIR"/lord_turn__*.yaml; do
+        [[ -e "$f" ]] || continue
+        base=$(basename "$f" .yaml)
+        hash_part="${base#lord_turn__}"
+        if ! grep -qxF "$hash_part" "$seen_keys_file" 2>/dev/null; then
+            log "[LORD-TURN-STALL-RESOLVED] $base: 候補消失 → state削除"
+            rm -f "$f"
+        fi
+    done
+    rm -f "$seen_keys_file"
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -1630,6 +1816,9 @@ check_orphan_tests
 
 # subtask_741_layer3_orphan_detection②: QC report未消費(実例⑤相当)検知
 check_unconsumed_reports
+
+# cmd_827 案4: 🚨要対応節「殿/将軍の手番待ち」entryの滞留検知
+check_lord_turn_stalls
 
 log "[DONE] stall_watchdog scan complete"
 
