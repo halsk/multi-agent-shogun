@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # test_ntfy_auth.bats — ntfy認証ユニットテスト
 # FR-066: ntfy認証対応
 #
@@ -89,7 +90,7 @@ teardown() {
     result=$(ntfy_get_auth_args /dev/null)
 
     echo "$result" | grep -q 'Bearer tk_priority_token'
-    ! echo "$result" | grep -q 'should_not_use'
+    run ! grep -q 'should_not_use' <<< "$result"
 }
 
 # --- T-AUTH-005: env file読み込み ---

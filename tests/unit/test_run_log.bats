@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # tests/unit/test_run_log.bats — lib/run_log.sh の検証 (cmd_767)
 #
 # halsk/automation scripts/lib/run-log.sh からの移植版。定期ジョブ共通の
@@ -67,7 +68,7 @@ teardown() {
     run_log_write_last_run '${STATUS_FILE}' '20260906T090100-2' 'start2' 'end2' '3' '0'
   "
   grep -q '"run_id": "20260906T090100-2"' "${STATUS_FILE}"
-  ! grep -q '"run_id": "20260906T090000-1"' "${STATUS_FILE}"
+  run ! grep -q '"run_id": "20260906T090000-1"' "${STATUS_FILE}"
 }
 
 @test "F: run_log_rotate — 保持数超過分は削除でなくarchiveへ退避される" {

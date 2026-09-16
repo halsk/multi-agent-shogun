@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # test_cmd778_double_clear_fix.bats — cmd_778 24時間家中完全停止・根本原因2件の回帰テスト
 #
 # 背景 (2026-09-06 22:47-22:48 ashigaru4実測ログ, logs/inbox_watcher_ashigaru4.log):
@@ -240,7 +241,7 @@ teardown() {
     "
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "idle after 1×5s"
-    ! echo "$output" | grep -q "safety net"
+    run ! grep -q "safety net" <<< "$output"
     local enter_sends
     enter_sends=$(grep -c "send-keys -t test:0.0 Enter" "$MOCK_LOG")
     [ "$enter_sends" -eq 1 ]

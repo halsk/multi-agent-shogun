@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # tests/unit/test_yaml_slim_weekly_hc_ping.bats
 #
@@ -56,7 +57,7 @@ teardown() {
     HC_PING_URL_YAMLSLIM="" \
     bash "$job" --dry-run
   [ "$status" -eq 0 ]
-  ! grep -q "CURL_CALLED" "${CALLS_LOG}" 2>/dev/null
+  run ! grep -q "CURL_CALLED" "${CALLS_LOG}"
 }
 
 @test "T-YS-003: yaml_slim_weekly.sh skips curl under --dry-run even with HC_PING_URL set" {
@@ -67,7 +68,7 @@ teardown() {
     HC_PING_URL_YAMLSLIM="http://localhost:8000/ping/test-uuid-ys003" \
     bash "$job" --dry-run
   [ "$status" -eq 0 ]
-  ! grep -q "CURL_CALLED" "${CALLS_LOG}" 2>/dev/null
+  run ! grep -q "CURL_CALLED" "${CALLS_LOG}"
 }
 
 @test "T-YS-004: yaml-slim-launcher.sh injects HC_PING_URL from Keychain into job env" {
