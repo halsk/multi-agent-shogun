@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # test_send_wakeup.bats — send_wakeup() unit tests
 # Sources the REAL inbox_watcher.sh with __INBOX_WATCHER_TESTING__=1
 # to test actual production functions with mocked externals (tmux, pgrep, etc).
@@ -171,11 +172,12 @@ MOCK
 
     run bash -c "source '$TEST_HARNESS' && send_wakeup 3"
     [ "$status" -eq 0 ]
+    local send_wakeup_output="$output"
 
     # No nudge send-keys should have occurred
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 
-    echo "$output" | grep -q "SKIP"
+    echo "$send_wakeup_output" | grep -q "SKIP"
 }
 
 # --- T-SW-002: no self-watch → tmux send-keys ---
@@ -218,8 +220,8 @@ MOCK
     [ "$status" -eq 0 ]
 
     # These should never be used
-    ! grep -q "paste-buffer" "$MOCK_LOG"
-    ! grep -q "set-buffer" "$MOCK_LOG"
+    run ! grep -q "paste-buffer" "$MOCK_LOG"
+    run ! grep -q "set-buffer" "$MOCK_LOG"
 
     # send-keys IS expected
     grep -q "send-keys" "$MOCK_LOG"
@@ -293,7 +295,7 @@ MOCK
     echo "$executable_lines" | grep -q "send-keys"
 
     # paste-buffer and set-buffer are NOT used
-    ! echo "$executable_lines" | grep -q "paste-buffer"
+    run ! bash -c 'echo "$1" | grep -q "paste-buffer"' -- "$executable_lines"
     ! echo "$executable_lines" | grep -q "set-buffer"
 }
 
@@ -480,12 +482,13 @@ MOCK
         send_cli_command "/model opus"
     '
     [ "$status" -eq 0 ]
+    local send_cli_output="$output"
 
     # No tmux send-keys for /model
-    ! grep -q "send-keys.*/model" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/model" "$MOCK_LOG"
 
     # Stderr indicates skip
-    echo "$output" | grep -q "not supported on codex"
+    echo "$send_cli_output" | grep -q "not supported on codex"
 }
 
 # --- T-CODEX-003: C-u sent when unread=0 and agent is idle ---
@@ -587,7 +590,7 @@ MOCK
 
     grep -q "send-keys.*inbox2" "$MOCK_LOG"
     # Codex: Escape escalation is suppressed (avoid interrupting work / human typing)
-    ! grep -q "send-keys.*Escape" "$MOCK_LOG"
+    run ! grep -q "send-keys.*Escape" "$MOCK_LOG"
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
@@ -603,7 +606,7 @@ MOCK
     [ "$status" -eq 0 ]
 
     grep -q "send-keys.*/new" "$MOCK_LOG"
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
@@ -710,7 +713,7 @@ MOCK
     [ "$status" -eq 0 ]
 
     grep -q "send-keys.*/new" "$MOCK_LOG"
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
@@ -878,7 +881,7 @@ YAML
     grep -q "send-keys.*C-c" "$MOCK_LOG"
     grep -q "send-keys.*copilot --yolo" "$MOCK_LOG"
     # NOT /clear or /new
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*/new" "$MOCK_LOG"
 }
 
@@ -891,9 +894,10 @@ YAML
         send_cli_command "/model opus"
     '
     [ "$status" -eq 0 ]
+    local send_cli_output="$output"
 
-    ! grep -q "send-keys.*/model" "$MOCK_LOG"
-    echo "$output" | grep -q "not supported on copilot"
+    run ! grep -q "send-keys.*/model" "$MOCK_LOG"
+    echo "$send_cli_output" | grep -q "not supported on copilot"
 }
 
 # --- T-SHOGUN-001: session_has_client — client attached ---
@@ -955,7 +959,7 @@ YAML
     [ "$status" -eq 0 ]
 
     # Should NOT show display-message path
-    ! echo "$output" | grep -q "DISPLAY"
+    run ! bash -c 'echo "$1" | grep -q "DISPLAY"' -- "$output"
 
     # Should have used send-keys
     grep -q "send-keys.*inbox2" "$MOCK_LOG"
@@ -1157,12 +1161,13 @@ YAML
         send_context_reset
     '
     [ "$status" -eq 0 ]
+    local reset_output="$output"
 
     # No send-keys should have occurred
-    ! grep -q "send-keys" "$MOCK_LOG"
+    run ! grep -q "send-keys" "$MOCK_LOG"
 
     # SKIP message in stderr
-    echo "$output" | grep -q "SKIP.*karo"
+    echo "$reset_output" | grep -q "SKIP.*karo"
 }
 
 # --- T-CRESET-002: send_context_reset suppresses /clear for gunshi ---
@@ -1174,12 +1179,13 @@ YAML
         send_context_reset
     '
     [ "$status" -eq 0 ]
+    local reset_output="$output"
 
     # No send-keys should have occurred
-    ! grep -q "send-keys" "$MOCK_LOG"
+    run ! grep -q "send-keys" "$MOCK_LOG"
 
     # SKIP message in stderr
-    echo "$output" | grep -q "SKIP.*gunshi"
+    echo "$reset_output" | grep -q "SKIP.*gunshi"
 }
 
 # --- T-CRESET-003: send_context_reset sends /clear for ashigaru ---
@@ -1482,6 +1488,6 @@ YAML
     echo "$output" | grep -qi "suppressing Escape escalation"
 
     # Escape must never be sent to the shogun pane; falls through to plain nudge instead.
-    ! grep -q "send-keys.*Escape" "$MOCK_LOG"
+    run ! grep -q "send-keys.*Escape" "$MOCK_LOG"
     grep -q "send-keys.*inbox2" "$MOCK_LOG"
 }
