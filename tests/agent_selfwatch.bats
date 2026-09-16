@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 # agent_selfwatch.bats — Agent self-watch unit tests (TDD Step 3)
 #
 # FR/NFR trace (tests/specs/agent_selfwatch_spec.md):
@@ -160,7 +161,7 @@ PY
     > "$MOCK_LOG"
     run bash -c "TEST_CLI_TYPE=codex; source '$TEST_HARNESS'; send_cli_command '/model opus'"
     [ "$status" -eq 0 ]
-    ! grep -q "/model opus" "$MOCK_LOG"
+    run ! grep -q "/model opus" "$MOCK_LOG"
 }
 
 @test "TC-FR-010 [RED]: summary-first fast path exists (count/summary before full read)" {
@@ -199,5 +200,5 @@ PY
 }
 
 @test "TC-NFR-008: test file itself has no skip directives (SKIP=0 guard)" {
-    ! grep -Eq '^[[:space:]]*skip([[:space:]]|$)' "$BATS_TEST_FILENAME"
+    run ! grep -Eq '^[[:space:]]*skip([[:space:]]|$)' "$BATS_TEST_FILENAME"
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # tests/unit/test_watchdog_hc_ping.bats
 #
@@ -79,7 +80,7 @@ teardown() {
     HC_PING_URL_STALL_WATCHDOG="" \
     bash "$watchdog"
   [ "$status" -eq 0 ]
-  ! grep -q "CURL_CALLED" "${CALLS_LOG}" 2>/dev/null
+  run ! grep -q "CURL_CALLED" "${CALLS_LOG}"
 }
 
 # ── T-HC-003: --dry-run → 実 stall_watchdog.sh から curl 呼ばれない ──────────
@@ -92,7 +93,7 @@ teardown() {
     HC_PING_URL_STALL_WATCHDOG="http://localhost:8000/ping/test-uuid-003" \
     bash "$watchdog" --dry-run
   [ "$status" -eq 0 ]
-  ! grep -q "CURL_CALLED" "${CALLS_LOG}" 2>/dev/null
+  run ! grep -q "CURL_CALLED" "${CALLS_LOG}"
 }
 
 # ── T-HC-004: launcher が HC_PING_URL を Keychain から注入する ───────────────
