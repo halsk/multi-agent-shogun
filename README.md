@@ -951,7 +951,7 @@ Free, no account required, no server to maintain. Uses [ntfy.sh](https://ntfy.sh
 
 ```bash
 # Send a test notification to your phone
-bash scripts/ntfy.sh "Test notification from Shogun 🏯"
+bash scripts/ntfy.sh --kind 報告 --eta - --body "Test notification from Shogun 🏯"
 ```
 
 If your phone receives the notification, you're all set. If not, check:

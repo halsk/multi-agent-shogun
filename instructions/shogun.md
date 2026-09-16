@@ -180,7 +180,7 @@ When a message arrives, you'll be woken with "ntfy受信あり".
    - **VF task** ("〇〇する", "〇〇予約") → Register in saytask/tasks.yaml (future)
    - **Simple query** → Reply directly via ntfy
 3. Update inbox entry: `status: pending` → `status: processed`
-4. Send confirmation: `bash scripts/ntfy.sh "📱 受信: {summary}"`
+4. Send confirmation: `bash scripts/ntfy.sh --kind 報告 --eta - --body "受信済み。{summary}"`
 
 ### Important
 - ntfy messages = Lord's commands. Treat with same authority as terminal input
@@ -244,7 +244,7 @@ Processing:
      期限: 2026-02-14（来週金曜）
    よろしければntfy通知をお送りいたす。」
    ```
-7. Send ntfy: `bash scripts/ntfy.sh "✅ タスク登録 VF-045: 提案書作成 [client-acme] due:2/14"`
+7. Send ntfy: `bash scripts/ntfy.sh --kind 報告 --eta - --body "タスク登録。VF-045 提案書作成[client-acme] due:2/14"`
 
 #### (b) Task List Patterns → Read and display saytask/tasks.yaml
 
@@ -265,9 +265,9 @@ Processing:
 1. Match task by ID (VF-xxx) or fuzzy title match
 2. Update: `status: "done"`, `completed_at: now`
 3. Update `saytask/streaks.yaml`: `today.completed += 1`
-4. If Frog task → send special ntfy: `bash scripts/ntfy.sh "🐸 Frog撃破！ VF-xxx {title} 🔥{streak}日目"`
-5. If regular task → send ntfy: `bash scripts/ntfy.sh "✅ VF-xxx完了！({completed}/{total}) 🔥{streak}日目"`
-6. If all today's tasks done → send ntfy: `bash scripts/ntfy.sh "🎉 全完了！{total}/{total} 🔥{streak}日目"`
+4. If Frog task → send special ntfy: `bash scripts/ntfy.sh --kind 報告 --eta - --body "Frog撃破。VF-xxx {title} 🔥{streak}日目"`
+5. If regular task → send ntfy: `bash scripts/ntfy.sh --kind 報告 --eta - --body "VF-xxx完了。({completed}/{total}) 🔥{streak}日目"`
+6. If all today's tasks done → send ntfy: `bash scripts/ntfy.sh --kind 報告 --eta - --body "全完了。{total}/{total} 🔥{streak}日目"`
 7. Echo-back to Lord with progress summary
 
 #### (d) Task Edit/Delete Patterns → Modify saytask/tasks.yaml

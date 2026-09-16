@@ -23,16 +23,20 @@ setup_file() {
     [ -x "$VENV_PYTHON" ] || VENV_PYTHON="python3"
 
     export MOCK_SERVER_SCRIPT="$BATS_FILE_TMPDIR/mock_ntfy_server.py"
-    cat > "$MOCK_SERVER_SCRIPT" <<'PY'
+    export MOCK_CAPTURE_FILE="$BATS_FILE_TMPDIR/mock_capture.jsonl"
+    : > "$MOCK_CAPTURE_FILE"
+    cat > "$MOCK_SERVER_SCRIPT" <<PY
+import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
+CAPTURE_FILE = "$MOCK_CAPTURE_FILE"
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
-        self.rfile.read(length)
+        body = self.rfile.read(length).decode('utf-8', errors='replace')
         topic = self.path.lstrip('/')
         code = 200
         # トピック名が "status<code>" の形なら、そのHTTPステータスで応答する
@@ -42,6 +46,19 @@ class Handler(BaseHTTPRequestHandler):
                 code = int(topic[len('status'):])
             except ValueError:
                 code = 200
+        # http.server(email.parser)はヘッダ値をISO-8859-1でデコードするため、
+        # curlが送ったUTF-8の生バイトを取り戻すには一旦latin-1へ再エンコードし
+        # てからUTF-8として読み直す(そのままjson.dumpsするとTitleが文字化けする)。
+        def fix_header(value):
+            return value.encode('latin-1', errors='replace').decode('utf-8', errors='replace')
+        record = {
+            "topic": topic,
+            "title": fix_header(self.headers.get('Title', '')),
+            "tags": fix_header(self.headers.get('Tags', '')),
+            "body": body,
+        }
+        with open(CAPTURE_FILE, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
         self.send_response(code)
         self.end_headers()
         self.wfile.write(b'{}')
@@ -156,6 +173,76 @@ teardown() {
     run bash "$NTFY_SCRIPT" "no topic case"
     [ "$status" -ne 0 ]
     grep -q 'fail_no_topic' "$TEST_LOG_FILE"
+}
+
+# --- cmd_832: Title型付け(機体/cmd番号/手番種別/所要)+型検証の回帰テスト ---
+# 殿ご指摘(2026-09-16): cmd番号が無い/手番の種類が曖昧/所要が分からない/
+# 挨拶や内輪の言葉が字数を食う、の4点を解消するため、Titleをscripts/ntfy.sh
+# 側で組み立てる新インターフェース(--cmd/--kind/--eta/--body/--detail)を導入。
+# 型を欠いた呼び出し(旧位置引数呼出・不正なkind等)は送信を止めず、
+# Titleに⚠️マーカーを付けて「そうと判る」形で飛ぶことを検証する。
+
+last_capture() {
+    tail -n 1 "$MOCK_CAPTURE_FILE"
+}
+
+@test "ntfy.sh: 型付き呼出はTitleに機体・cmd番号・手番種別・所要が入る" {
+    : > "$MOCK_CAPTURE_FILE"
+    NTFY_SETTINGS_FILE="$TEST_SETTINGS_OK" \
+    NTFY_LOG_FILE="$TEST_LOG_FILE" \
+    NTFY_BASE_URL="http://127.0.0.1:$MOCK_PORT" \
+    run bash "$NTFY_SCRIPT" --cmd cmd_831 --kind 要承認 --eta "2分" \
+        --body "Keychain同期を実行してよいか。承認2回で1日864回のop呼出がほぼゼロに" \
+        --detail "→ dashboard「cmd_831」節"
+    [ "$status" -eq 0 ]
+    title=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['title'])" < "$MOCK_CAPTURE_FILE")
+    body=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['body'])" < "$MOCK_CAPTURE_FILE")
+    echo "title=[$title] body=[$body]" >&3
+    echo "$title" | grep -q 'cmd_831'
+    echo "$title" | grep -q '要承認'
+    echo "$title" | grep -q '2分'
+    # 呼び出し側が文字列を組んでいない(旧HOST_TAGそのままの文言ではない)ことの確認
+    ! echo "$title" | grep -q '型未指定'
+    # 本文は結論(--body)が先頭、詳細の在処(--detail)が後ろに続く
+    [[ "$body" == "Keychain同期を実行してよいか。承認2回で1日864回のop呼出がほぼゼロに"*"cmd_831"* ]]
+}
+
+@test "ntfy.sh: --cmdを省略すると「運用」表記になり型欠如扱いにならない" {
+    : > "$MOCK_CAPTURE_FILE"
+    NTFY_SETTINGS_FILE="$TEST_SETTINGS_OK" \
+    NTFY_LOG_FILE="$TEST_LOG_FILE" \
+    NTFY_BASE_URL="http://127.0.0.1:$MOCK_PORT" \
+    run bash "$NTFY_SCRIPT" --kind 要確認 --eta "数分" --body "運用通知の本文"
+    [ "$status" -eq 0 ]
+    title=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['title'])" < "$MOCK_CAPTURE_FILE")
+    echo "$title" | grep -q '運用'
+    ! echo "$title" | grep -q '型未指定'
+}
+
+@test "ntfy.sh: kindが4種の外/未指定なら「型を欠いた」とTitleでそうと判り、要確認へ倒し、それでも送信する" {
+    : > "$MOCK_CAPTURE_FILE"
+    NTFY_SETTINGS_FILE="$TEST_SETTINGS_OK" \
+    NTFY_LOG_FILE="$TEST_LOG_FILE" \
+    NTFY_BASE_URL="http://127.0.0.1:$MOCK_PORT" \
+    run bash "$NTFY_SCRIPT" --cmd cmd_999 --kind "存在しない種別" --eta "5分" --body "型欠如テスト"
+    [ "$status" -eq 0 ]
+    title=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['title'])" < "$MOCK_CAPTURE_FILE")
+    echo "$title" | grep -q '型未指定'
+    echo "$title" | grep -q '要確認'
+}
+
+@test "ntfy.sh: 旧インターフェース(位置引数1つ)は送信は止まらないがTitleに型未指定マーカーが付く" {
+    : > "$MOCK_CAPTURE_FILE"
+    NTFY_SETTINGS_FILE="$TEST_SETTINGS_OK" \
+    NTFY_LOG_FILE="$TEST_LOG_FILE" \
+    NTFY_BASE_URL="http://127.0.0.1:$MOCK_PORT" \
+    run bash "$NTFY_SCRIPT" "旧型のメッセージ本文"
+    [ "$status" -eq 0 ]
+    title=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['title'])" < "$MOCK_CAPTURE_FILE")
+    body=$(python3 -c "import json,sys; print(json.loads(sys.stdin.readline())['body'])" < "$MOCK_CAPTURE_FILE")
+    echo "$title" | grep -q '型未指定'
+    [ "$body" = "旧型のメッセージ本文" ]
+    grep -q 'status=ok' "$TEST_LOG_FILE"
 }
 
 @test "ntfy_listener.sh: 起動ログ行がntfy_topicの値を出力しない(2026-09-13の平文漏洩の再発防止)" {
