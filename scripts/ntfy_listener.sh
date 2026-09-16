@@ -29,7 +29,14 @@ acquire_ntfy_listener_lock() {
         flock -n 9
     else
         # macOS等flock非搭載環境向けmkdirベースのフォールバック。
-        mkdir "${NTFY_LISTENER_LOCK_FILE}.d" 2>/dev/null
+        # mkdirはプロセス終了で自動解放されないため、正常終了・異常終了
+        # 問わずEXIT trapで確実にrmdirする(取り忘れると次回起動が永久に
+        # ロック待ちのまま塞がる)。
+        if mkdir "${NTFY_LISTENER_LOCK_FILE}.d" 2>/dev/null; then
+            trap 'rmdir "${NTFY_LISTENER_LOCK_FILE}.d" 2>/dev/null' EXIT
+        else
+            return 1
+        fi
     fi
 }
 
