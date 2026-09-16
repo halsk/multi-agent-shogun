@@ -7,6 +7,39 @@
 # ═══════════════════════════════════════════════════════════════
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# ─── 単一起動ガード (cmd_833) ───────────────────────────────────────────────
+# 実測(2026-09-16): shutsujin_departure.sh は絶対パス(`$SCRIPT_DIR/scripts/
+# ntfy_listener.sh`)で起動し、watcher_supervisor.sh は相対パス(`scripts/
+# ntfy_listener.sh`)でしか自身の起動を検知しない(cmd_624 AC③の pgrep
+# パターン `"bash scripts/ntfy_listener.sh"` が絶対パス起動と文字列不一致
+# のため)。この食い違いにより、departure が起動した個体を supervisor の
+# start_ntfy_listener_if_missing が「不在」と誤認し、もう1個体を新規起動
+# していた(ps -eo pid,ppid で PID 26009/26110 が実測で確認された二重起動)。
+# 起動元のpgrepパターン一致に依存せず、本スクリプト自身がflockで排他する
+# ことで、どの経路(絶対パス/相対パス/手動)から呼ばれても生存するのは
+# 常に1個体のみになる。ロック取得に失敗した個体は何もせず即exit 0する
+# (エラーではない・正常な自己譲歩)。
+NTFY_LISTENER_LOCK_FILE="${NTFY_LISTENER_LOCK_FILE:-$SCRIPT_DIR/logs/ntfy_listener.lock}"
+
+acquire_ntfy_listener_lock() {
+    mkdir -p "$(dirname "$NTFY_LISTENER_LOCK_FILE")"
+    if command -v flock &>/dev/null; then
+        exec 9>"$NTFY_LISTENER_LOCK_FILE"
+        flock -n 9
+    else
+        # macOS等flock非搭載環境向けmkdirベースのフォールバック。
+        mkdir "${NTFY_LISTENER_LOCK_FILE}.d" 2>/dev/null
+    fi
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    if ! acquire_ntfy_listener_lock; then
+        echo "[$(date)] [ntfy_listener] already running (lock held by another instance) — exiting" >&2
+        exit 0
+    fi
+fi
+
 SETTINGS="$SCRIPT_DIR/config/settings.yaml"
 TOPIC=$(grep 'ntfy_topic:' "$SETTINGS" | awk '{print $2}' | tr -d '"')
 INBOX="$SCRIPT_DIR/queue/ntfy_inbox.yaml"
