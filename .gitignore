@@ -159,6 +159,7 @@
 !scripts/deadman_switch.sh
 !scripts/com.swarm.deadman.plist
 !scripts/branch_drift_check.sh
+!scripts/check_sc2314_baseline.sh
 !scripts/pre_deploy_verify.sh
 !scripts/auto_merge_short_lived.sh
 !scripts/com.swarm.branch-drift-check.plist
@@ -283,6 +284,7 @@ tests/specs/osato_lms_*
 !tests/e2e/mock_behaviors/*.sh
 !tests/test_helper/
 !tests/test_helper/README.md
+!tests/.shellcheck_sc2314_baseline.txt
 
 # CI/CD
 !.github/
