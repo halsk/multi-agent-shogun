@@ -351,13 +351,17 @@ last_fire=0
 # ★殿へ送る文面は escalate_agents(交差集合)のみを列挙する(${detail}=現在の停止
 # agent全員 を使ってはならない・バグ①の再発防止)
 escalate_detail=$(IFS=', '; echo "${escalate_agents[*]}")
-msg="🚨【死者確認スイッチ】status:blocked以外で放置中(家老通知後15分以上未解消): ${escalate_detail} @ $now_iso"
 # ★cmd_811: ntfy.sh は失敗時に非0で終わるようになった(以前は黙って成功したかの
 # ように返っていた)。見張り自体が通知失敗で死ぬのは本末転倒なので、set -e は
 # 使わず(本ファイルは元々未使用)戻り値を明示的に捕まえて生き延びつつ、成功した
 # かのように記録することだけは避ける(黙殺しない・die もしない)。
+# ★cmd_832: kind=報告とするのは cmd_795【殿ご裁定=丙】により「殿にできることは
+# 何もない(家中で片付けるべき停止)」と確定済みのため(本エスカレーション自体は
+# 上のexit 0で無効化済み・以下は復活時のため実装のみ保全)。
 ntfy_rc=0
-bash "$NTFY_SCRIPT" "$msg" || ntfy_rc=$?
+bash "$NTFY_SCRIPT" --kind 報告 --eta "-" \
+  --body "死者確認スイッチ: ${escalate_detail} が家老通知後15分以上未解消。" \
+  --detail "→ dashboard.md参照" || ntfy_rc=$?
 echo "$now_epoch" > "$LAST_FIRE_FILE"
 if [ "$ntfy_rc" -eq 0 ]; then
   printf '\n- 🚨 [deadman_switch] status:blocked以外で放置中(15分未解消): %s→ntfy送信 @ %s\n' "$escalate_detail" "$now_iso" >> "$DASHBOARD"

@@ -914,7 +914,7 @@ screenshot:
 
 ```bash
 # テスト通知をスマホに送信
-bash scripts/ntfy.sh "将軍システムからのテスト通知 🏯"
+bash scripts/ntfy.sh --kind 報告 --eta - --body "将軍システムからのテスト通知 🏯"
 ```
 
 スマホに通知が届けば設定完了です。届かない場合:

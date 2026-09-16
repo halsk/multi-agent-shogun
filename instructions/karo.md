@@ -685,10 +685,11 @@ When updating dashboard.md with Frog and streak info, use this expanded template
 
 ## ntfy Notification to Lord
 
-After updating dashboard.md, send ntfy notification:
-- cmd complete: `bash scripts/ntfy.sh "✅ cmd_{id} 完了 — {summary}"`
-- error/fail: `bash scripts/ntfy.sh "❌ {subtask} 失敗 — {reason}"`
-- action required: `bash scripts/ntfy.sh "🚨 要対応 — {content}"`
+After updating dashboard.md, send ntfy notification. ★cmd_832: Titleは scripts/ntfy.sh 側が機体・cmd番号・手番種別・所要から自動組立するため、呼び出し側は文字列を組まず型(`--cmd`/`--kind`/`--eta`/`--body`/`--detail`)で渡すこと。1回の呼び出しで扱う話題は必ず1件のみ(完了報告と確認依頼を混ぜない・混ぜたい場合は呼び出しを分ける):
+
+- cmd完了(手番なし・報告のみ): `bash scripts/ntfy.sh --cmd cmd_{id} --kind 報告 --eta - --body "完了。{summary}"`
+- エラー/失敗(既にredo等で対処中・手番なし): `bash scripts/ntfy.sh --cmd {subtask} --kind 報告 --eta - --body "失敗。{reason}"`(★{subtask}がcmd_NNN形式でなければ`--cmd`は省略し運用通知として送ってよい)
+- 要対応(殿の裁可が要る): `bash scripts/ntfy.sh --cmd cmd_{id} --kind 要承認 --eta {所要目安} --body "{content}"`
 
 Note: This replaces the need for inbox_write to shogun. ntfy goes directly to Lord's phone.
 
@@ -696,14 +697,16 @@ Note: This replaces the need for inbox_write to shogun. ntfy goes directly to Lo
 
 以下タイミングでは dashboard 更新後に **必ず** ntfy を送信すること。送り忘れは殿からの指摘につながる:
 
-1. **🚨 要対応 に新項目が追加された時** — `bash scripts/ntfy.sh "🚨 要対応: {item_summary}"`
+1. **🚨 要対応 に新項目が追加された時** — `bash scripts/ntfy.sh --cmd cmd_{id} --kind 要承認 --eta {所要目安} --body "{item_summary}"`
    - ★**将軍主導で cmd が処理された局面でも同様**: 将軍が直接チャットで gate 報告した結果として dashboard 🚨 が更新された場合も、家老は検知後に ntfy を送る責務を負う。「将軍が代わりに報告したから不要」はない。殿スマホへの到達は家老の責任。
-2. **cmd 完了・殿確認フェーズ到達時** — `bash scripts/ntfy.sh "✅ cmd_{id} 完了 / 🚨 Phase C.5 確認依頼 — {内容}"`
-3. **cmd 失敗・redo 発生時** — `bash scripts/ntfy.sh "❌ {subtask} 失敗 — {reason}"`
-4. **v1.X.0 release 完了時** — `bash scripts/ntfy.sh "🎉 v{X}.{Y}.{Z} released — {feature_summary}"`
-5. **VPS / Docker deploy 完了時 (殿確認 URL あり)** — URL と認証情報を必ず含める
+2. **cmd 完了・殿確認フェーズ到達時** — ★完了報告と確認依頼は別件ゆえ1回の呼び出しに混ぜず2回に分けて送る:
+   - `bash scripts/ntfy.sh --cmd cmd_{id} --kind 報告 --eta - --body "完了。{summary}"`
+   - `bash scripts/ntfy.sh --cmd cmd_{id} --kind 要確認 --eta {所要目安} --body "Phase C.5確認依頼。{内容}" --detail "→ dashboard「cmd_{id}」節"`
+3. **cmd 失敗・redo 発生時** — `bash scripts/ntfy.sh --cmd {subtask} --kind 報告 --eta - --body "失敗。{reason}"`
+4. **v1.X.0 release 完了時** — `bash scripts/ntfy.sh --kind 報告 --eta - --body "v{X}.{Y}.{Z} released。{feature_summary}"`
+5. **VPS / Docker deploy 完了時 (殿確認 URL あり)** — `bash scripts/ntfy.sh --cmd cmd_{id} --kind 要確認 --eta {所要目安} --body "deploy完了。{URL}" --detail "認証情報は{在処}"`(URL と認証情報の在処を必ず含める)
 
-送信コマンド: `bash scripts/ntfy.sh "<メッセージ>"`
+送信コマンド書式: `bash scripts/ntfy.sh --cmd <cmd_NNN(無ければ省略=運用)> --kind <要承認|要操作|要確認|報告> --eta <所要見込み> --body <一文で中身(結論を先頭に)> [--detail <詳細の在処>]`
 
 ## Skill Candidates
 
