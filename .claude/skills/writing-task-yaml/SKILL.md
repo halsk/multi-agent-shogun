@@ -32,8 +32,13 @@ touches_files: []
 # 該当しないtaskはnullのまま可。
 staging_tenant: null   # 例: console_qa (geonicdb-console)
 
-# 作業ディレクトリ — git worktree 必須
-target_path: /home/hal/workspace/<repo>-wt<N>
+# 作業ディレクトリ必須フィールド(cmd_820・cmd_830・cmd_836)— git管理下のファイルを
+# 変更するtaskは必ずtarget_path(worktreeパス)を指定せよ。null/未指定のまま
+# dispatchすると足軽がmain作業木を直接編集する事故に直結する(cmd_820・cmd_830・
+# cmd_836で3度実際に発生。いずれも足軽でなくtask YAML側の書き忘れが原因)。
+# ファイル編集を伴わぬ純粋な分析・調査taskに限りnullも可(touches_filesが[]で
+# よい場合と同じ扱い)。
+target_path: /home/hal/workspace/<repo>-wt<N>   # 必須。null可は純粋分析task限定
 
 # 口調 — 殿の指示、戦国武士風で全て記述
 口調: 戦国武士風 (〜でござる / 〜つかまつる / 〜いたす)
@@ -203,6 +208,20 @@ acceptance_criteria:
 - target_path は `~/workspace/<repo>-wt<N>` に統一
 - メインワークツリーは将軍 / 殿用、足軽は触らない
 - 作業完了後 `git worktree remove` で片付け
+
+### target_path は必須欄とせよ(cmd_836・軍師具申 2026-09-16)
+
+- 本日、家老が書いた task YAML に `target_path`(worktree 指定)が欠けていたため、
+  足軽の成果物(git 管理下のファイル編集)が main 作業木に未 commit のまま残る事故が
+  **3 度発生した**(cmd_820・cmd_830/ashigaru4・cmd_836/ashigaru2)。いずれも足軽の
+  落ち度ではなく、task YAML の書き方側の抜けが原因である。
+- **★touches_files(RACE-001・cmd_778)と staging_tenant(cmd_826)は、同種の「書き忘れを
+  人の記憶に頼らず機械で防ぐ」ために既に必須欄化されている。target_path も同じ理屈で
+  必須欄とする。**
+- git 管理下のファイルを変更する task で `target_path` が未指定・null のまま dispatch
+  してはならない。指定漏れは足軽が main 作業木を直接編集する事故に直結する。
+- **例外**: ファイル編集を伴わない純粋な分析・調査 task は `target_path: null` のままで
+  よい(touches_files が `[]` でよい場合と同じ扱い)。
 
 ### Issue First ルール（殿確定 2026-02-24）
 
@@ -378,6 +397,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | Issue 番号を cmd 番号と混同 | PR の `Closes #N` が誤動作 |
 | 1 cmd を 1 巨大 subtask にする | テスト・レビューしづらい、殿は「小さい PR」を好む |
 | target_path を main ワークツリーにする | 他作業とコンフリクト、worktree ルール違反 |
+| target_path を書き忘れる(null/未指定のまま dispatch) | 足軽が main 作業木を直接編集する事故に直結(cmd_820・cmd_830・cmd_836で3度発生)。純粋分析task以外は必須欄 |
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
 | `reviewThreads(unresolved=0)` のみ確認して完了と報告 | latestReviews body の Outside diff range comments も確認必須 (cmd_499 subtask_499a で Critical 見落とし事例) |
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
