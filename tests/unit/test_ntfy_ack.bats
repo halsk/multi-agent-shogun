@@ -263,3 +263,67 @@ JSON
     grep -q "n1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
     grep -q "shogun" "$INBOX_LOG"
 }
+
+# ═══════════════════════════════════════════════════════════════
+# T-SINGLETON-001〜003 (cmd_833): 起動経路(絶対パス/相対パス)が異なっても
+# 同一トピックを二重に購読させない自己singleton化。
+#
+# 実測(2026-09-16): 稼働中の重複はPPID確認で「main daemon 2系統(絶対パス
+# 起動+相対パス起動、それぞれ別々にcurl|whileのsubshellを持つ)」と判明。
+# watcher_supervisor.shのpgrepベースsingletonは自身の相対パス起動しか
+# 検知できず、shutsujin_departure.shの絶対パス起動(pkill後に再起動)を
+# 見落とし、両方が生き残っていた。起動経路のpgrepパターン一致に依存せず、
+# ntfy_listener.sh自身がflockで自己排他するのが根本対処。
+# ═══════════════════════════════════════════════════════════════
+
+@test "T-SINGLETON-001: second instance exits immediately when lock already held (no duplicate processing)" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"dup1","time":1234567890,"message":"should not process while locked","tags":[]}
+JSON
+    mkdir -p "$MOCK_PROJECT/logs"
+    LOCK_FILE="$MOCK_PROJECT/logs/ntfy_listener.lock"
+    # 既に別インスタンス(起動経路は問わない)がロックを保持している状態を模擬。
+    exec 8>"$LOCK_FILE"
+    flock -n 8
+
+    run timeout 3 bash "$MOCK_PROJECT/ntfy_listener_test.sh"
+
+    flock -u 8
+    exec 8>&-
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already running"* ]]
+    ! grep -q "dup1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
+    [ ! -s "$INBOX_LOG" ]
+}
+
+@test "T-SINGLETON-002: proceeds normally (processes message) when lock is free" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"free1","time":1234567890,"message":"lock free","tags":[]}
+JSON
+    run_listener
+    grep -q "free1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
+    grep -q "shogun" "$INBOX_LOG"
+}
+
+@test "T-SINGLETON-003: two concurrent real launches (absolute-path-style and relative-path-style) only one processes the message" {
+    cat > "$MOCK_CURL_OUTPUT" << 'JSON'
+{"event":"message","id":"race1","time":1234567890,"message":"race","tags":[]}
+JSON
+    # 実際の二重起動を模す: 同じスクリプトを二重に(ほぼ同時に)起動する。
+    # どちらが勝っても、負けた側は即exit 0し、メッセージは1回しか処理されない。
+    timeout 3 bash "$MOCK_PROJECT/ntfy_listener_test.sh" >"$TEST_TMPDIR/out_a.log" 2>&1 &
+    PID_A=$!
+    # PID_Aがロックを取得し終えるまでの短い待ち(0.1s刻みで最大1s)。
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -f "$MOCK_PROJECT/logs/ntfy_listener.lock" ] && break
+        sleep 0.1
+    done
+    timeout 3 bash "$MOCK_PROJECT/ntfy_listener_test.sh" >"$TEST_TMPDIR/out_b.log" 2>&1
+    wait "$PID_A" 2>/dev/null || true
+
+    # ntfy_inboxへの書込は1回だけ(重複記録が起きていない)
+    [ "$(grep -c "race1" "$MOCK_PROJECT/queue/ntfy_inbox.yaml")" -eq 1 ]
+    # shogun起こしも1回だけ
+    [ "$(grep -c "shogun" "$INBOX_LOG")" -eq 1 ]
+}

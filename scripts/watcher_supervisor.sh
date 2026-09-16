@@ -60,7 +60,14 @@ launch_ntfy_listener() {
 
 start_ntfy_listener_if_missing() {
     local log_file="logs/ntfy_listener.log"
-    if pgrep -f "bash scripts/ntfy_listener.sh" >/dev/null 2>&1; then
+    # cmd_833: "bash scripts/ntfy_listener.sh" (相対パス限定) だと、
+    # shutsujin_departure.sh が絶対パス(`$SCRIPT_DIR/scripts/ntfy_listener.sh`)
+    # で起動した個体を見落とし、無駄な二重起動を招いていた(実測: PID 26009/
+    # 26110)。パターンをファイル名の部分一致に緩め、起動元のパス表記に
+    # 依存せず検知する。★実害(重複購読)そのものは ntfy_listener.sh 自身の
+    # flock 自己singleton (cmd_833) が防ぐため、ここは無駄な起動試行を
+    # 減らす二次防御にすぎない。
+    if pgrep -f "ntfy_listener\.sh" >/dev/null 2>&1; then
         return 0
     fi
     launch_ntfy_listener "$log_file"
