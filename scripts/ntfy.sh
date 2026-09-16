@@ -133,6 +133,14 @@ if $TYPE_INCOMPLETE; then
     echo "ntfy.sh: 型を欠いた呼び出し(cmd/kind/eta/bodyのいずれかが不足または不正)。Titleに⚠️マーカーを付けて送信を継続する。" >&2
 fi
 
+# ★TitleへそのままCR/LFを含む値を渡すとHTTPヘッダインジェクションの経路に
+# なりうる(curl -H は値の改行を検査しない)。KINDは4種の固定値のみなので
+# 安全だが、CMD_LABEL/ETAは呼び出し元の自由文字列なので改行を除去する。
+CMD_LABEL="${CMD_LABEL//$'\r'/}"
+CMD_LABEL="${CMD_LABEL//$'\n'/ }"
+ETA="${ETA//$'\r'/}"
+ETA="${ETA//$'\n'/ }"
+
 # 本文は「結論(--body)を先頭・詳細の在処(--detail)を後ろ」の順で固定合成する
 # (末尾切り詰めに耐えるための強制)。
 if [ -n "$DETAIL" ]; then
