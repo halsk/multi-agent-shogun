@@ -232,12 +232,10 @@ jobs:
         run: |
           # tests/配下のbatsは裸の`!`がSC2314(最終行でなければ失敗を伝播しない)
           # を起こしうる。cmd_834: -S error等の全面適用は非現実的(1659件)なため
-          # SC2314限定。既存41箇所(cmd_834時点、ashigaru4/5が並行修正中)は
-          # tests/.shellcheck_sc2314_baseline.txt にファイル別の許容件数として
-          # 記録済み——ロジックはscripts/check_sc2314_baseline.sh参照(cmd_834
-          # F-1是正: 行番号キーだと他agentの修正で行がずれ誤検知するため、
-          # ファイル別「許容件数」方式に変更した)。全41箇所の修正が完了したら
-          # baselineファイルを空にし、この関門を無条件検知へ昇格させること。
+          # SC2314限定。cmd_834時点の既存41箇所は当初ratchet baseline方式
+          # (tests/.shellcheck_sc2314_baseline.txt にファイル別の許容件数)で
+          # 段階的に潰し、全箇所の修正完了(cmd_834後追い)を受けて無条件検知
+          # (1件でも検知したら落ちる)へ昇格済み——ロジックはscripts/check_sc2314_baseline.sh参照。
           bash scripts/check_sc2314_baseline.sh
 
   e2e-tests:

@@ -1,7 +1,0 @@
-tests/agent_selfwatch.bats=2
-tests/unit/test_cmd778_double_clear_fix.bats=1
-tests/unit/test_ntfy_auth.bats=1
-tests/unit/test_run_log.bats=1
-tests/unit/test_send_wakeup.bats=32
-tests/unit/test_watchdog_hc_ping.bats=2
-tests/unit/test_yaml_slim_weekly_hc_ping.bats=2
