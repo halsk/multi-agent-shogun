@@ -296,7 +296,7 @@ MOCK
 
     # paste-buffer and set-buffer are NOT used
     run ! bash -c 'echo "$1" | grep -q "paste-buffer"' -- "$executable_lines"
-    ! echo "$executable_lines" | grep -q "set-buffer"
+    run ! bash -c 'echo "$1" | grep -q "set-buffer"' -- "$executable_lines"
 }
 
 # --- T-ESC-001: no unread → FIRST_UNREAD_SEEN stays 0 ---
@@ -335,7 +335,7 @@ MOCK
     echo "$output" | grep -q "PHASE1_NUDGE"
     grep -q "send-keys.*inbox2" "$MOCK_LOG"
     # No Escape-based nudge
-    ! grep -q "send-keys.*Escape" "$MOCK_LOG"
+    run ! grep -q "send-keys.*Escape" "$MOCK_LOG"
 }
 
 # --- T-ESC-003: unread 2-4min → Escape+nudge ---
@@ -401,7 +401,7 @@ MOCK
     echo "$output" | grep -q "COOLDOWN_FALLBACK"
     grep -q "send-keys.*Escape" "$MOCK_LOG"
     grep -q "send-keys.*inbox4" "$MOCK_LOG"
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
 }
 
 # --- T-BUSY-001: agent_is_busy detects "Working" ---
@@ -440,7 +440,7 @@ MOCK
     echo "$output" | grep -qi "SKIP.*busy"
 
     # No nudge should have been sent
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-BUSY-004: send_wakeup_with_escape skips when agent is busy ---
@@ -455,7 +455,7 @@ MOCK
     echo "$output" | grep -qi "SKIP.*busy"
 
     # No nudge should have been sent
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-CODEX-001: codex /clear → /new conversion ---
@@ -470,7 +470,7 @@ MOCK
 
     # Should send /new, NOT /clear
     grep -q "send-keys.*/new" "$MOCK_LOG"
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
 }
 
 # --- T-CODEX-002: codex /model → skip ---
@@ -538,7 +538,7 @@ MOCK
     '
     [ "$status" -eq 0 ]
     echo "$output" | grep -q "C_U_SKIPPED"
-    ! grep -q "C-u" "$MOCK_LOG"
+    run ! grep -q "C-u" "$MOCK_LOG"
 }
 
 # --- T-CODEX-005: claude /clear passes through as-is ---
@@ -553,7 +553,7 @@ MOCK
 
     # Should send /clear directly (not /new)
     grep -q "send-keys.*/clear" "$MOCK_LOG"
-    ! grep -q "/new" "$MOCK_LOG"
+    run ! grep -q "/new" "$MOCK_LOG"
 }
 
 # --- T-CODEX-006: inbox_watcher.sh has agent_is_busy and Codex/Copilot handlers ---
@@ -591,7 +591,7 @@ MOCK
     grep -q "send-keys.*inbox2" "$MOCK_LOG"
     # Codex: Escape escalation is suppressed (avoid interrupting work / human typing)
     run ! grep -q "send-keys.*Escape" "$MOCK_LOG"
-    ! grep -q "send-keys.*C-c" "$MOCK_LOG"
+    run ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
 # --- T-CODEX-008: pane cli overrides stale CLI_TYPE in /clear path ---
@@ -607,7 +607,7 @@ MOCK
 
     grep -q "send-keys.*/new" "$MOCK_LOG"
     run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
-    ! grep -q "send-keys.*C-c" "$MOCK_LOG"
+    run ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
 # --- T-CODEX-016: send_wakeup for codex trusts Enter, skips echo-confirmation retry ---
@@ -628,7 +628,7 @@ MOCK
 
     # nudge + Enter は一度だけ送られる(echoを誤検知してリトライしない)
     [ "$(grep -c "send-keys.*inbox4" "$MOCK_LOG")" -eq 1 ]
-    ! grep -q "WARNING: nudge text still visible" <<< "$output"
+    run ! bash -c 'echo "$1" | grep -q "WARNING: nudge text still visible"' -- "$output"
 }
 
 @test "T-CODEX-017: send_wakeup for claude still retries when nudge text is visible (unchanged)" {
@@ -714,7 +714,7 @@ MOCK
 
     grep -q "send-keys.*/new" "$MOCK_LOG"
     run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
-    ! grep -q "send-keys.*C-c" "$MOCK_LOG"
+    run ! grep -q "send-keys.*C-c" "$MOCK_LOG"
 }
 
 # --- T-CODEX-011: clear_command auto-recovery injection ---
@@ -882,7 +882,7 @@ YAML
     grep -q "send-keys.*copilot --yolo" "$MOCK_LOG"
     # NOT /clear or /new
     run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
-    ! grep -q "send-keys.*/new" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/new" "$MOCK_LOG"
 }
 
 # --- T-COPILOT-002: copilot /model → skip ---
@@ -1302,7 +1302,7 @@ YAML
     echo "$output" | grep -qi "SKIP.*shogun"
 
     # No nudge should have been sent, idle or not.
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-SHOGUN-005b: send_wakeup skips nudge for BUSY shogun when message is NOT ntfy (regression) ---
@@ -1317,7 +1317,7 @@ YAML
     [ "$status" -eq 0 ]
     echo "$output" | grep -qi "SKIP.*shogun"
 
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-SHOGUN-006: send_wakeup still delivers immediately for IDLE shogun when message IS ntfy ---
@@ -1374,7 +1374,7 @@ YAML
     echo "$output" | grep -qi "SKIP.*shogun"
 
     # No nudge keystrokes reached the shogun pane at all.
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-SHOGUN-007b: process_unread — BUSY shogun + normal (karo) report → no send-keys (regression) ---
@@ -1400,7 +1400,7 @@ YAML
     echo "$output" | grep -qi "busy"
 
     # No nudge keystrokes reached the shogun pane — Stop hook will pick it up at turn end.
-    ! grep -q "send-keys.*inbox" "$MOCK_LOG"
+    run ! grep -q "send-keys.*inbox" "$MOCK_LOG"
 }
 
 # --- T-SHOGUN-008: process_unread — IDLE shogun + ntfy_received → nudge sent immediately (実証b) ---
@@ -1469,7 +1469,7 @@ YAML
     echo "$output" | grep -qi "suppressing CLI command injection"
 
     # /clear must never be injected into the shogun pane.
-    ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+    run ! grep -q "send-keys.*/clear" "$MOCK_LOG"
 }
 
 # --- T-SHOGUN-010: safety valve #3 (untouched) — Escape escalation suppression for shogun ---
