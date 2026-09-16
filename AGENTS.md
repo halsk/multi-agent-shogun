@@ -417,8 +417,23 @@ When processing large datasets (30+ items requiring individual web search, API c
 geonic-apps --fields label=password` を実行し、PID 53113 として17分以上詰まったまま生存した
 (同日朝の PID 10105 と同型の再発)。
 
-**標準ルール(例外なし)**: エージェントが自分のシェルから直接 `op` コマンド(`op item
-get`・`op read`・`op vault list`・`op whoami` 等)を呼ぶ場合、**必ず `timeout` で包むこと**。
+★さらに2026-09-16、家老自身が `--reveal` 付きの `op item get` 直接呼出で console_qa の
+資格情報を端末へ平文露出させ、殿が直ちにローテーションする事故が起きた。`--reveal` を
+止めるだけでは不十分であった——`op read` は `--reveal` 無しでも平文印字する(`op read --help`
+に "Print the secret" と明記)。cmd_836 で根治策として、この console_qa の資格情報を
+macOS Keychain(`scripts/get-secret.sh` 経由)へ移行し、**以後 `get_secret` 経由に統一した**。
+
+**標準ルール(例外なし)**: 資格情報の取得は**`get_secret` を第一の推奨手段とせよ**
+(Keychain登録済みならopを一切呼ばず完結する)。
+
+```bash
+source scripts/get-secret.sh
+password=$(get_secret "geonicdb-console-qa-password")
+```
+
+`op` コマンド(`op item get`・`op read`・`op vault list`・`op whoami` 等)を
+エージェントが自分のシェルから直接叩くのは、**`get_secret` が失敗した場合の最終手段**へ
+格下げする。その場合も**必ず `timeout` で包むこと**(例外なし)。
 
 ```bash
 timeout 30 op item get "geonicdb-staging-ztfah791gz-console_qa" --vault geonic-apps --fields "label=password"
