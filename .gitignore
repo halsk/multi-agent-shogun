@@ -283,6 +283,7 @@ tests/specs/osato_lms_*
 !tests/e2e/mock_behaviors/*.sh
 !tests/test_helper/
 !tests/test_helper/README.md
+!tests/.shellcheck_sc2314_baseline.txt
 
 # CI/CD
 !.github/
