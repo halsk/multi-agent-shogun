@@ -1324,7 +1324,9 @@ _has_dangerous_substitution_in_inbox_write_args() {
   '
 }
 
-if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_dangerous_substitution_in_inbox_write_args "$COMMAND"; then
+if echo "$COMMAND" | grep -qE '\binbox_write\.sh\b' && _has_dangerous_substitution_in_inbox_write_args "$COMMAND" && false; then
+  # ↑ TEMP DEFECT for cmd_845 RED実証(subtask_845_wire_test_hooks_into_ci)。
+  # このコミット単体はCI赤化の実証用であり、次のコミットで除去する。マージしない。
   echo "❌ inbox_write.sh 呼出のメッセージ本文(二重引用符内)に未エスケープのバッククォート、" >&2
   echo "   または \$(...) 形式のコマンド置換の開きが検出されました。" >&2
   echo "   二重引用符内ではどちらもシェルのコマンド置換として実行されてしまいます" >&2
