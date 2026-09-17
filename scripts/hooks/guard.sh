@@ -1065,7 +1065,7 @@ fi
 
 # D004: git reset --hard / git checkout -- . / git restore . / git clean -f
 if has_git_subcmd "$COMMAND" "reset" && echo "$COMMAND" | grep -q '\-\-hard'; then
-  echo "❌ 破壊的操作が検出されました: git reset --hard。D004 違反です。git stash を使用してください。" >&2
+  echo "❌ 破壊的操作が検出されました: git reset --hard。D004 違反です。git stash は worktree間で共有されるrefs/stashの競合事故が実際に起きたため使用禁止。一時commit(git commit --no-verify -m wip → 確認 → git reset HEAD^)で退避してから扱ってください。" >&2
   exit 2
 fi
 if has_git_subcmd "$COMMAND" "checkout" && echo "$COMMAND" | grep -qE '\-\-\s+\.'; then
