@@ -42,6 +42,8 @@
 !.claude/skills/whole-vault-deadlink-scan
 !.claude/skills/inbox/
 !.claude/skills/inbox/SKILL.md
+!.claude/skills/js-dynamic-key-pitfalls/
+!.claude/skills/js-dynamic-key-pitfalls/SKILL.md
 
 # Instructions (core OSS)
 !instructions/
@@ -230,6 +232,8 @@ logs/
 !.agents/skills/whole-vault-deadlink-scan/SKILL.md
 !.agents/skills/inbox/
 !.agents/skills/inbox/SKILL.md
+!.agents/skills/js-dynamic-key-pitfalls/
+!.agents/skills/js-dynamic-key-pitfalls/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/
