@@ -391,9 +391,25 @@ When processing large datasets (30+ items requiring individual web search, API c
 |------------|-----|
 | `rm -rf <dir>` | Only within project tree, after confirming path with `realpath` |
 | `git push --force` | `git push --force-with-lease` |
-| `git reset --hard` | `git stash` then `git reset` |
+| `git reset --hard` | `git stash` は使うな(下記「git stash 使用禁止」節参照)。一時commit(`git commit --no-verify -m wip` → 確認 → `git reset HEAD^`)で退避してから扱う |
 | `git clean -f` | `git clean -n` (dry run) first |
 | Bulk file write (>30 files) | Split into batches of 30 |
+
+## git stash 使用禁止(RED対照・一時退避全般・殿確定 2026-09-17・cmd_843)
+
+**`git stash` を、RED対照の取得や作業の一時退避の目的で使用してはならない。**
+
+**理由**: `.git/refs/stash` は同一リポジトリの**全worktreeで共有される単一のref**であり、worktree単位ではない。本リポは複数のworktreeが常時併存する運用であり、2026-09-16に**16秒差で2件独立に**stash push/pop競合事故が発生した(ashigaru1・ashigaru7、いずれもgeonicdb-console worktree)。一方が`stash push`した直後にもう一方が別worktreeで`stash push`し、`stash pop`で自分のものでなく相手の未commit差分を受け取る形で双方の変更が入れ替わった。両者とも実害を出さず自力で復旧したが、pushの前後関係を保証するロックが無い以上、次も同様に助かる保証は無い。
+
+**代替(正典・一時commit方式)**: HEADとindexはworktreeごとに独立しており原理的に衝突しない。外部にファイルを置かないため後始末も不要。
+
+```bash
+git commit --no-verify -m wip   # 現在の変更を一時的にcommitして退避
+# ここでRED対照の実行・ブランチ切替等、必要な作業を行う
+git reset HEAD^                  # commitを取り消し、変更を作業ツリーへ戻す(mixed reset)
+```
+
+パッチファイル方式(`git diff > file` → `git checkout --` → `git apply`)は正典としない。一時ファイルを外部に書き出す必要があり、その後始末がguard.sh Hook 9(可逆性ゲート)に阻まれる実例が既にある。
 
 ## WSL2-Specific Protections
 
