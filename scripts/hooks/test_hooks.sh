@@ -174,18 +174,6 @@ check '引用符バイパス防止: rm -rf "/home/x"' block 'rm -rf "/home/x"'
 check "非再帰: rm file.txt" allow "rm file.txt"
 check "非再帰force: rm -f file.txt" allow "rm -f file.txt"
 check "非再帰複数: rm a.txt b.txt" allow "rm a.txt b.txt"
-# ★TEMP DEBUG for cmd_845 (subtask_845_wire_test_hooks_into_ci) — このブロックは
-# 診断専用であり次のコミットで除去する(マージ禁止)。実ubuntu-latest runner
-# のみで再現する「rm -rf <PROJ>/build」誤blockの原因特定のため、実際の
-# CI環境上でしか観測できない情報を出力する。
-echo "===DEBUG_CMD845=== PROJ_ROOT=$PROJ_ROOT" >&2
-echo "===DEBUG_CMD845=== pwd=$(pwd)" >&2
-echo "===DEBUG_CMD845=== git toplevel(.)=$(git rev-parse --show-toplevel 2>&1)" >&2
-echo "===DEBUG_CMD845=== git remote origin=$(git remote get-url origin 2>&1)" >&2
-echo "===DEBUG_CMD845=== guard.sh trace for rm -rf \$PROJ_ROOT/build ===" >&2
-DEBUG_JSON="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"rm -rf $PROJ_ROOT/build\"}}"
-echo "$DEBUG_JSON" | bash -x "$GUARD" 2>&1 | tail -60 >&2
-echo "===DEBUG_CMD845=== end trace ===" >&2
 check "プロジェクト内: rm -rf <PROJ>/build" allow "rm -rf $PROJ_ROOT/build"
 check "プロジェクト内: rm -r <PROJ>/node_modules" allow "rm -r $PROJ_ROOT/node_modules"
 check "scratchpad: rm -rf <SCRATCH>" allow "rm -rf $SCRATCH_PATH"
