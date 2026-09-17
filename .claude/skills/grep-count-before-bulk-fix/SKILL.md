@@ -72,5 +72,5 @@ grep -n "<是正前の(直し忘れなら残っているはずの)パターン>"
 
 ## 関連
 
-- [[feedback_verify_reported_test_count_not_just_skip_zero]](cmd_754・「0 SKIPの申告だけでなく実行総件数を見よ」と同型)
+- CLAUDE.md Iron Law 3「SKIP = FAIL」(cmd_754・「0 SKIPの申告だけでなく実行総件数を見よ」と同型の思想)
 - [verification-before-completion](../verification-before-completion/SKILL.md)
