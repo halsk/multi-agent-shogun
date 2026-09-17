@@ -1402,4 +1402,69 @@ if has_git_subcmd "$COMMAND" "push"; then
   fi
 fi
 
+# ============================================================
+# Hook 11: op直叩きによる秘密の端末平文露出防止 (cmd_842)
+# ------------------------------------------------------------
+# 背景: 2026-09-16、家老が --reveal 付き op 呼出で資格情報を露出させる
+# 事故が起きた。Keychain移行で「op直叩きの必要」自体は大きく減ったが、
+# 動機(平文を端末へ出す手が手近にある)は消えていない。本Hookは第二の
+# 層として、端末へ秘密を平文で出す形のみを機械で止める。
+#
+# ★設計方針(殿裁定・軍師の当初4系統設計=op read・item get --reveal・
+# document get・inject、は撤回): 判定軸は「端末へ出すか否か」の一点のみ。
+#   - 代入形(v=$(timeout 30 op read '...') のように変数へキャプチャし
+#     メモリに保持する形)は通す。
+#   - 代入を伴わない素の呼出(単独実行・パイプ等で直接出力に流す形)は
+#     止める。
+# ★絶対禁止にはしない——塞がれた者が即興の回避に走るのが最も危うい。
+#
+# ★対象コマンド: `op read` と `op item get`(--reveal有無を問わない。
+# item get は非TTY出力時に --reveal 無しでも値を返すため、フラグ有無で
+# 判定を変えない)。`op vault list`・`op whoami` 等、秘密を出力しない
+# サブコマンドは対象外(過剰ブロック防止・CLAUDE.mdの op 直接呼出作法が
+# 挙げる例を壊さない)。
+#
+# ★判定方法: heredoc本文マスク済みコマンド文字列上で、`op read`/
+# `op item get` を含む「区切り(;&|)で囲まれた1セグメント」を抜き出し、
+# そのセグメントが (local/export の前置を許した上で) `IDENT=$(` または
+# `IDENT="$(` で始まっていれば代入形として許可、それ以外は全てブロック
+# する。
+#
+# ★正直な限界(捕らえられぬ形・CLAUDE.md Hook9注記と同じ調子で記す。
+# 「もう防がれた」という思い込みを与えないこと):
+#   - 別プログラム/スクリプト経由の間接呼出(bash -c の入れ子が深い場合・
+#     python等の別言語からのop呼出等)。本Hookは既存の
+#     _reversibility_extract_subshell_bodies のような bash -c/eval中身の
+#     再走査を実装していない(過剰設計を避けるため)。
+#   - 文字列自体を難読化・分割してコマンド化する形(o=op; $o read ... の
+#     ような変数エイリアス経由の迂回)。
+#   - op の絶対/相対パス接頭(/usr/local/bin/op 等)・command op ラッパー
+#     経由の呼出。
+#   - 代入形の$(...)の中に「;」等の区切り文字を含む複合文
+#     (例: v=$(echo start; op read 'x'))は、本Hookの単純な区切り分割
+#     (括弧の深さを追跡しない)により2セグメントに割れ、2つ目のセグメント
+#     ( op read 'x') )が代入形と認識されず誤ってブロックされうる
+#     (過剰ブロック方向の既知の粗さであり、秘密露出を見逃す穴ではない)。
+# ============================================================
+_OP_SECRET_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+
+_op_secret_is_assignment_captured() {
+  local seg="$1"
+  echo "$seg" | grep -qE '^(local[[:space:]]+|export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\+?=\"?\$\('
+}
+
+while IFS= read -r op_secret_seg; do
+  [[ -z "$op_secret_seg" ]] && continue
+  op_secret_seg="$(echo "$op_secret_seg" | sed -E 's/^[[:space:];&|]+//')"
+  if _op_secret_is_assignment_captured "$op_secret_seg"; then
+    continue
+  fi
+  echo "❌ op直叩きで秘密が端末へ平文出力される形が検出されました(Hook 11)。" >&2
+  echo "   代入形(変数へ代入しメモリに保持する形)のみ許可されています。例:" >&2
+  echo "     v=\$(timeout 30 op read 'op://vault/item/field')" >&2
+  echo "   単独実行・パイプでの直接出力は禁止です。CLAUDE.mdの" >&2
+  echo "   『1Password (op) 直接呼出のタイムアウト作法』節を参照。" >&2
+  exit 2
+done < <(echo "$_OP_SECRET_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|])[^;&|]*\bop[[:space:]]+(read|item[[:space:]]+get)\b[^;&|]*' || true)
+
 exit 0

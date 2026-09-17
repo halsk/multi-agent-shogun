@@ -890,6 +890,54 @@ fi
 rm -f "$MARKER_FILE"
 
 echo ""
+echo "=== Hook 11: op直叩きによる秘密の端末平文露出防止 (cmd_842) ==="
+# ★是正前(RED対照): 本セクションのテスト名が示す通り、Hook 11実装前は
+# 「端末へ平文が出る形のop呼出」が軒並みexit 0(allow)で素通りしていた
+# (実行ログはtask報告に別途貼る)。実装後は以下の通りblock/allowが分かれる。
+
+# BLOCK: 素の op read 単独実行(端末へ平文出力される形そのもの)
+check "Hook11: blocks bare op read that would print secret to terminal" block \
+  "op read 'op://geonic-apps/geonicdb-staging-console_qa'"
+
+# BLOCK: 素の op item get --reveal(2026-09-16の家老の事故と同型)
+check "Hook11: blocks bare op item get --reveal that would print secret to terminal" block \
+  "op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password --reveal"
+
+# BLOCK: --reveal無しの op item get も対象(非TTY出力で自動的に値を返すため)
+check "Hook11: blocks bare op item get without --reveal too (auto-reveals on non-tty)" block \
+  "op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password"
+
+# BLOCK: パイプで直接出力に流す形(単独実行と同じく端末外だが平文が渡る)
+check "Hook11: blocks op item get piped directly to another command" block \
+  "op item get geonicdb-staging-console_qa --fields label=password --reveal | pbcopy"
+
+# BLOCK: op read をパイプで別コマンドへ流す形
+check "Hook11: blocks op read piped directly to another command" block \
+  "op read 'op://geonic-apps/secret' | pbcopy"
+
+# ALLOW: 代入形(変数へキャプチャしメモリに保持する形・CLAUDE.md推奨形)
+check "Hook11: allows assignment-captured op read (v=\$(...))" allow \
+  "v=\$(timeout 30 op read 'op://geonic-apps/secret')"
+
+# ALLOW: 代入形・二重引用符付き(v="\$(...)"の慣用形)
+check "Hook11: allows assignment-captured op read with dquoted substitution" allow \
+  "v=\"\$(timeout 30 op read 'op://geonic-apps/secret')\""
+
+# ALLOW: 代入形・op item get --reveal 版
+check "Hook11: allows assignment-captured op item get --reveal" allow \
+  "v=\$(timeout 30 op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password --reveal)"
+
+# ALLOW: local宣言付きの代入形
+check "Hook11: allows assignment-captured op read with local prefix" allow \
+  "local v=\$(timeout 30 op read 'op://geonic-apps/secret')"
+
+# ALLOW: 秘密を出力しないサブコマンドは対象外(過剰ブロック防止・既存回帰との共存)
+check "Hook11: does not block op vault list (out of scope, prints no secret)" allow \
+  "op vault list"
+check "Hook11: does not block op whoami (out of scope, prints no secret)" allow \
+  "op whoami"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
