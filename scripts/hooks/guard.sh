@@ -474,8 +474,30 @@ _rm_target_verdict() {
   p=$(_realpath_m "$raw")
 
   case "$p" in
-    /|/bin|/boot|/dev|/etc|/lib|/lib64|/proc|/root|/sbin|/srv|/sys|/usr|/var|/mnt|/mnt/*|/home|/home/*)
+    /|/bin|/boot|/dev|/etc|/lib|/lib64|/proc|/root|/sbin|/srv|/sys|/usr|/var|/mnt|/home)
       RM_BLOCK_REASON="D001"; return 1 ;;
+  esac
+  # ★軍師QC是正相当(cmd_845実測): 旧実装は `/mnt/*`・`/home/*` を case パターン
+  # に直接書いていたが、bashのcaseパターンにおける `*` は(実シェルのpathname
+  # 展開と異なり)"/"を跨いで一致する。よって `/home/runner/work/<repo>/<repo>/
+  # build` のような、/homeの★深い子孫(project worktree自身がその配下にある
+  # だけ)まで誤って"/home/*"に一致し、D001としてブロックしてしまっていた
+  # (実測: GitHub Actions ubuntu-latest runnerのcheckout先が/home/runner/work/…
+  # であるため、test_hooks.shの「プロジェクト内: rm -rf <PROJ>/build」allow
+  # テストがCIで初めて実行された際に発覚——ローカル操作者の$HOMEは通常
+  # /home配下でないため気づかれなかった)。意図(CLAUDE.md D001: 「全ユーザの
+  # ホームを丸ごと消す」`rm -rf /home/*`・WSL2の各Windowsドライブ丸ごと消す
+  # `rm -rf /mnt/*`)は/mnt・/homeの★直下1階層のみを指すため、「対象が
+  # /mnt または /home の直属の子(その先に/を含まない)か」で判定する
+  # (深い子孫はプロジェクト外ならD002が別途捕捉する・worktree内ならそもそも
+  # 通常のプロジェクト内作業として許可されるべき)。
+  case "$p" in
+    /mnt/*)
+      [[ "${p#/mnt/}" != */* ]] && { RM_BLOCK_REASON="D001"; return 1; }
+      ;;
+    /home/*)
+      [[ "${p#/home/}" != */* ]] && { RM_BLOCK_REASON="D001"; return 1; }
+      ;;
   esac
   if [[ "$p" == "$HOME" ]]; then
     RM_BLOCK_REASON="D001"; return 1

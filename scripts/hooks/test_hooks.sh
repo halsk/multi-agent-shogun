@@ -18,6 +18,31 @@ GUARD="$SCRIPT_DIR/guard.sh"
 PROJ_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/../..")"
 cd "$PROJ_ROOT" || { echo "❌ PROJ_ROOT ($PROJ_ROOT) へ cd 失敗。テスト中止。" >&2; exit 1; }
 
+# ★環境非依存性(cmd_845実測): 本スクリプトは複数箇所で素の `git commit` を
+# 発行する(Hook6のdocs-only skip判定テスト等)。操作者のローカル環境では
+# 通常 ~/.gitconfig に user.name/user.email が設定済みのため気づかれないが、
+# GitHub Actions runner(ubuntu-latest/macos-latest)には★グローバルgit
+# identityが存在せず、これらのcommitが「Please tell me who you are」で
+# 失敗し「git commit failed」という無関係なFAILを起こす(実測: cmd_845で
+# CIに初めて組み込んだ際に発覚——ローカルでは常に隠れていた)。
+# env変数(GIT_AUTHOR_*/GIT_COMMITTER_*)はgit commitがどの設定ファイルにも
+# 依らず読む最上位の入力であり、ここで一度だけ本スクリプトのプロセスへ
+# exportすれば全ての素のgit commit呼出に効く——個々のcommit行へ
+# `-c user.name=...`を都度足すより一箇所で確実。操作者の実グローバル設定
+# ファイルには一切書き込まない(exportはこのプロセスとその子プロセスの
+# 環境変数のみに留まる)。
+export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-test_hooks.sh}"
+export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-test_hooks@example.invalid}"
+export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-test_hooks.sh}"
+export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-test_hooks@example.invalid}"
+# 同じ理由でcommit.gpgsignも上書きする(操作者のローカル環境はcommit.gpgsign=true
+# かつ有効なGPG鍵を持つため気づかれにくいが、CI runnerや鍵未設定環境では
+# 署名要求で素のgit commitが失敗する)。GIT_CONFIG_COUNT系のenv変数override
+# はgit 2.31+が読む最上位入力で、どの設定ファイルにも書き込まない。
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=commit.gpgsign
+export GIT_CONFIG_VALUE_0=false
+
 PASS=0
 FAIL=0
 
@@ -902,6 +927,21 @@ echo ""
 echo "=== PostToolUse: queue_yaml_guard.py (queue YAML破損検知・cmd_742) ==="
 QYG="$SCRIPT_DIR/queue_yaml_guard.py"
 
+# ★環境非依存性(cmd_845実測): 素の `python3` がPyYAMLを持たない環境
+# (CI runnerのシステムpython3・PyYAML未インストールのローカル環境)では、
+# queue_yaml_guard.py はImportErrorを自身の設計(デッドロック回避・graceful
+# degradation)によりexit0側へ落とすため、以下のqyg_check系テストが
+# 「壊れていないのにpassしたように見える」誤ALLOWを起こす(実測: GitHub
+# Actions macos-latest runnerで再現・Docker ubuntu:24.04コンテナでも
+# 素のpython3にpyyaml無しの状態で再現)。CIの「Setup Python venv with
+# PyYAML」ステップが用意する $PROJ_ROOT/.venv を、存在し実際にPyYAMLを
+# import できる場合に限り優先して使う(無ければ素のpython3へ安全に
+# フォールバック・ローカル操作者の環境を変更しない)。
+PY3="python3"
+if [[ -x "$PROJ_ROOT/.venv/bin/python3" ]] && "$PROJ_ROOT/.venv/bin/python3" -c "import yaml" >/dev/null 2>&1; then
+  PY3="$PROJ_ROOT/.venv/bin/python3"
+fi
+
 # 各テストケースは専用の隔離 CLAUDE_PROJECT_DIR を使い、baseline 状態
 # (.claude/hook_state/queue_yaml_guard_state.json) をケース間で共有させない。
 # 呼び出し方: qyg_check <desc> <expected: block|allow> <tool_name> <before_content|__NONE__> <after_content>
@@ -918,12 +958,12 @@ qyg_check() {
   if [[ "$before" != "__NONE__" ]]; then
     printf '%s' "$before" > "$target"
     local base_json="{\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$target\"},\"tool_response\":{\"success\":true}}"
-    CLAUDE_PROJECT_DIR="$root" bash -c "echo '$base_json' | python3 '$QYG'" >/dev/null 2>&1
+    CLAUDE_PROJECT_DIR="$root" bash -c "echo '$base_json' | $PY3 '$QYG'" >/dev/null 2>&1
   fi
 
   printf '%s' "$after" > "$target"
   local json="{\"tool_name\":\"$tool_name\",\"tool_input\":{\"file_path\":\"$target\"},\"tool_response\":{\"success\":true}}"
-  CLAUDE_PROJECT_DIR="$root" bash -c "echo '$json' | python3 '$QYG'" >/dev/null 2>&1
+  CLAUDE_PROJECT_DIR="$root" bash -c "echo '$json' | $PY3 '$QYG'" >/dev/null 2>&1
   local exit_code=$?
 
   rm -rf "$root"
@@ -989,7 +1029,7 @@ root_bash=$(mktemp -d)
 mkdir -p "$root_bash/queue"
 printf '%s' "$BROKEN_SYNTAX" > "$root_bash/queue/test.yaml"
 bash_json="{\"tool_name\":\"Bash\",\"tool_input\":{\"file_path\":\"$root_bash/queue/test.yaml\"}}"
-CLAUDE_PROJECT_DIR="$root_bash" bash -c "echo '$bash_json' | python3 '$QYG'" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$root_bash" bash -c "echo '$bash_json' | $PY3 '$QYG'" >/dev/null 2>&1
 if [[ $? -eq 0 ]]; then
   echo "  ✅ SILENT(exit0): tool_name=Bash はスコープ外(即exit0)"
   ((PASS++)) || true
@@ -1005,7 +1045,7 @@ mkdir -p "$root_outside/notqueue"
 printf '%s' "$VALID_YAML_2" > "$root_outside/notqueue/test.yaml"
 printf '%s' "$BROKEN_SYNTAX" > "$root_outside/notqueue/test.yaml"
 outside_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$root_outside/notqueue/test.yaml\"},\"tool_response\":{\"success\":true}}"
-CLAUDE_PROJECT_DIR="$root_outside" bash -c "echo '$outside_json' | python3 '$QYG'" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$root_outside" bash -c "echo '$outside_json' | $PY3 '$QYG'" >/dev/null 2>&1
 if [[ $? -eq 0 ]]; then
   echo "  ✅ SILENT(exit0): queue/配下でないパスはスコープ外"
   ((PASS++)) || true
@@ -1023,7 +1063,7 @@ mkdir -p "$root_other_proj/some-other-repo/queue"
 printf '%s' "$BROKEN_SYNTAX" > "$root_other_proj/some-other-repo/queue/test.yaml"
 root_this_proj=$(mktemp -d)
 other_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$root_other_proj/some-other-repo/queue/test.yaml\"},\"tool_response\":{\"success\":true}}"
-CLAUDE_PROJECT_DIR="$root_this_proj" bash -c "echo '$other_json' | python3 '$QYG'" >/dev/null 2>&1
+CLAUDE_PROJECT_DIR="$root_this_proj" bash -c "echo '$other_json' | $PY3 '$QYG'" >/dev/null 2>&1
 if [[ $? -eq 0 ]]; then
   echo "  ✅ SILENT(exit0): パス文字列に/queue/を含むが別プロジェクトはスコープ外(過剰検知防止)"
   ((PASS++)) || true
@@ -1044,7 +1084,7 @@ for i in $(seq 1 10); do
   (
     printf '%s' "$VALID_YAML_2" > "$CONC_ROOT/queue/test_$i.yaml"
     conc_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$CONC_ROOT/queue/test_$i.yaml\"},\"tool_response\":{\"success\":true}}"
-    CLAUDE_PROJECT_DIR="$CONC_ROOT" bash -c "echo '$conc_json' | python3 '$QYG'"
+    CLAUDE_PROJECT_DIR="$CONC_ROOT" bash -c "echo '$conc_json' | $PY3 '$QYG'"
   ) &
   CONC_PIDS+=($!)
 done
@@ -1068,7 +1108,7 @@ if [[ -f "$PROJ_ROOT/queue/shogun_to_karo.yaml" ]]; then
   real_json="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$PROJ_ROOT/queue/shogun_to_karo.yaml\"},\"tool_response\":{\"success\":true}}"
   QYG_TIME_ROOT=$(mktemp -d)
   QYG_T0=$(python3 -c "import time; print(time.monotonic())")
-  CLAUDE_PROJECT_DIR="$QYG_TIME_ROOT" bash -c "echo '$real_json' | python3 '$QYG'" >/dev/null 2>&1
+  CLAUDE_PROJECT_DIR="$QYG_TIME_ROOT" bash -c "echo '$real_json' | $PY3 '$QYG'" >/dev/null 2>&1
   QYG_T1=$(python3 -c "import time; print(time.monotonic())")
   rm -rf "$QYG_TIME_ROOT"
   QYG_ELAPSED=$(python3 -c "print(f'{$QYG_T1 - $QYG_T0:.3f}')")
