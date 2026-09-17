@@ -963,6 +963,22 @@ check "Hook11-F2: absolute-path-prefixed op read is still blocked (comment fix, 
 check "Hook11-F2: command-wrapped op read is still blocked (comment fix, not behavior fix)" block \
   "command op read 'op://geonic-apps/secret'"
 
+# ★退行是正の回帰テスト(cmd_842さらに追加是正・軍師再QC
+# gunshi_qc_cmd842b_hook11_false_positive_fix): F1是正(単一引用符本文の
+# 丸ごとマスク)が生んだ検知後退5形。bash -c/sh -c/eval に渡す本文の中で
+# op read/op item get を呼ぶ形は、単一引用符でくくられているために
+# 旧実装ではマスクされ見逃されていた(軍師実測: block→allowの後退)。
+check "Hook11-regression: blocks op read inside bash -c '...' (subshell body must still be scanned)" block \
+  'bash -c '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op read inside sh -c '...'" block \
+  'sh -c '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op read inside eval '...'" block \
+  'eval '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op item get --reveal inside bash -c '...'" block \
+  'bash -c '"'"'op item get myitem --reveal'"'"''
+check "Hook11-regression: blocks op read inside bash -c '...' reached via xargs" block \
+  'echo x | xargs -I{} bash -c '"'"'op read "op://geonic-apps/secret"'"'"''
+
 echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"

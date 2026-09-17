@@ -1489,6 +1489,21 @@ _mask_single_quoted_bodies_for_op_secret_detection() {
   ' <<<"$cmd"
 }
 _OP_SECRET_MASKED_COMMAND="$(_mask_single_quoted_bodies_for_op_secret_detection "$_OP_SECRET_MASKED_COMMAND")"
+# ★退行是正(cmd_842さらに追加是正・軍師再QC
+# gunshi_qc_cmd842b_hook11_false_positive_fix): 上の単一引用符マスクは
+# bash -c/sh -c/eval に渡される「実際に実行される本文」まで丸ごと消して
+# しまい、`bash -c 'op read "..."'` 等5形の検知後退(block→allow)を生んで
+# いた(軍師実測)。Hook 9が既に使っている
+# _reversibility_extract_subshell_bodies(bash -c/sh -c/evalの本文を「実行は
+# せず文字列として」抽出する既存機構・行745-759・_REVERSIBILITY_SUBSHELL_BODIES
+# として算出済み)をここでも流用し、抽出した本文を単一引用符マスク★前の
+# 素のテキストとして走査対象へ追記する。単一引用符マスクは「残った素の
+# 引数」にのみ効けばよく、bash -c 等の本文は既にここで別途拾っているため
+# 二重に困らない。
+if [[ -n "$_REVERSIBILITY_SUBSHELL_BODIES" ]]; then
+  _OP_SECRET_MASKED_COMMAND="$_OP_SECRET_MASKED_COMMAND
+$_REVERSIBILITY_SUBSHELL_BODIES"
+fi
 
 _op_secret_is_assignment_captured() {
   local seg="$1"
