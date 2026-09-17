@@ -109,6 +109,36 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Run guard.sh regression tests (test_hooks.sh)
+        run: |
+          # cmd_845: scripts/hooks/test_hooks.sh はguard.sh(D001-D008等の破壊的
+          # 操作ガード)の唯一の回帰試験だが、従来CIのどこからも呼ばれておらず
+          # guard.shを壊してもCIが検知できなかった(grep該当0件で実測確認済み)。
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::error::jq not found — scripts/hooks/test_hooks.sh requires jq to build guard.sh hook-call JSON fixtures."
+            exit 1
+          fi
+          set +e
+          OUTPUT=$(bash scripts/hooks/test_hooks.sh 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          RESULT_LINE=$(echo "$OUTPUT" | grep -E '^Results: PASS=[0-9]+, FAIL=[0-9]+' || true)
+          if [ -z "$RESULT_LINE" ]; then
+            echo "::error::test_hooks.sh produced no 'Results: PASS=.., FAIL=..' line — cannot verify how many checks actually ran."
+            exit 1
+          fi
+          PASS_COUNT=$(echo "$RESULT_LINE" | grep -oE 'PASS=[0-9]+' | cut -d= -f2)
+          FAIL_COUNT=$(echo "$RESULT_LINE" | grep -oE 'FAIL=[0-9]+' | cut -d= -f2)
+          # test_hooks.sh自体にSKIP概念はない(PASS/FAILのみ)。SKIP=FAILポリシー
+          # (CLAUDE.md)に沿い、CIログへSKIP=0を明示的に記録する(暗黙のままにしない)。
+          echo "::notice::scripts/hooks/test_hooks.sh executed: PASS=${PASS_COUNT} FAIL=${FAIL_COUNT} SKIP=0"
+          echo "::notice::この件数は実行環境(ブランチ/worktree有無等)に依存し変動しうる。固定の期待値として扱わないこと(軍師F1発見)。"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::scripts/hooks/test_hooks.sh (guard.sh regression suite) failed — ${FAIL_COUNT} check(s) did not pass."
+            exit 1
+          fi
+
       - name: Run Python tests (claude_usage_report)
         run: |
           # tests/test_claude_usage_report.py (dotted module form below runs the same file)
