@@ -138,7 +138,20 @@ onSubmit({ ...entity })
 - `.claude/skills/js-dynamic-key-pitfalls/SKILL.md` と
   `.agents/skills/js-dynamic-key-pitfalls/SKILL.md` の両方に本ファイルを設置。
 - `ls .claude/skills/ .agents/skills/` で両方に `js-dynamic-key-pitfalls` が
-  1件ずつ現れることを確認済み(本PRの検証手順に記載)。
+  1件ずつ現れることを確認済み。
+- ★2026-09-17、軍師QC是正(F2)を受け、mainリポの実作業ディレクトリ
+  (`/Users/hal/tools/multi-agent-shogun`)へ本ファイルを一時配置した上で
+  実際に `Skill` ツールから `js-dynamic-key-pitfalls` を呼び出し、以下を
+  実測した(単なる`ls`での存在確認と、呼び出し可能であることの実測は別物
+  であるため、両方を分けて記録する):
+  1. 呼び出し前は available skills 一覧に `js-dynamic-key-pitfalls` が
+     存在しなかった。
+  2. `Skill({ skill: "js-dynamic-key-pitfalls" })` を実行すると、本SKILL.md
+     の本文全体(罠1〜3・チェックリスト)がそのまま展開された。
+  3. 呼び出し後、available skills 一覧に `js-dynamic-key-pitfalls`(この
+     descriptionのまま)が現れることを確認した。
+  4. 検証後、一時配置した2ファイル・2ディレクトリを `rm -rf` で撤去し、
+     `git status --short` が空(クリーン)であることを確認した。
 
 ## 関連
 
