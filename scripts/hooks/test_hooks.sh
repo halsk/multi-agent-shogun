@@ -979,6 +979,17 @@ check "Hook11-regression: blocks op item get --reveal inside bash -c '...'" bloc
 check "Hook11-regression: blocks op read inside bash -c '...' reached via xargs" block \
   'echo x | xargs -I{} bash -c '"'"'op read "op://geonic-apps/secret"'"'"''
 
+# ★F1c是正の回帰テスト(軍師再QC qc_cmd842c_hook11_regression_fix): 842cの
+# 退行是正(bash -c/sh -c/eval本文の再走査)が、heredoc本文の中に書かれた
+# 「禁止例」の地の文まで実行される本文として拾ってしまい誤爆していた。
+# 是正前はexit 2(block)だったことをRED対照で実測済み(task報告参照)。
+# 是正後はallow。同時に842cの退行是正(heredocの外の実際のbash -c呼出は
+# 引き続きblock)が壊れていないことは直前の5テストで確認済み。
+check "Hook11-F1c: allows heredoc body documenting a forbidden 'bash -c op read' example as prose" allow \
+"cat > /tmp/hook11_f1c_test.md <<EOF
+禁止例: bash -c 'op read \"op://vault/item/field\"' のような形は書くな
+EOF"
+
 echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"

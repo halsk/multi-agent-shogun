@@ -1451,7 +1451,8 @@ fi
 #   する。安全側の誤り(見逃しではなく過剰検出)であり是正の必要は無いが、
 #   「対象外」と書くのは事実と異なるためここに正しく記録する。
 # ============================================================
-_OP_SECRET_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+_OP_SECRET_HEREDOC_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+_OP_SECRET_MASKED_COMMAND="$_OP_SECRET_HEREDOC_MASKED_COMMAND"
 # ★FP-F1是正(軍師QC gunshi_qc_cmd842_pr156_hook11): heredoc本文はマスク
 # 済みだが、単一引用符で括った引数の中身(「op read の作法を文書に書く」
 # 「grep 'op read' で作法を探す」等、op を実際に呼ばぬ地の文)はマスク
@@ -1495,14 +1496,28 @@ _OP_SECRET_MASKED_COMMAND="$(_mask_single_quoted_bodies_for_op_secret_detection 
 # しまい、`bash -c 'op read "..."'` 等5形の検知後退(block→allow)を生んで
 # いた(軍師実測)。Hook 9が既に使っている
 # _reversibility_extract_subshell_bodies(bash -c/sh -c/evalの本文を「実行は
-# せず文字列として」抽出する既存機構・行745-759・_REVERSIBILITY_SUBSHELL_BODIES
-# として算出済み)をここでも流用し、抽出した本文を単一引用符マスク★前の
-# 素のテキストとして走査対象へ追記する。単一引用符マスクは「残った素の
-# 引数」にのみ効けばよく、bash -c 等の本文は既にここで別途拾っているため
-# 二重に困らない。
-if [[ -n "$_REVERSIBILITY_SUBSHELL_BODIES" ]]; then
+# せず文字列として」抽出する既存機構・行745-759)を流用し、抽出した本文を
+# 単一引用符マスク★前の素のテキストとして走査対象へ追記する。単一引用符
+# マスクは「残った素の引数」にのみ効けばよく、bash -c 等の本文は既にここで
+# 別途拾っているため二重に困らない。
+# ★F1c是正(軍師再QC qc_cmd842c_hook11_regression_fix): 842cでは既存の
+# _REVERSIBILITY_SUBSHELL_BODIES(760行目・Hook 9用に生のCOMMAND=heredoc
+# マスク★前のテキストから算出済み)をそのまま流用していたが、これだと
+# heredoc本文の中に書かれた禁止例の地の文(例:「bash -cでop readを呼ぶ例」
+# という文書用の記述)まで「実行される本文」として拾ってしまい誤爆して
+# いた(軍師実証)。760行目自体(Hook 9が使う値)は変更せず、Hook 11専用に
+# heredocマスク★済み(かつ単一引用符マスク★前)の
+# _OP_SECRET_HEREDOC_MASKED_COMMAND へ対して同じ抽出関数を呼び直す。
+# heredoc本文は _mask_heredoc_bodies_for_git_detection により既に
+# HEREDOC_BODY_MASKED へ置換済みのため、本文中の地の文からは
+# bash -c/sh -c/eval のパターンがそもそも見つからず、誤爆しない。一方
+# heredocの外に実際に書かれた `bash -c 'op read ...'` は
+# _OP_SECRET_HEREDOC_MASKED_COMMAND が単一引用符マスク前の値であるため
+# 本文中の op read がそのまま残り、842cの退行是正は維持される。
+_OP_SECRET_SUBSHELL_BODIES="$(_reversibility_extract_subshell_bodies "$_OP_SECRET_HEREDOC_MASKED_COMMAND")"
+if [[ -n "$_OP_SECRET_SUBSHELL_BODIES" ]]; then
   _OP_SECRET_MASKED_COMMAND="$_OP_SECRET_MASKED_COMMAND
-$_REVERSIBILITY_SUBSHELL_BODIES"
+$_OP_SECRET_SUBSHELL_BODIES"
 fi
 
 _op_secret_is_assignment_captured() {
