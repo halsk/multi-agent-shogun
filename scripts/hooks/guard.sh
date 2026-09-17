@@ -1424,4 +1424,141 @@ if has_git_subcmd "$COMMAND" "push"; then
   fi
 fi
 
+# ============================================================
+# Hook 11: op直叩きによる秘密の端末平文露出防止 (cmd_842)
+# ------------------------------------------------------------
+# 背景: 2026-09-16、家老が --reveal 付き op 呼出で資格情報を露出させる
+# 事故が起きた。Keychain移行で「op直叩きの必要」自体は大きく減ったが、
+# 動機(平文を端末へ出す手が手近にある)は消えていない。本Hookは第二の
+# 層として、端末へ秘密を平文で出す形のみを機械で止める。
+#
+# ★設計方針(殿裁定・軍師の当初4系統設計=op read・item get --reveal・
+# document get・inject、は撤回): 判定軸は「端末へ出すか否か」の一点のみ。
+#   - 代入形(v=$(timeout 30 op read '...') のように変数へキャプチャし
+#     メモリに保持する形)は通す。
+#   - 代入を伴わない素の呼出(単独実行・パイプ等で直接出力に流す形)は
+#     止める。
+# ★絶対禁止にはしない——塞がれた者が即興の回避に走るのが最も危うい。
+#
+# ★対象コマンド: `op read` と `op item get`(--reveal有無を問わない。
+# item get は非TTY出力時に --reveal 無しでも値を返すため、フラグ有無で
+# 判定を変えない)。`op vault list`・`op whoami` 等、秘密を出力しない
+# サブコマンドは対象外(過剰ブロック防止・CLAUDE.mdの op 直接呼出作法が
+# 挙げる例を壊さない)。
+#
+# ★判定方法: heredoc本文マスク済みコマンド文字列上で、`op read`/
+# `op item get` を含む「区切り(;&|)で囲まれた1セグメント」を抜き出し、
+# そのセグメントが (local/export の前置を許した上で) `IDENT=$(` または
+# `IDENT="$(` で始まっていれば代入形として許可、それ以外は全てブロック
+# する。
+#
+# ★正直な限界(捕らえられぬ形・CLAUDE.md Hook9注記と同じ調子で記す。
+# 「もう防がれた」という思い込みを与えないこと):
+#   - 別プログラム/スクリプト経由の間接呼出(bash -c の入れ子が深い場合・
+#     python等の別言語からのop呼出等)。本Hookは既存の
+#     _reversibility_extract_subshell_bodies のような bash -c/eval中身の
+#     再走査を実装していない(過剰設計を避けるため)。
+#   - 文字列自体を難読化・分割してコマンド化する形(o=op; $o read ... の
+#     ような変数エイリアス経由の迂回)。
+#   - 代入形の$(...)の中に「;」等の区切り文字を含む複合文
+#     (例: v=$(echo start; op read 'x'))は、本Hookの単純な区切り分割
+#     (括弧の深さを追跡しない)により2セグメントに割れ、2つ目のセグメント
+#     ( op read 'x') )が代入形と認識されず誤ってブロックされうる
+#     (過剰ブロック方向の既知の粗さであり、秘密露出を見逃す穴ではない)。
+# ★op の絶対/相対パス接頭(/usr/local/bin/op 等)・command op ラッパー経由の
+#   呼出は、対象外ではない——実際にはブロックされる(軍師QC実測・
+#   gunshi_qc_cmd842_pr156_hook11 F2)。判定に使う正規表現 \bop[[:space:]]+
+#   (read|item[[:space:]]+get)\b は「/」の直後も語境界とみなすため、パス
+#   接頭や command ラッパーがあっても op read/item get の部分文字列に一致
+#   する。安全側の誤り(見逃しではなく過剰検出)であり是正の必要は無いが、
+#   「対象外」と書くのは事実と異なるためここに正しく記録する。
+# ============================================================
+_OP_SECRET_HEREDOC_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+_OP_SECRET_MASKED_COMMAND="$_OP_SECRET_HEREDOC_MASKED_COMMAND"
+# ★FP-F1是正(軍師QC gunshi_qc_cmd842_pr156_hook11): heredoc本文はマスク
+# 済みだが、単一引用符で括った引数の中身(「op read の作法を文書に書く」
+# 「grep 'op read' で作法を探す」等、op を実際に呼ばぬ地の文)はマスク
+# されておらず誤爆していた。単一引用符の中身はシェルが一切展開しない
+# ため、そこに実行されうるコマンドが潜むことは原理的に無い——heredocと
+# 同じ理屈で安全にマスクできる。★二重引用符は $(...) を含みうるため
+# マスクしない(検出力を落とさぬこと最優先)。
+_mask_single_quoted_bodies_for_op_secret_detection() {
+  local cmd="$1"
+  awk '
+    { L[NR] = $0 }
+    END {
+      n = NR
+      in_quote = 0
+      for (i = 1; i <= n; i++) {
+        line = L[i]
+        len = length(line)
+        outline = ""
+        for (j = 1; j <= len; j++) {
+          c = substr(line, j, 1)
+          if (!in_quote) {
+            outline = outline c
+            if (c == "\047") in_quote = 1
+          } else {
+            if (c == "\047") {
+              outline = outline "SINGLE_QUOTED_BODY_MASKED" c
+              in_quote = 0
+            }
+            # in_quote 中の他の文字はマスクして捨てる
+          }
+        }
+        print outline
+      }
+    }
+  ' <<<"$cmd"
+}
+_OP_SECRET_MASKED_COMMAND="$(_mask_single_quoted_bodies_for_op_secret_detection "$_OP_SECRET_MASKED_COMMAND")"
+# ★退行是正(cmd_842さらに追加是正・軍師再QC
+# gunshi_qc_cmd842b_hook11_false_positive_fix): 上の単一引用符マスクは
+# bash -c/sh -c/eval に渡される「実際に実行される本文」まで丸ごと消して
+# しまい、`bash -c 'op read "..."'` 等5形の検知後退(block→allow)を生んで
+# いた(軍師実測)。Hook 9が既に使っている
+# _reversibility_extract_subshell_bodies(bash -c/sh -c/evalの本文を「実行は
+# せず文字列として」抽出する既存機構・行745-759)を流用し、抽出した本文を
+# 単一引用符マスク★前の素のテキストとして走査対象へ追記する。単一引用符
+# マスクは「残った素の引数」にのみ効けばよく、bash -c 等の本文は既にここで
+# 別途拾っているため二重に困らない。
+# ★F1c是正(軍師再QC qc_cmd842c_hook11_regression_fix): 842cでは既存の
+# _REVERSIBILITY_SUBSHELL_BODIES(760行目・Hook 9用に生のCOMMAND=heredoc
+# マスク★前のテキストから算出済み)をそのまま流用していたが、これだと
+# heredoc本文の中に書かれた禁止例の地の文(例:「bash -cでop readを呼ぶ例」
+# という文書用の記述)まで「実行される本文」として拾ってしまい誤爆して
+# いた(軍師実証)。760行目自体(Hook 9が使う値)は変更せず、Hook 11専用に
+# heredocマスク★済み(かつ単一引用符マスク★前)の
+# _OP_SECRET_HEREDOC_MASKED_COMMAND へ対して同じ抽出関数を呼び直す。
+# heredoc本文は _mask_heredoc_bodies_for_git_detection により既に
+# HEREDOC_BODY_MASKED へ置換済みのため、本文中の地の文からは
+# bash -c/sh -c/eval のパターンがそもそも見つからず、誤爆しない。一方
+# heredocの外に実際に書かれた `bash -c 'op read ...'` は
+# _OP_SECRET_HEREDOC_MASKED_COMMAND が単一引用符マスク前の値であるため
+# 本文中の op read がそのまま残り、842cの退行是正は維持される。
+_OP_SECRET_SUBSHELL_BODIES="$(_reversibility_extract_subshell_bodies "$_OP_SECRET_HEREDOC_MASKED_COMMAND")"
+if [[ -n "$_OP_SECRET_SUBSHELL_BODIES" ]]; then
+  _OP_SECRET_MASKED_COMMAND="$_OP_SECRET_MASKED_COMMAND
+$_OP_SECRET_SUBSHELL_BODIES"
+fi
+
+_op_secret_is_assignment_captured() {
+  local seg="$1"
+  echo "$seg" | grep -qE '^(local[[:space:]]+|export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*\+?=\"?\$\('
+}
+
+while IFS= read -r op_secret_seg; do
+  [[ -z "$op_secret_seg" ]] && continue
+  op_secret_seg="$(echo "$op_secret_seg" | sed -E 's/^[[:space:];&|]+//')"
+  if _op_secret_is_assignment_captured "$op_secret_seg"; then
+    continue
+  fi
+  echo "❌ op直叩きで秘密が端末へ平文出力される形が検出されました(Hook 11)。" >&2
+  echo "   代入形(変数へ代入しメモリに保持する形)のみ許可されています。例:" >&2
+  echo "     v=\$(timeout 30 op read 'op://vault/item/field')" >&2
+  echo "   単独実行・パイプでの直接出力は禁止です。CLAUDE.mdの" >&2
+  echo "   『1Password (op) 直接呼出のタイムアウト作法』節を参照。" >&2
+  exit 2
+done < <(echo "$_OP_SECRET_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|])[^;&|]*\bop[[:space:]]+(read|item[[:space:]]+get)\b[^;&|]*' || true)
+
 exit 0

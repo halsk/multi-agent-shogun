@@ -915,6 +915,107 @@ fi
 rm -f "$MARKER_FILE"
 
 echo ""
+echo "=== Hook 11: op直叩きによる秘密の端末平文露出防止 (cmd_842) ==="
+# ★是正前(RED対照): 本セクションのテスト名が示す通り、Hook 11実装前は
+# 「端末へ平文が出る形のop呼出」が軒並みexit 0(allow)で素通りしていた
+# (実行ログはtask報告に別途貼る)。実装後は以下の通りblock/allowが分かれる。
+
+# BLOCK: 素の op read 単独実行(端末へ平文出力される形そのもの)
+check "Hook11: blocks bare op read that would print secret to terminal" block \
+  "op read 'op://geonic-apps/geonicdb-staging-console_qa'"
+
+# BLOCK: 素の op item get --reveal(2026-09-16の家老の事故と同型)
+check "Hook11: blocks bare op item get --reveal that would print secret to terminal" block \
+  "op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password --reveal"
+
+# BLOCK: --reveal無しの op item get も対象(非TTY出力で自動的に値を返すため)
+check "Hook11: blocks bare op item get without --reveal too (auto-reveals on non-tty)" block \
+  "op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password"
+
+# BLOCK: パイプで直接出力に流す形(単独実行と同じく端末外だが平文が渡る)
+check "Hook11: blocks op item get piped directly to another command" block \
+  "op item get geonicdb-staging-console_qa --fields label=password --reveal | pbcopy"
+
+# BLOCK: op read をパイプで別コマンドへ流す形
+check "Hook11: blocks op read piped directly to another command" block \
+  "op read 'op://geonic-apps/secret' | pbcopy"
+
+# ALLOW: 代入形(変数へキャプチャしメモリに保持する形・CLAUDE.md推奨形)
+check "Hook11: allows assignment-captured op read (v=\$(...))" allow \
+  "v=\$(timeout 30 op read 'op://geonic-apps/secret')"
+
+# ALLOW: 代入形・二重引用符付き(v="\$(...)"の慣用形)
+check "Hook11: allows assignment-captured op read with dquoted substitution" allow \
+  "v=\"\$(timeout 30 op read 'op://geonic-apps/secret')\""
+
+# ALLOW: 代入形・op item get --reveal 版
+check "Hook11: allows assignment-captured op item get --reveal" allow \
+  "v=\$(timeout 30 op item get geonicdb-staging-console_qa --vault geonic-apps --fields label=password --reveal)"
+
+# ALLOW: local宣言付きの代入形
+check "Hook11: allows assignment-captured op read with local prefix" allow \
+  "local v=\$(timeout 30 op read 'op://geonic-apps/secret')"
+
+# ALLOW: 秘密を出力しないサブコマンドは対象外(過剰ブロック防止・既存回帰との共存)
+check "Hook11: does not block op vault list (out of scope, prints no secret)" allow \
+  "op vault list"
+check "Hook11: does not block op whoami (out of scope, prints no secret)" allow \
+  "op whoami"
+
+# ★F1是正の回帰テスト(gunshi_qc_cmd842_pr156_hook11): 単一引用符で括った
+# 「地の文」(opを実際には呼ばぬ文書化・grep)が誤爆していた。是正前は
+# いずれもexit 2(block)だったことをRED対照で実測済み(task報告参照)。
+check "Hook11-F1: allows inbox message that merely mentions 'op read' inside single quotes" allow \
+  "bash scripts/inbox_write.sh karo '手順書に op read の例を載せた' report_received ashigaru4"
+check "Hook11-F1: allows grep searching docs for the literal string 'op read'" allow \
+  "grep -rn 'op read' docs/"
+
+# ★F1是正後も見逃しを生んでいないことの回帰テスト: 単一引用符で括った
+# 「素の危険な呼出」(op read/item getの語自体は引用符の外にある)は
+# 引き続きblockされる。
+check "Hook11-F1: still blocks bare op read whose argument happens to be single-quoted" block \
+  "op read 'op://geonic-apps/secret'"
+check "Hook11-F1: still blocks echo \$(op read ...) with single-quoted argument" block \
+  "echo \$(op read 'op://geonic-apps/secret')"
+
+# ★F2の実測記録(gunshi_qc_cmd842_pr156_hook11): guard.shのコメントは
+# かつて「パス接頭・command opラッパー経由は対象外」と誤って記していたが、
+# 実際には\bが「/」の直後も語境界とみなすためblockされる。安全側の誤りで
+# あり是正は不要——コメントのみ是正済み。ここでは実際の挙動を回帰として
+# 固定する。
+check "Hook11-F2: absolute-path-prefixed op read is still blocked (comment fix, not behavior fix)" block \
+  "/usr/local/bin/op read 'op://geonic-apps/secret'"
+check "Hook11-F2: command-wrapped op read is still blocked (comment fix, not behavior fix)" block \
+  "command op read 'op://geonic-apps/secret'"
+
+# ★退行是正の回帰テスト(cmd_842さらに追加是正・軍師再QC
+# gunshi_qc_cmd842b_hook11_false_positive_fix): F1是正(単一引用符本文の
+# 丸ごとマスク)が生んだ検知後退5形。bash -c/sh -c/eval に渡す本文の中で
+# op read/op item get を呼ぶ形は、単一引用符でくくられているために
+# 旧実装ではマスクされ見逃されていた(軍師実測: block→allowの後退)。
+check "Hook11-regression: blocks op read inside bash -c '...' (subshell body must still be scanned)" block \
+  'bash -c '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op read inside sh -c '...'" block \
+  'sh -c '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op read inside eval '...'" block \
+  'eval '"'"'op read "op://geonic-apps/secret"'"'"''
+check "Hook11-regression: blocks op item get --reveal inside bash -c '...'" block \
+  'bash -c '"'"'op item get myitem --reveal'"'"''
+check "Hook11-regression: blocks op read inside bash -c '...' reached via xargs" block \
+  'echo x | xargs -I{} bash -c '"'"'op read "op://geonic-apps/secret"'"'"''
+
+# ★F1c是正の回帰テスト(軍師再QC qc_cmd842c_hook11_regression_fix): 842cの
+# 退行是正(bash -c/sh -c/eval本文の再走査)が、heredoc本文の中に書かれた
+# 「禁止例」の地の文まで実行される本文として拾ってしまい誤爆していた。
+# 是正前はexit 2(block)だったことをRED対照で実測済み(task報告参照)。
+# 是正後はallow。同時に842cの退行是正(heredocの外の実際のbash -c呼出は
+# 引き続きblock)が壊れていないことは直前の5テストで確認済み。
+check "Hook11-F1c: allows heredoc body documenting a forbidden 'bash -c op read' example as prose" allow \
+"cat > /tmp/hook11_f1c_test.md <<EOF
+禁止例: bash -c 'op read \"op://vault/item/field\"' のような形は書くな
+EOF"
+
+echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"
 check "cat file" allow "cat README.md"
