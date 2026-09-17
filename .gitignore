@@ -46,6 +46,8 @@
 !.claude/skills/js-dynamic-key-pitfalls/SKILL.md
 !.claude/skills/grep-count-before-bulk-fix/
 !.claude/skills/grep-count-before-bulk-fix/SKILL.md
+!.claude/skills/search-before-declaring-unrecoverable/
+!.claude/skills/search-before-declaring-unrecoverable/SKILL.md
 
 # Instructions (core OSS)
 !instructions/
@@ -238,6 +240,8 @@ logs/
 !.agents/skills/js-dynamic-key-pitfalls/SKILL.md
 !.agents/skills/grep-count-before-bulk-fix/
 !.agents/skills/grep-count-before-bulk-fix/SKILL.md
+!.agents/skills/search-before-declaring-unrecoverable/
+!.agents/skills/search-before-declaring-unrecoverable/SKILL.md
 
 # Skills (public OSS skills committed to repo)
 !skills/
