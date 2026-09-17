@@ -937,6 +937,32 @@ check "Hook11: does not block op vault list (out of scope, prints no secret)" al
 check "Hook11: does not block op whoami (out of scope, prints no secret)" allow \
   "op whoami"
 
+# ★F1是正の回帰テスト(gunshi_qc_cmd842_pr156_hook11): 単一引用符で括った
+# 「地の文」(opを実際には呼ばぬ文書化・grep)が誤爆していた。是正前は
+# いずれもexit 2(block)だったことをRED対照で実測済み(task報告参照)。
+check "Hook11-F1: allows inbox message that merely mentions 'op read' inside single quotes" allow \
+  "bash scripts/inbox_write.sh karo '手順書に op read の例を載せた' report_received ashigaru4"
+check "Hook11-F1: allows grep searching docs for the literal string 'op read'" allow \
+  "grep -rn 'op read' docs/"
+
+# ★F1是正後も見逃しを生んでいないことの回帰テスト: 単一引用符で括った
+# 「素の危険な呼出」(op read/item getの語自体は引用符の外にある)は
+# 引き続きblockされる。
+check "Hook11-F1: still blocks bare op read whose argument happens to be single-quoted" block \
+  "op read 'op://geonic-apps/secret'"
+check "Hook11-F1: still blocks echo \$(op read ...) with single-quoted argument" block \
+  "echo \$(op read 'op://geonic-apps/secret')"
+
+# ★F2の実測記録(gunshi_qc_cmd842_pr156_hook11): guard.shのコメントは
+# かつて「パス接頭・command opラッパー経由は対象外」と誤って記していたが、
+# 実際には\bが「/」の直後も語境界とみなすためblockされる。安全側の誤りで
+# あり是正は不要——コメントのみ是正済み。ここでは実際の挙動を回帰として
+# 固定する。
+check "Hook11-F2: absolute-path-prefixed op read is still blocked (comment fix, not behavior fix)" block \
+  "/usr/local/bin/op read 'op://geonic-apps/secret'"
+check "Hook11-F2: command-wrapped op read is still blocked (comment fix, not behavior fix)" block \
+  "command op read 'op://geonic-apps/secret'"
+
 echo ""
 echo "=== 正常コマンドの通過確認 ==="
 check "ls command" allow "ls -la"

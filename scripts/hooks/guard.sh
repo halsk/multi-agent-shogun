@@ -1438,15 +1438,57 @@ fi
 #     再走査を実装していない(過剰設計を避けるため)。
 #   - 文字列自体を難読化・分割してコマンド化する形(o=op; $o read ... の
 #     ような変数エイリアス経由の迂回)。
-#   - op の絶対/相対パス接頭(/usr/local/bin/op 等)・command op ラッパー
-#     経由の呼出。
 #   - 代入形の$(...)の中に「;」等の区切り文字を含む複合文
 #     (例: v=$(echo start; op read 'x'))は、本Hookの単純な区切り分割
 #     (括弧の深さを追跡しない)により2セグメントに割れ、2つ目のセグメント
 #     ( op read 'x') )が代入形と認識されず誤ってブロックされうる
 #     (過剰ブロック方向の既知の粗さであり、秘密露出を見逃す穴ではない)。
+# ★op の絶対/相対パス接頭(/usr/local/bin/op 等)・command op ラッパー経由の
+#   呼出は、対象外ではない——実際にはブロックされる(軍師QC実測・
+#   gunshi_qc_cmd842_pr156_hook11 F2)。判定に使う正規表現 \bop[[:space:]]+
+#   (read|item[[:space:]]+get)\b は「/」の直後も語境界とみなすため、パス
+#   接頭や command ラッパーがあっても op read/item get の部分文字列に一致
+#   する。安全側の誤り(見逃しではなく過剰検出)であり是正の必要は無いが、
+#   「対象外」と書くのは事実と異なるためここに正しく記録する。
 # ============================================================
 _OP_SECRET_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+# ★FP-F1是正(軍師QC gunshi_qc_cmd842_pr156_hook11): heredoc本文はマスク
+# 済みだが、単一引用符で括った引数の中身(「op read の作法を文書に書く」
+# 「grep 'op read' で作法を探す」等、op を実際に呼ばぬ地の文)はマスク
+# されておらず誤爆していた。単一引用符の中身はシェルが一切展開しない
+# ため、そこに実行されうるコマンドが潜むことは原理的に無い——heredocと
+# 同じ理屈で安全にマスクできる。★二重引用符は $(...) を含みうるため
+# マスクしない(検出力を落とさぬこと最優先)。
+_mask_single_quoted_bodies_for_op_secret_detection() {
+  local cmd="$1"
+  awk '
+    { L[NR] = $0 }
+    END {
+      n = NR
+      in_quote = 0
+      for (i = 1; i <= n; i++) {
+        line = L[i]
+        len = length(line)
+        outline = ""
+        for (j = 1; j <= len; j++) {
+          c = substr(line, j, 1)
+          if (!in_quote) {
+            outline = outline c
+            if (c == "\047") in_quote = 1
+          } else {
+            if (c == "\047") {
+              outline = outline "SINGLE_QUOTED_BODY_MASKED" c
+              in_quote = 0
+            }
+            # in_quote 中の他の文字はマスクして捨てる
+          }
+        }
+        print outline
+      }
+    }
+  ' <<<"$cmd"
+}
+_OP_SECRET_MASKED_COMMAND="$(_mask_single_quoted_bodies_for_op_secret_detection "$_OP_SECRET_MASKED_COMMAND")"
 
 _op_secret_is_assignment_captured() {
   local seg="$1"
