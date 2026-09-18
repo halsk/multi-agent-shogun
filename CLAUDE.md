@@ -533,7 +533,9 @@ unresolved)を見るのは、★レビューが実際に行われたことを確
 Hook 9 が実際に捕捉するのは、Bash ツールへ渡された**そのコマンド文字列自身**に現れる rm/unlink・cp/mv/ln・gh・launchctl・crontab の呼出のみである。直接形に加え、絶対/相対パス接頭(`/bin/rm`)・バックスラッシュエスケープ(`\rm`)・引用符("rm"/'rm')・変数エイリアス(`R=rm; $R ...`)、および `bash -c '...'`/`eval "..."` の中身の再走査までは捕捉する(軍師QCで実証された回避形への対応済み)。
 ★しかし **`find -delete`・`find -exec rm {} \;`・`xargs rm`・`python -c "import os; os.remove(...)"`・`make clean`・`npm run reset` のような、別のプログラム/スクリプトを経由した間接的な削除・上書きは一切見えない**(guard.sh はテキストパターンを見る hook であり、呼び出した先のプログラムが内部で何をするかは追跡できない)。これは欠陥ではなく、この種の hook が原理的に持つ限界であり、意図的に破ろうとする者を止める機構ではない。「もう構造的に防がれた」という思い込みこそが最大の害である——第一の守りは引き続き「テスト/スクリプトが本物の設定ファイルに触れない設計にすること」と「git管理外の一点物には控えを持つこと」であり、本Hookはあくまで第二の層である。
 
-★`.guard-authorized`の設置(Write/`git add -f`)と、実際の対象操作(`gh pr merge`・`gh pr/issue close`等)は**必ず別々のBashツール呼び出しに分けること**。同一のコマンド文字列(`&&`等で連結)に両方を入れると、guard.shはコマンド文字列全体を検査するため対象操作の語(例: `gh pr merge`)を検知して★裁可ファイルの有効性に関わらず丸ごとブロックする(2026-09-18・cmd_854 PR#190 merge作業で家老が2度実際に踏んだ事故)。
+★`.guard-authorized`の設置(Write/`git add -f`)と、実際の対象操作(`gh pr merge`・`gh pr/issue close`等)は**必ず別々のBashツール呼び出しに分けること**。PreToolUse hookはBashツールへ渡すコマンド文字列全体を、1文字も実行する前に判定する。ゆえに同一のコマンド文字列(`&&`等で連結)の前半で設置しても、判定の時点ではまだ実行されておらず裁可ファイルが存在しないため、対象操作の語(例: `gh pr merge`)を検知して裁可なしとしてブロックされる(2026-09-18・cmd_854 PR#190 merge作業で家老が2度実際に踏んだ事故)。★本質(実行前に判定される)を掴めば、同型の罠を自分で避けられる。
+
+★もう一つの頻度の高い罠(軍師が本QC中に実際に踏んだもの): 対象操作の語(例: `gh pr merge`)は、実行するコマンド本体でなく説明文・grepの検索語・echoのラベルに書いただけでも検知される(Hook 11で繰り返し踏んだ「地の文が検知される」病と同型)。調べ物をする時は語を分割するか、ファイル経由で渡すこと。
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
