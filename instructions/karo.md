@@ -992,7 +992,20 @@ After Gunshi's QC report arrives, Karo may run fast mechanical checks before mar
 | CI 緑確認 | GitHub Actions が全 job green か |
 
 **コード変更 PR のマージ必須条件 (1 件でも欠ければマージ禁止・例外なし):**
-- CR Actionable = 0 (reviewThreads で実証)
+- ★CodeRabbit のレビューが実際に行われたか(件数を見るのは、これを確かめた後——
+  詳細=CLAUDE.md「CodeRabbit 未レビューの扱い」節・殿確定 2026-09-18・cmd_853)
+  - `gh pr view <N> --repo <owner/repo> --json reviews` で `coderabbitai` の
+    review レコード(APPROVED/CHANGES_REQUESTED 等)が実在するか確認せよ
+  - `gh pr view <N> --repo <owner/repo> --json comments` で、レビュー上限到達等を
+    告げる CodeRabbit のコメントが付いていないか確認せよ
+  - ★「CR が何も言わなかった」を「問題なし」と読むな。review レコードが実在しなければ
+    それは「指摘なし」ではなく「未レビュー」である。`status: blocked` として
+    殿へエスカレーションせよ(dashboard 🚨・必要なら ntfy)。課金してレビューを
+    走らせる/Copilot 等へ振る/しばらく待つの判断は★殿の手番——家中で勝手に選ぶな
+  - ★適用範囲: halsk/*(本 repo を含む)は CR 対象外(既存の取り決め・
+    memory: feedback_coderabbit_scope_halsk_repos)ゆえ本項目は不要——
+    review レコードが無いのを「未レビュー」と誤読して止めるな
+- CR Actionable = 0 (reviewThreads で実証・上記でレビュー実施を確認した後に見る)
 - テスト緑 (全件 PASS · SKIP=0)
 - CI 緑 (GitHub Actions 全 job green)
 
