@@ -513,6 +513,26 @@ merge することになる。**検査の不在が検査の合格に化ける形
 = instructions/karo.md「コード変更 PR のマージ必須条件」節に統合済み): 件数(Actionable/
 unresolved)を見るのは、★レビューが実際に行われたことを確かめた後である。順序を逆にするな。
 
+★物差しの粗さ是正(殿確定 2026-09-19・cmd_862): cmd_853 制定直後、この物差しだけでは
+将軍の実測により2つの読み違いが実際に生じた。
+
+1. **★第一の物差しはコミットステータスであり、review レコードの有無だけで判定するな**:
+   `gh api repos/OWNER/REPO/commits/HEAD_SHA/status` で `context=CodeRabbit` の
+   status を見よ。
+   - `state=success`(「Review completed」等)→ レビューは実際に走っている
+   - 「Review rate limited」等 → 走っていない。merge するな
+   - ★実例(PR#192): review レコードは現 head より古かったが、コミットステータスは
+     「Review completed」であった。走った上で新たに述べることが無かっただけであり、
+     これを未レビューと扱えば、実際に走っている PR を不当に止める(逆向きの事故)。
+     **「review レコードが無い=未レビュー」と短絡するな。**
+2. 次に review レコードと未解決スレッド(reviewThreads・`isResolved`)で指摘の有無と
+   対応状況を見よ(手順は従来どおり)。
+3. **★要約コメントの時刻は `created_at` でなく `updated_at` を見よ**——CodeRabbit は
+   要約コメントを新規投稿せず★編集する。実例(PR#191): 当該コメントは
+   created 09:11:52Z / updated 10:04:21Z で、「Review limit reached」は 10:04 の
+   編集で加わった。GitHub は作成時刻の位置に並べるため見た目では上限の文言が
+   レビューより前に在るように見えるが、実際は逆である。
+
 # Claude Code Hooks
 
 `scripts/hooks/guard.sh` は Claude Code の PreToolUse hook として動作し、以下のルールを自動強制する。

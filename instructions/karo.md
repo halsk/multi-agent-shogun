@@ -993,15 +993,25 @@ After Gunshi's QC report arrives, Karo may run fast mechanical checks before mar
 
 **コード変更 PR のマージ必須条件 (1 件でも欠ければマージ禁止・例外なし):**
 - ★CodeRabbit のレビューが実際に行われたか(件数を見るのは、これを確かめた後——
-  詳細=CLAUDE.md「CodeRabbit 未レビューの扱い」節・殿確定 2026-09-18・cmd_853)
-  - `gh pr view <N> --repo <owner/repo> --json reviews` で `coderabbitai` の
+  詳細=CLAUDE.md「CodeRabbit 未レビューの扱い」節・殿確定 2026-09-18・cmd_853、
+  判定手順の是正=殿確定 2026-09-19・cmd_862)
+  - ★第一の物差し: `gh api repos/<owner>/<repo>/commits/<HEAD_SHA>/status` で
+    `context=CodeRabbit` の status を見よ。`state=success`(「Review completed」)
+    → レビューは実際に走っている。「Review rate limited」等 → 走っていない
+  - 次に `gh pr view <N> --repo <owner/repo> --json reviews` で `coderabbitai` の
     review レコード(APPROVED/CHANGES_REQUESTED 等)が実在するか確認せよ
   - `gh pr view <N> --repo <owner/repo> --json comments` で、レビュー上限到達等を
-    告げる CodeRabbit のコメントが付いていないか確認せよ
-  - ★「CR が何も言わなかった」を「問題なし」と読むな。review レコードが実在しなければ
-    それは「指摘なし」ではなく「未レビュー」である。`status: blocked` として
-    殿へエスカレーションせよ(dashboard 🚨・必要なら ntfy)。課金してレビューを
-    走らせる/Copilot 等へ振る/しばらく待つの判断は★殿の手番——家中で勝手に選ぶな
+    告げる CodeRabbit のコメントが付いていないか確認せよ。★時刻は `created_at`
+    でなく `updated_at` を見よ——CodeRabbit は要約コメントを新規投稿せず★編集する
+    ため、GitHub 上の表示位置(作成時刻順)と実際の投稿順が食い違う場合がある
+  - ★「CR が何も言わなかった」を「問題なし」と読むな。コミットステータスが
+    success でなく、かつ review レコードも実在しなければそれは「指摘なし」では
+    なく「未レビュー」である。`status: blocked` として殿へエスカレーションせよ
+    (dashboard 🚨・必要なら ntfy)。課金してレビューを走らせる/Copilot 等へ振る/
+    しばらく待つの判断は★殿の手番——家中で勝手に選ぶな
+  - ★「review レコードが無い=未レビュー」と短絡するな。コミットステータスが
+    success ならレビューは走った上で新たに述べることが無かっただけである
+    (実例: PR#192。review レコードは現 head より古かったが、実際は走っていた)
   - ★適用範囲: halsk/*(本 repo を含む)は CR 対象外(既存の取り決め・
     memory: feedback_coderabbit_scope_halsk_repos)ゆえ本項目は不要——
     review レコードが無いのを「未レビュー」と誤読して止めるな
