@@ -78,8 +78,6 @@ print('true' if d.get('is_error') else 'false')
 " "$json" 2>/dev/null
 }
 
-# check_model_drift() → stdout: 検知した問題(1行1件)。空なら異常無し。
-# 戻り値: 常に0(出直しフロー自体は止めない)。
 # _model_drift_probe_cached(model_arg) → stdout: JSON。呼び出し元(shutsujin_
 # departure.sh)は`set -e`前提のため、非0終了しうる_model_drift_probeの結果を
 # 単純代入(`x=$(...)`)で受けると script全体がそこで落ちる(★実測で確認済みの
@@ -105,6 +103,8 @@ _model_drift_probe_cached() {
     fi
 }
 
+# check_model_drift() → stdout: 検知した問題(1行1件)。空なら異常無し。
+# 戻り値: 常に0(出直しフロー自体は止めない)。
 check_model_drift() {
     local findings=()
     local entry agent alias fixed
