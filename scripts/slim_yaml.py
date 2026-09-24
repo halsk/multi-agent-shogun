@@ -20,6 +20,14 @@ CANONICAL_TASKS = {f'ashigaru{i}' for i in range(1, 9)} | {'gunshi'}
 CANONICAL_REPORTS = {f'ashigaru{i}_report' for i in range(1, 9)} | {'gunshi_report'}
 IDLE_STUB = {'task': {'status': 'idle'}}
 
+# 家老起票2026-09-25(subtask_karo_20260925_watchdog_fixes)【二】:
+# 正典report YAML内で、書いた本人が既に「これは古い」と自己申告している
+# trailerキーの接頭辞。previous_report_*(ashigaru5実例)・old_report_*/
+# _old_report_*(ashigaru7実例)。曖昧な形式(ashigaru4/6のような自己申告の
+# 無いreport_cmdXXX_*等)は誤って現在有効な内容を退避してしまう危険がある
+# ため対象に含めない(安全側に倒す)。
+CANONICAL_REPORT_OLD_KEY_PREFIXES = ('previous_report_', 'old_report_', '_old_report_')
+
 # instructions/common/task_flow.md「Canonical statuses」節が正本。
 # pending/in_progress は active、done/cancelled/paused は archive対象(terminal)。
 LEDGER_CANONICAL_STATUSES = {'pending', 'in_progress', 'done', 'cancelled', 'paused'}
@@ -244,6 +252,109 @@ def slim_reports(dry_run=False):
         ensure_parent_dir(archive_path)
         filepath.rename(archive_path)
         archived_count += 1
+
+    return archived_count
+
+
+def slim_canonical_reports(dry_run=False):
+    """Bloat countermeasure for canonical per-agent report YAML files
+    (ashigaru{1-8}_report.yaml / gunshi_report.yaml), which slim_reports()
+    explicitly skips (CANONICAL_REPORTS) because they hold the live
+    current-status entry karo/gunshi read directly, not a stale/parent_cmd
+    -linked artifact that can simply be moved wholesale.
+
+    Two independent, structurally-safe signals -- deliberately NOT a
+    semantic "does this look old" guess, to avoid ever archiving away the
+    live current status these files are read for:
+
+      A) Multi-document YAML stream (`---`-separated). Agents only ever
+         append a new document at the END of the file (cmd_726 report_flow
+         append pattern), so every document except the last is a strictly
+         older, fully-superseded entry -- true by construction, not
+         inferred from content.
+      B) Within the remaining single document, top-level keys the writing
+         agent itself already named as historical
+         (CANONICAL_REPORT_OLD_KEY_PREFIXES) -- a self-declared signal from
+         the author, not a heuristic guess.
+
+    A third bloat pattern exists in the wild (undecorated report_cmdXXX_*
+    or bare cmdXXX_* sibling keys with no old/previous self-labeling,
+    e.g. ashigaru4/ashigaru6) where "which key is current" cannot be
+    determined safely from structure alone; this function intentionally
+    leaves those untouched rather than risk archiving away a live status
+    entry.
+
+    Returns the number of archived documents+keys across all canonical
+    report files, or -1 on error."""
+    queue_dir = get_queue_dir()
+    reports_dir = queue_dir / 'reports'
+    archive_dir = queue_dir / 'archive' / 'reports'
+
+    if not reports_dir.exists():
+        return 0
+
+    timestamp = get_timestamp()
+    archived_count = 0
+
+    for filepath in sorted(reports_dir.glob('*.yaml')):
+        if filepath.stem not in CANONICAL_REPORTS:
+            continue
+
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                docs = [doc for doc in yaml.safe_load_all(f) if doc is not None]
+        except yaml.YAMLError as e:
+            print(f"Error parsing {filepath}: {e}", file=sys.stderr)
+            continue
+
+        if not docs:
+            continue
+
+        archived_docs = docs[:-1]
+        current = docs[-1]
+
+        archived_keys = {}
+        if isinstance(current, dict):
+            for key in list(current.keys()):
+                if isinstance(key, str) and key.startswith(CANONICAL_REPORT_OLD_KEY_PREFIXES):
+                    archived_keys[key] = current.pop(key)
+
+        if not archived_docs and not archived_keys:
+            continue
+
+        if dry_run:
+            print(f"[DRY-RUN] would slim canonical report: {filepath} "
+                  f"(archive {len(archived_docs)} old document(s), "
+                  f"{len(archived_keys)} old key(s))")
+            continue
+
+        original_stat = filepath.stat()
+
+        archive_payload = {}
+        if archived_docs:
+            archive_payload['archived_documents'] = archived_docs
+        if archived_keys:
+            archive_payload['archived_keys'] = archived_keys
+
+        archive_path = archive_dir / f'{filepath.stem}_{timestamp}.yaml'
+        if archive_path.exists():
+            # 同一秒内に複数の正典reportを処理する場合の衝突回避
+            archive_path = archive_dir / f'{filepath.stem}_{timestamp}_{len(archived_docs)}_{len(archived_keys)}.yaml'
+        ensure_parent_dir(archive_path)
+        if not save_yaml(archive_path, archive_payload):
+            return -1
+
+        if not save_yaml(filepath, current):
+            return -1
+
+        # ★console_stall_watchdog.sh(console_subtask_epoch)等、report
+        # ファイルのmtimeを「最終活動時刻」の代理指標として読む消費者がいる。
+        # 肥大対策の書き込み自体がmtimeを「今」に進めてしまうと、実際には
+        # 古い活動なのに「たった今活動があった」と誤認させかねない。
+        # 書き込み後に元のmtimeを復元し、この副作用を消す。
+        os.utime(filepath, (original_stat.st_atime, original_stat.st_mtime))
+
+        archived_count += len(archived_docs) + len(archived_keys)
 
     return archived_count
 
@@ -475,6 +586,10 @@ def main():
         reports_archived = slim_reports(dry_run)
         if reports_archived < 0:
             sys.exit(1)
+        canonical_reports_archived = slim_canonical_reports(dry_run)
+        if canonical_reports_archived < 0:
+            sys.exit(1)
+        reports_archived += canonical_reports_archived
         inbox_archived = slim_all_inboxes(dry_run)
         if inbox_archived < 0:
             sys.exit(1)

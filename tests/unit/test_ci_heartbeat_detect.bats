@@ -114,3 +114,60 @@ setup() {
   grep -q "ci_heartbeat_detect.sh" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
   grep -qE "check_ci_heartbeat" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── T-CIHB-008/009: 家老起票2026-09-25是正の実証。
+# 実PR#149(このリポ自身・merged済み)のgh api実測値(ashigaru1実測・2026-09-25):
+#   PR#149 head.sha = 5ff12be7e318d73def502fdb137f8e389b286ffd
+#   対応するworkflow run(id=35058504745・test.yml="Multi-CLI Test Suite")の
+#   created_at = 2026-09-16T05:11:08Z
+#   このrunの pull_requests フィールドは merge後は常に [] (GitHubの既知挙動・
+#   event=pull_requestで発火したrunであっても同様)。
+# これは「PRがmergeされると pull_requests ベースの紐付けは常に空配列に化ける」
+# という家老の指摘そのものの実物再現である。
+
+# 実物run(id=35058504745・PR#149のCI run)のgh api応答をそのままの形で
+# フィクスチャ化(ashigaru1実測・2026-09-25・
+# `gh api repos/halsk/multi-agent-shogun/actions/runs?head_sha=<PR149のhead_sha>`)。
+# pull_requestsフィールドは実物のまま [] (merge済みのため)。
+REAL_RUN_OBJECT_PR149='[
+  {"id":35058504745,"head_sha":"5ff12be7e318d73def502fdb137f8e389b286ffd","created_at":"2026-09-16T05:11:08Z","pull_requests":[]}
+]'
+
+@test "T-CIHB-009 (RED対照・是正前のバグを実物データで再現): 旧pull_requestsベースのjq突き合わせは実物のmerge済みPR#149のrunを一切検出できない" {
+  # ★是正前の実装(lib/ci_heartbeat_detect.sh の旧ci_heartbeat_fetch)は
+  #   gh api .../runs --jq '.workflow_runs[] | select((.pull_requests // [])
+  #     | any(.number == 149)) | .created_at'
+  # という形でPR番号と突き合わせていた。この式をそのまま実物のPR#149 run
+  # フィクスチャ(pull_requests:[]・実際にこのrunはPR#149のCI runである)に
+  # 適用すると、pull_requestsが空配列のため一致せず、★実際に何もヒットしない
+  # (=merge済みPRを常にstale扱いする旧バグの直接再現)。
+  local matched
+  matched=$(echo "$REAL_RUN_OBJECT_PR149" | jq -r \
+    '.[] | select((.pull_requests // []) | any(.number == 149)) | .created_at')
+
+  [ -z "$matched" ]
+}
+
+@test "T-CIHB-008 (是正後): _ci_heartbeat_match_head_sha は同じ実物PR#149のrunをhead_sha突き合わせで正しく検出する(pull_requestsが[]でも無関係)" {
+  source "$LIB_FILE"
+
+  run _ci_heartbeat_match_head_sha "5ff12be7e318d73def502fdb137f8e389b286ffd" "$REAL_RUN_OBJECT_PR149"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "2026-09-16T05:11:08Z" ]]
+}
+
+@test "T-CIHB-010: _ci_heartbeat_match_head_sha はどのrunとも一致しないhead_shaに対して空文字を返す" {
+  source "$LIB_FILE"
+
+  run _ci_heartbeat_match_head_sha "0000000000000000000000000000000000000" "$REAL_RUN_OBJECT_PR149"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "T-CIHB-011: _ci_heartbeat_match_head_sha はruns_jsonが空文字の場合も空文字を返す(gh api取得失敗時のガード)" {
+  source "$LIB_FILE"
+
+  run _ci_heartbeat_match_head_sha "5ff12be7e318d73def502fdb137f8e389b286ffd" ""
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
