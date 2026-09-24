@@ -80,17 +80,44 @@ print('true' if d.get('is_error') else 'false')
 
 # check_model_drift() → stdout: 検知した問題(1行1件)。空なら異常無し。
 # 戻り値: 常に0(出直しフロー自体は止めない)。
+# _model_drift_probe_cached(model_arg) → stdout: JSON。呼び出し元(shutsujin_
+# departure.sh)は`set -e`前提のため、非0終了しうる_model_drift_probeの結果を
+# 単純代入(`x=$(...)`)で受けると script全体がそこで落ちる(★実測で確認済みの
+# バグ——is_error/timeoutという★検知したい状況そのものが、検知ロジックへ
+# 辿り着く前にスクリプトを異常終了させてしまう)。ifの条件式はerrexit対象外
+# という仕様を使い、ここで安全に終了コードを受け取る。
+# 併せて同一model_argへの重複呼び出しをキャッシュで避ける(表内でopus/
+# claude-opus-5-5 等が複数エージェントに現れるため、素朴に実装すると同じ
+# クエリを何度も実行し実APIコストを無駄に増やす)。
+declare -gA _MODEL_DRIFT_JSON_CACHE=()
+declare -gA _MODEL_DRIFT_RC_CACHE=()
+_model_drift_probe_cached() {
+    local model_arg="$1"
+    if [[ -z "${_MODEL_DRIFT_RC_CACHE[$model_arg]+set}" ]]; then
+        local _json _rc
+        if _json=$(_model_drift_probe "$model_arg"); then
+            _rc=0
+        else
+            _rc=$?
+        fi
+        _MODEL_DRIFT_JSON_CACHE["$model_arg"]="$_json"
+        _MODEL_DRIFT_RC_CACHE["$model_arg"]="$_rc"
+    fi
+}
+
 check_model_drift() {
     local findings=()
     local entry agent alias fixed
+    _MODEL_DRIFT_JSON_CACHE=()
+    _MODEL_DRIFT_RC_CACHE=()
 
     for entry in "${MODEL_DRIFT_TABLE[@]}"; do
         IFS=':' read -r agent alias fixed <<< "$entry"
 
         # (1) 固定値そのものが現CLIで通るか
-        local fixed_json fixed_rc
-        fixed_json=$(_model_drift_probe "$fixed")
-        fixed_rc=$?
+        _model_drift_probe_cached "$fixed"
+        local fixed_json="${_MODEL_DRIFT_JSON_CACHE[$fixed]}"
+        local fixed_rc="${_MODEL_DRIFT_RC_CACHE[$fixed]}"
         if [ "$fixed_rc" -eq 124 ]; then
             findings+=("${agent}: 固定値 ${fixed} の疎通確認がtimeout(${MODEL_DRIFT_TIMEOUT_SEC}s)——現CLIで通らない疑い")
         elif [ -z "$fixed_json" ] || [ "$(_model_drift_is_error "$fixed_json")" = "true" ]; then
@@ -99,8 +126,9 @@ check_model_drift() {
 
         # (2) aliasの現在解決先と固定値の食い違い(aliasが無いエージェントは対象外)
         if [ -n "$alias" ]; then
-            local alias_json resolved
-            alias_json=$(_model_drift_probe "$alias")
+            _model_drift_probe_cached "$alias"
+            local alias_json="${_MODEL_DRIFT_JSON_CACHE[$alias]}"
+            local resolved
             resolved=$(_model_drift_canonical "$alias_json")
             if [ -n "$resolved" ] && [ "$resolved" != "$fixed" ]; then
                 findings+=("${agent}: alias ${alias} の解決先が固定値と不一致(固定=${fixed} / 現在解決=${resolved})")
