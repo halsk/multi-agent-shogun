@@ -708,7 +708,8 @@ if [ "$SETUP_ONLY" = false ]; then
 
     # 将軍: CLI Adapter経由でコマンド構築
     _shogun_cli_type="claude"
-    _shogun_cmd="claude --model opus --effort max $PERMISSION_FLAG"
+    # 旧: opus(alias) → 新: claude-opus-5-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias opus→claude-opus-5-5)
+    _shogun_cmd="claude --model claude-opus-5-5 --effort max $PERMISSION_FLAG"
     if [ "$CLI_ADAPTER_LOADED" = true ]; then
         _shogun_cli_type=$(get_cli_type "shogun")
         _shogun_cmd=$(build_cli_command "shogun")
@@ -738,7 +739,8 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
     # 家老（pane 0）: CLI Adapter経由でコマンド構築（デフォルト: Sonnet）
     p=$((PANE_BASE + 0))
     _karo_cli_type="claude"
-    _karo_cmd="claude --model sonnet $PERMISSION_FLAG"
+    # 旧: sonnet(alias) → 新: claude-sonnet-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias sonnet→claude-sonnet-5)
+    _karo_cmd="claude --model claude-sonnet-5 $PERMISSION_FLAG"
     if [ "$CLI_ADAPTER_LOADED" = true ]; then
         _karo_cli_type=$(get_cli_type "karo")
         _karo_cmd=$(build_cli_command "karo")
@@ -760,11 +762,12 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
         for i in $(seq 1 "$_ASHIGARU_COUNT"); do
             p=$((PANE_BASE + i))
             _ashi_cli_type="claude"
-            _ashi_cmd="claude --model opus --effort max $PERMISSION_FLAG"
+            # 旧: opus(alias) → 新: claude-opus-5-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias opus→claude-opus-5-5)
+            _ashi_cmd="claude --model claude-opus-5-5 --effort max $PERMISSION_FLAG"
             if [ "$CLI_ADAPTER_LOADED" = true ]; then
                 _ashi_cli_type=$(get_cli_type "ashigaru${i}")
                 if [ "$_ashi_cli_type" = "claude" ]; then
-                    _ashi_cmd="claude --model opus --effort max $PERMISSION_FLAG"
+                    _ashi_cmd="claude --model claude-opus-5-5 --effort max $PERMISSION_FLAG"
                 else
                     _ashi_cmd=$(build_cli_command "ashigaru${i}")
                 fi
@@ -789,13 +792,16 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
             _ashi_cli_type="claude"
             if [ "$i" -eq 7 ]; then
                 # Top tier: ashigaru7 → Opus + --effort max（複雑実装・戦略級）
-                _ashi_cmd="claude --model opus --effort max $PERMISSION_FLAG"
+                # 旧: opus(alias) → 新: claude-opus-5-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias opus→claude-opus-5-5)
+                _ashi_cmd="claude --model claude-opus-5-5 --effort max $PERMISSION_FLAG"
             elif [ "$i" -eq 6 ]; then
                 # Boost tier: ashigaru6 → Sonnet + --effort max（難度高め実装）
-                _ashi_cmd="claude --model sonnet --effort max $PERMISSION_FLAG"
+                # 旧: sonnet(alias) → 新: claude-sonnet-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias sonnet→claude-sonnet-5)
+                _ashi_cmd="claude --model claude-sonnet-5 --effort max $PERMISSION_FLAG"
             else
                 # Standard tier: ashigaru1-5 → Sonnet 標準
-                _ashi_cmd="claude --model sonnet $PERMISSION_FLAG"
+                # 旧: sonnet(alias) → 新: claude-sonnet-5(明示ID)。典拠: cmd_869・家老実測2026-09-24T11時台JST(alias sonnet→claude-sonnet-5)
+                _ashi_cmd="claude --model claude-sonnet-5 $PERMISSION_FLAG"
             fi
             if [ "$CLI_ADAPTER_LOADED" = true ]; then
                 _ashi_cli_type=$(get_cli_type "ashigaru${i}")
@@ -813,12 +819,17 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
         log_info "  └─ 足軽1-${_ASHIGARU_COUNT}（平時の陣）、召喚完了"
     fi
 
-    # 軍師1（gunshi・pane _ASHIGARU_COUNT+1）: ★claude-opus-5 明示ID固定（cmd_803・2026-09-12）
+    # 軍師1（gunshi・pane _ASHIGARU_COUNT+1）: ★claude-opus-5-5 明示ID固定（cmd_803・2026-09-12）
     # aliasに委ねると次にalias先が動いた時に黙って別物へ替わる(2026-06-11殿確定の趣旨)。
     # CLI_ADAPTER_LOADED=false のフォールバック時も明示IDにしておく。
+    # 2026-09-24 cmd_869にてclaude-opus-5-5へ更新
+    # ★正直な記録: config/settings.yamlのgunshi.modelは2026-09-24T以前にclaude-opus-5-5へ
+    # 更新済みだったが、このfallback値(CLI_ADAPTER_LOADED=false時のみ効く)はclaude-opus-5の
+    # ままで取り残されていた。通常運用ではbuild_cli_command()の戻り値で即座に上書きされ
+    # 実害はないが、adapter読込失敗時に旧モデルへ落ちる潜在的な罠であり、cmd_869にて是正した。
     p=$((PANE_BASE + _ASHIGARU_COUNT + 1))
     _gunshi_cli_type="claude"
-    _gunshi_cmd="claude --model claude-opus-5 $PERMISSION_FLAG"
+    _gunshi_cmd="claude --model claude-opus-5-5 $PERMISSION_FLAG"
     if [ "$CLI_ADAPTER_LOADED" = true ]; then
         _gunshi_cli_type=$(get_cli_type "gunshi")
         _gunshi_cmd=$(build_cli_command "gunshi")
@@ -861,6 +872,44 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
         log_success "✅ 決戦の陣で出陣！全軍Opus！"
     else
         log_success "✅ 平時の陣で出陣（家老=Sonnet, 足軽=Sonnet, 軍師1=Opus, 軍師2=Fable）"
+    fi
+    echo ""
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # STEP 6.4: model明示ID固定のalias漂流検知(cmd_869・出直し時のみ・新規常駐禁止)
+    # ───────────────────────────────────────────────────────────────────────────
+    # shogun/karo/gunshi/gunshi2は明示ID固定済みだが、(a)aliasの現在解決先が
+    # 固定値と食い違っていないか、(b)固定値自体が現CLIで通らなくなっていないか
+    # の2種を、出直しの都度(このステップのみ・cronや常駐プロセスは追加しない)
+    # 検知する。鳴るのは食い違い/不通時のみ(狼少年化防止)。
+    # ═══════════════════════════════════════════════════════════════════════════
+    if [ -f "$SCRIPT_DIR/lib/model_drift_check.sh" ]; then
+        # shellcheck source=lib/model_drift_check.sh
+        source "$SCRIPT_DIR/lib/model_drift_check.sh"
+        _model_drift_findings=$(check_model_drift)
+        if [ -n "$_model_drift_findings" ]; then
+            log_war "🚨 model drift検知: 明示ID固定とaliasの間に食い違い/不通あり"
+            _model_drift_now_iso=$(date '+%Y-%m-%dT%H:%M:%S%z')
+            if [ -f "$SCRIPT_DIR/dashboard.md" ]; then
+                _model_drift_marker=$(grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$SCRIPT_DIR/dashboard.md" | cut -d: -f1)
+                _model_drift_tmp=$(mktemp)
+                while IFS= read -r _md_line; do
+                    [ -z "$_md_line" ] && continue
+                    printf -- '- 🚨 [model_drift] %s @ %s\n' "$_md_line" "$_model_drift_now_iso"
+                done <<< "$_model_drift_findings" > "$_model_drift_tmp"
+                if [ -n "$_model_drift_marker" ]; then
+                    _model_drift_out=$(mktemp)
+                    sed "${_model_drift_marker}r ${_model_drift_tmp}" "$SCRIPT_DIR/dashboard.md" > "$_model_drift_out" && mv "$_model_drift_out" "$SCRIPT_DIR/dashboard.md"
+                else
+                    { echo ""; cat "$_model_drift_tmp"; } >> "$SCRIPT_DIR/dashboard.md"
+                fi
+                rm -f "$_model_drift_tmp"
+            fi
+            bash "$SCRIPT_DIR/scripts/ntfy.sh" --kind 要確認 --eta 数分 \
+                --body "model drift検知: 明示ID固定のaliasとの食い違い/不通あり。dashboard.md🚨参照" 2>/dev/null || true
+        else
+            log_info "  └─ model drift検知: 異常無し"
+        fi
     fi
     echo ""
 
