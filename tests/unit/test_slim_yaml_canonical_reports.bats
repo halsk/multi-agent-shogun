@@ -44,6 +44,15 @@ run_slim_yaml() {
     "$PYTHON_BIN" "$root/scripts/slim_yaml.py" "$@"
 }
 
+# ★GNUのstat -fはBSDと意味が違う(ファイルシステム情報表示・%mを渡しても
+# エラーにならず無関係な出力を返す)ため、GNU形式(-c)を先に試し、BSD特有の
+# 場合のみ-fへfallbackする(scripts/console_stall_watchdog.sh の
+# file_mtime_epoch と同じ作法)。逆順にすると Linux CI で
+# "integer expression expected" になる(cmd_karo_20260925実測)。
+file_mtime_epoch() {
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null
+}
+
 # ── T-SYCR-001 (RED対照): 是正前のslim_reports()は正典ashigaru{N}_report.yaml
 # をCANONICAL_REPORTS判定で常にスキップし、多重ドキュメント肥大を一切
 # 縮小しない(旧slim_reports単体の挙動をそのまま呼んで実証) ──
@@ -231,12 +240,12 @@ report:
   status: done
 YAML
     touch -t 202501010000 "$root/queue/reports/ashigaru1_report.yaml"
-    before_mtime=$(stat -f '%m' "$root/queue/reports/ashigaru1_report.yaml" 2>/dev/null || stat -c '%Y' "$root/queue/reports/ashigaru1_report.yaml")
+    before_mtime=$(file_mtime_epoch "$root/queue/reports/ashigaru1_report.yaml")
 
     run run_slim_yaml "$root" karo
     [ "$status" -eq 0 ]
 
-    after_mtime=$(stat -f '%m' "$root/queue/reports/ashigaru1_report.yaml" 2>/dev/null || stat -c '%Y' "$root/queue/reports/ashigaru1_report.yaml")
+    after_mtime=$(file_mtime_epoch "$root/queue/reports/ashigaru1_report.yaml")
     [ "$before_mtime" -eq "$after_mtime" ]
 
     rm -rf "$root"
@@ -259,7 +268,7 @@ previous_report_cmd100:
   status: done
 YAML
     touch -t 202501010000 "$root/queue/reports/ashigaru5_report.yaml"
-    before_mtime=$(stat -f '%m' "$root/queue/reports/ashigaru5_report.yaml" 2>/dev/null || stat -c '%Y' "$root/queue/reports/ashigaru5_report.yaml")
+    before_mtime=$(file_mtime_epoch "$root/queue/reports/ashigaru5_report.yaml")
 
     run run_slim_yaml "$root" karo
     [ "$status" -eq 0 ]
@@ -268,7 +277,7 @@ YAML
     run grep -c "previous_report_cmd100" "$root/queue/reports/ashigaru5_report.yaml"
     [ "$output" = "0" ]
 
-    after_mtime=$(stat -f '%m' "$root/queue/reports/ashigaru5_report.yaml" 2>/dev/null || stat -c '%Y' "$root/queue/reports/ashigaru5_report.yaml")
+    after_mtime=$(file_mtime_epoch "$root/queue/reports/ashigaru5_report.yaml")
     [ "$before_mtime" -eq "$after_mtime" ]
 
     rm -rf "$root"
