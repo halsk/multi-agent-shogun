@@ -39,11 +39,26 @@ MODEL_DRIFT_PROBE_DIR="${MODEL_DRIFT_PROBE_DIR:-}"
 # 戻り値: claudeコマンド自体の終了コードをそのまま返す(124=timeout)
 _model_drift_probe() {
     local model_arg="$1"
-    local probe_dir="${MODEL_DRIFT_PROBE_DIR:-$(mktemp -d /tmp/model_drift_probe.XXXXXX)}"
+    # MODEL_DRIFT_PROBE_DIR未指定時のみ自前でtmp dirを作る(テストは固定パスを
+    # 渡すため、その場合は呼び出し元の管理下にあり、ここで削除してはならない)。
+    local probe_dir="$MODEL_DRIFT_PROBE_DIR"
+    local self_created=false
+    if [ -z "$probe_dir" ]; then
+        probe_dir="$(mktemp -d /tmp/model_drift_probe.XXXXXX)"
+        self_created=true
+    fi
+    local rc
     (
         cd "$probe_dir" || exit 90
         timeout "$MODEL_DRIFT_TIMEOUT_SEC" "$MODEL_DRIFT_CLAUDE_BIN" --model "$model_arg" -p "1+1" --output-format json 2>/dev/null
     )
+    rc=$?
+    # ★自前で作った一時dirは使い捨て——放置すると出直しの都度/tmpにゴミが
+    # 溜まる(長期運用での小さな蓄積問題)。呼び出し元指定分は消さない。
+    if [ "$self_created" = true ]; then
+        rm -rf "$probe_dir"
+    fi
+    return "$rc"
 }
 
 # _model_drift_canonical(json) → modelUsageの先頭キー(=解決後canonicalModel)。
