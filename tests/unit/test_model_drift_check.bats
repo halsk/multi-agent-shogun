@@ -267,6 +267,18 @@ teardown() {
 # (このRED/GREEN自体もset -e下で実行し、実際の呼出し文脈を再現する)。
 
 @test "F1 RED: 連想配列(declare -gA)はbash 3.2 + set -e下でexit 2により処理を停止させる(退行防止の生きた実証)" {
+    # ★/bin/bashが実際にbash 3.2(legacy)であるかはOS依存(macOS標準は3.2固定・
+    # Ubuntu等のLinuxディストロは/bin/bashが最新版な場合が多く、declare -Aが
+    # そのまま通ってしまう)。この事実はホスト依存でありCIのOS選択次第で
+    # 変わるため、bash_majorが4以上(=declare -Aをネイティブ対応)の環境では
+    # このRED実演自体が成立しない——SKIP=FAILの例外(「CI environment」)として
+    # 明示的にskipする(テストの説明そのものが「/bin/bashが legacy 3.xの環境
+    # でのみ再現するdemonstrationである」ことを示している)。
+    local bash_major
+    bash_major=$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')
+    if [ "$bash_major" -ge 4 ]; then
+        skip "/bin/bash here is bash ${bash_major}.x (declare -A natively supported) — this RED demonstration only reproduces where /bin/bash is legacy 3.x, e.g. macOS default (CI environment: bash_major=${bash_major})"
+    fi
     # ★これは「旧実装のgit差分」ではなく「declare -gAという構文そのもの」を
     # 対象にした回帰テストである——将来誰かが本ファイルへ連想配列を
     # 再導入すれば、この事実そのものは変わらず、GREEN側のテストが落ちる
