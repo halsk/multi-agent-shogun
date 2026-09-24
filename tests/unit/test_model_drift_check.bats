@@ -257,46 +257,77 @@ teardown() {
 }
 
 # ─────────────────────────────────────────────────────────────────
-# F1是正: bash 3.2(declare -A/-gA非対応)でのRED→GREEN実測
+# F1是正: bash 3.2(declare -A/-gA非対応)でも実際に動作することの実証
 # ─────────────────────────────────────────────────────────────────
 #
-# ★実機(macOS標準/bin/bash)で確認済み: `GNU bash, version 3.2.57`。
-# declare -A/-gAはbash 4以降専用の機能であり、bash 3.2ではdeclare自体が
-# "invalid option"でexit 2を返す。これがshutsujin_departure.shのように
-# `set -e`が有効な文脈でsourceされると、そこでスクリプト全体が停止する
-# (このRED/GREEN自体もset -e下で実行し、実際の呼出し文脈を再現する)。
+# ★軍師QC(2回目)差し戻し(subtask_cmd869a3)を受けての是正: 旧F1 RED専用
+# テストはbash_major>=4の環境でskipされる構造であり、そのskip理由文言
+# "(CI environment: bash_major=5)" が`.github/workflows/test.yml`の
+# SKIP検査除外パターン"CI environment"に意図せず一致し、CI(ubuntu-latest)
+# で新規SKIPが発生していたのに素通りしていた(軍師実測: CI run
+# 35953220025)。さらにこのRED自体はbash自体の構文特性(declare -gAが
+# bash 4未満で使えるか)を試すだけで、本来検知したいcheck_model_drift関数の
+# 挙動を試せておらず空虚だった。
+#
+# ★是正: RED専用テストを削除し、GREEN側を「/bin/bashで実際に
+# check_model_driftをモックclaude相手に最後まで走らせ、正常系(検知なし)
+# ・不一致検知系の両方で正しい結果を返すこと」まで強化する。実機
+# (macOS標準/bin/bash)で確認済み: `GNU bash, version 3.2.57`——macOS
+# runnerの/bin/bashはbash 3.2固定であるため、下記GREENテストがmacOS
+# runner上でSKIP無くPASSすること自体が「bash 3.2でも正しく動作する」
+# ことの本物の証拠になり、bashバージョンに依存してskipされうる別建ての
+# RED実証は不要になる(将来誰かが本ファイルへ連想配列を再導入すれば、
+# このGREENテスト自体がsource段階で失敗し検知できる)。
 
-@test "F1 RED: 連想配列(declare -gA)はbash 3.2 + set -e下でexit 2により処理を停止させる(退行防止の生きた実証)" {
-    # ★/bin/bashが実際にbash 3.2(legacy)であるかはOS依存(macOS標準は3.2固定・
-    # Ubuntu等のLinuxディストロは/bin/bashが最新版な場合が多く、declare -Aが
-    # そのまま通ってしまう)。この事実はホスト依存でありCIのOS選択次第で
-    # 変わるため、bash_majorが4以上(=declare -Aをネイティブ対応)の環境では
-    # このRED実演自体が成立しない——SKIP=FAILの例外(「CI environment」)として
-    # 明示的にskipする(テストの説明そのものが「/bin/bashが legacy 3.xの環境
-    # でのみ再現するdemonstrationである」ことを示している)。
-    local bash_major
-    bash_major=$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"')
-    if [ "$bash_major" -ge 4 ]; then
-        skip "/bin/bash here is bash ${bash_major}.x (declare -A natively supported) — this RED demonstration only reproduces where /bin/bash is legacy 3.x, e.g. macOS default (CI environment: bash_major=${bash_major})"
-    fi
-    # ★これは「旧実装のgit差分」ではなく「declare -gAという構文そのもの」を
-    # 対象にした回帰テストである——将来誰かが本ファイルへ連想配列を
-    # 再導入すれば、この事実そのものは変わらず、GREEN側のテストが落ちる
-    # ことで検知できる(下のGREENテスト参照)。
-    run /bin/bash -c 'set -e; declare -gA _TEST_ASSOC=(); echo GOT_HERE'
-    [ "$status" -ne 0 ]
-    [[ "$output" != *"GOT_HERE"* ]]
-}
-
-@test "F1 GREEN: 現行lib/model_drift_check.shはbash 3.2 + set -e下でもexit 0でsourceでき、check_model_driftが定義される" {
+@test "F1 GREEN: /bin/bash + set -e下でcheck_model_driftをモックclaude相手に最後まで実行し、正常系(検知なし)を確認する" {
     run /bin/bash -c "
 set -e
-get_agent_model() { echo 'claude-opus-5-5'; }
+get_agent_model() {
+    case \"\$1\" in
+        shogun)  echo 'claude-opus-5-5' ;;
+        karo)    echo 'claude-sonnet-5' ;;
+        gunshi)  echo 'claude-opus-5-5' ;;
+        gunshi2) echo 'claude-fable-5-1' ;;
+        *)       echo '' ;;
+    esac
+}
 source '${PROJECT_ROOT}/lib/model_drift_check.sh'
-echo GOT_HERE
-type check_model_drift >/dev/null 2>&1 && echo FUNC_DEFINED
+export MODEL_DRIFT_CLAUDE_BIN='${MOCK_CLAUDE}'
+export MODEL_DRIFT_PROBE_DIR='${PROBE_DIR}'
+export MODEL_DRIFT_TIMEOUT_SEC=5
+check_model_drift
+echo \"EXIT_CODE:\$?\"
 "
     [ "$status" -eq 0 ]
-    [[ "$output" == *"GOT_HERE"* ]]
-    [[ "$output" == *"FUNC_DEFINED"* ]]
+    # 正常系: findingsが1件も無いこと("EXIT_CODE:0"のみが出力の全て)
+    [ "$output" = "EXIT_CODE:0" ]
+}
+
+@test "F1 GREEN: 同条件下でalias不一致を人工再現するとcheck_model_driftが実際に検知する(空虚でない実証)" {
+    # opus aliasが claude-opus-6(架空の新モデル)へ黙って動いた状況を人工的に再現
+    printf '{"is_error":false,"modelUsage":{"claude-opus-6":{"canonicalModel":"claude-opus-6"}}}' \
+        > "${MOCK_RESPONSES_DIR}/opus.json"
+
+    run /bin/bash -c "
+set -e
+get_agent_model() {
+    case \"\$1\" in
+        shogun)  echo 'claude-opus-5-5' ;;
+        karo)    echo 'claude-sonnet-5' ;;
+        gunshi)  echo 'claude-opus-5-5' ;;
+        gunshi2) echo 'claude-fable-5-1' ;;
+        *)       echo '' ;;
+    esac
+}
+source '${PROJECT_ROOT}/lib/model_drift_check.sh'
+export MODEL_DRIFT_CLAUDE_BIN='${MOCK_CLAUDE}'
+export MODEL_DRIFT_PROBE_DIR='${PROBE_DIR}'
+export MODEL_DRIFT_TIMEOUT_SEC=5
+check_model_drift
+"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"shogun"* ]]
+    [[ "$output" == *"alias opus"* ]]
+    [[ "$output" == *"不一致"* ]]
+    [[ "$output" == *"claude-opus-6"* ]]
 }
