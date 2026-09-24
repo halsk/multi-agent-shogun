@@ -75,14 +75,23 @@ SKIP = FAIL(Iron Law 3)。1 件でも SKIP があれば未完了として扱う�
 
 `code-review-expert` skill(`--auto`)を実行し、指摘をゼロにしてから次工程へ進む。
 
-### Step 7: PR 作成
+### Step 7: PR 作成(draft first・cmd_871)
 
 ```bash
-gh pr create --repo <owner>/<repo> --title "..." --body "..."
+gh pr create --draft --repo <owner>/<repo> --title "..." --body "..."
 ```
 
 - halsk/multi-agent-shogun は Issue First 免除・CodeRabbit 不要(それ以外の repo は project 方針に従う)
 - `--repo` を必ず明示する(フォーク元への誤 PR 防止。省略すると upstream に誤って PR が飛ぶ実例あり)
+- ★CodeRabbit 導入 repo(halsk/* 以外)は **必ず `--draft` で開く**。中央設定
+  (`geolonia/coderabbit`)は `auto_review.drafts: false` であり、draft 中は
+  CodeRabbit がレビューしない。Adaptive Fair Usage は直近7日のレビュー数で
+  毎時枠自体を引き下げる仕組みのため、未完成な差分への重ねレビューで枠を
+  浪費してはならない。
+- 是正の push は draft のまま済ませ、仕上がってから **一度だけ**
+  `gh pr ready <N> --repo <owner>/<repo>` で ready にする。ready 化した時点で
+  初めてレビューが走る(レビューを避けるのではなく、未完成物への重複
+  レビューを避けるための運用)。
 
 ### Step 8: CI + CodeRabbit 解消
 
@@ -91,6 +100,11 @@ gh pr checks <N>
 ```
 
 CI green を確認。CodeRabbit 導入 repo では reviewThreads(unresolved)がゼロであることを確認してからマージ可能状態とする。
+★確認は reviewThreads だけでは不十分——CodeRabbit の commit status は
+未レビュー(`Review skipped` / `Review rate limited` / `Reviews paused`)でも
+`state=success` を返す(draft→ready 直後は特にこの状態になりやすい)。
+`bash scripts/coderabbit_review_gate.sh <owner/repo> <PR番号>` で description まで
+見た判定を行い、`UNREVIEWED: ...` が返る間はマージ可能状態と見なさない。
 
 ### Step 9: ブラウザ検証(UI 変更を伴う場合)
 

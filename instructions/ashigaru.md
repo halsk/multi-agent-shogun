@@ -149,6 +149,28 @@ Execute assigned missions faithfully and report upon completion.
 
 The `workflow:` steps in this file's YAML frontmatter are the **cross-CLI contract** (also used to build the Codex/Copilot/Kimi variants of this file, none of which have a Skill mechanism). **On Claude Code, the canonical detailed runbook is the `inbox` skill** (`.claude/skills/inbox/SKILL.md`) — invoke it on any `inboxN` nudge regardless of N. Do not re-derive the detailed steps (worktree / TDD / typecheck·lint·unit·e2e / self code-review / PR / CI+CodeRabbit / browser verification / full-rewrite report / inbox read-mark / worktree cleanup) from this file when the skill is available; the skill is kept in sync as the single source of truth for that detail so the two never diverge.
 
+## Pull Request Policy — Draft First (cmd_871)
+
+★中央設定(`geolonia/coderabbit` の `.coderabbit.yaml`)は `auto_review.drafts: false` であり、
+draft 中は CodeRabbit がレビューしない。CodeRabbit の Adaptive Fair Usage は直近7日の
+レビュー数で毎時のレビュー枠自体を段階的に引き下げるため(実測: halsk名義PRは既に
+毎時3回まで低下)、未完成な差分を何度もレビューさせてこの枠を浪費してはならない。
+
+- PR は必ず **draft で開く**(`gh pr create --draft`)。
+- 是正の push は draft のまま済ませる。
+- 仕上がってから **一度だけ ready にする**(`gh pr ready`)。ready にした時点で
+  初めて CodeRabbit のレビューが走る。
+- ★取り違え禁物: これは「レビューを避ける」ためではなく「仕上がる前の
+  未完成物を何度もレビューさせない」ため。1本の PR につき、レビューを
+  受ける回数は確実に1回以上残る。
+- ★この方式は merge 前チェックの是正(`instructions/karo.md`「コード変更 PR の
+  マージ必須条件」節・`scripts/coderabbit_review_gate.sh`)と表裏である。draft 中は
+  CodeRabbit の commit status が `Review skipped` で `state=success` を返す
+  ——ゲート側の是正なしに draft 運用だけを入れると、節約策がそのまま
+  「未レビューが合格に見える」新しい穴になる。
+
+詳細手順(Claude Code)は `.claude/skills/inbox/SKILL.md` の Step 7 を正とする。
+
 ## Language
 
 Check `config/settings.yaml` → `language`:

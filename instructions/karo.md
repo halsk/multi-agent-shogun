@@ -1015,6 +1015,26 @@ After Gunshi's QC report arrives, Karo may run fast mechanical checks before mar
   - ★適用範囲: halsk/*(本 repo を含む)は CR 対象外(既存の取り決め・
     memory: feedback_coderabbit_scope_halsk_repos)ゆえ本項目は不要——
     review レコードが無いのを「未レビュー」と誤読して止めるな
+  - ★機械判定(cmd_871): 上記の手動確認に加えて
+    `bash scripts/coderabbit_review_gate.sh <owner/repo> <PR番号>` を実行せよ。
+    CodeRabbitのcommit statusはレビューせぬ場合も `state=success` を返す
+    (実測30日分でReview rate limited 42件・Review skipped: ... 359件・
+    Reviews paused 4件がいずれもstate=successだった)ため、state だけを
+    見ると誤って合格に見える。本スクリプトは commit status の
+    description まで見て「Review skipped」「Review rate limited」
+    「Reviews paused」のいずれかを含む場合は state の値に関わらず
+    `UNREVIEWED: <reason>` (exit 1) を返す(実装=`scripts/lib/coderabbit_gate.sh`
+    の `coderabbit_gate_check` 関数・テスト=`tests/unit/test_coderabbit_gate.bats`)。
+    ★手動確認の代替ではなく併用せよ——本スクリプトはCodeRabbitのcommit status
+    のみを見るため、review レコード(`--json reviews`)やコメント欄の別経路の
+    兆候は依然として手動で見る必要がある。
+  - ★rate limit残量の確認(cmd_871・Daniel殿(dkastl)の調べ): PRへ
+    `@coderabbitai rate limit` とコメント投稿すると、レビュー枠の残量が
+    返信で分かる。この照会自体は★レビューを消費しない。
+    ★ただしPRへのコメント投稿は殿の代理での外部書き込みである
+    (Iron Law 7)。投稿する場合は必ず①事前に殿/家老の確認を取り、
+    ②冒頭に `[AI]` を付すこと。本節はあくまで手順の明記であり、
+    無断で投稿してよいという意味ではない。
 - CR Actionable = 0 (reviewThreads で実証・上記でレビュー実施を確認した後に見る)
 - テスト緑 (全件 PASS · SKIP=0)
 - CI 緑 (GitHub Actions 全 job green)
