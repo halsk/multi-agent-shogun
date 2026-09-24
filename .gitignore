@@ -119,6 +119,7 @@
 # Context README
 !context/
 !context/README.md
+!context/coderabbit-adaptive-fair-usage.md
 
 # Python venv
 !requirements.txt
@@ -169,6 +170,9 @@
 !scripts/check_sc2314_baseline.sh
 !scripts/pre_deploy_verify.sh
 !scripts/auto_merge_short_lived.sh
+!scripts/coderabbit_review_gate.sh
+!scripts/lib/
+!scripts/lib/coderabbit_gate.sh
 !scripts/com.swarm.branch-drift-check.plist
 !scripts/com.swarm.pre-deploy-verify.plist
 
