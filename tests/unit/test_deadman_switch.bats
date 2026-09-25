@@ -61,6 +61,12 @@ STUB
   # 明示的にテストするケースのみ、各testでこの変数へ実ファイルを書く)。
   export DEADMAN_KARO_INBOX="$TMP_DIR/karo_inbox.yaml"
   export DEADMAN_SHOGUN_INBOX="$TMP_DIR/shogun_inbox.yaml"
+  # cmd_880: HC_PING_URL_DEADMAN取得口を実在せぬパスへ差し替える。本ファイルの
+  # 既存27テストはHC ping配線を意識していないため、差し替えを怠ると実Keychainから
+  # 実ping URLを取得し実curlで本番Healthchecksへping送信してしまう
+  # (実際に本is修正の開発中、この隔離漏れにより新規checkへ実ping34件が送信される
+  # 事故を起こした・実害は開発中の一時checkのみで本番監視への影響は無かった)。
+  export DEADMAN_GET_SECRET="$TMP_DIR/nonexistent-get-secret.sh"
 }
 
 teardown() {
