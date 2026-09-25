@@ -26,21 +26,6 @@
 #       gh自体の不調をok扱いのまま握り潰さない(この検知の目的そのものが
 #       「黙って死んでいる」を見つけることなので、検知器自身が黙って死ぬのは
 #       本末転倒)。
-#       ★2026-09-25是正(家老起票): 直近PRとworkflow runの紐付けは、以前は
-#       runの`pull_requests`フィールド(any(.number == N))で行っていたが、
-#       ★このフィールドはPRがmerge/close済みだと常に空配列`[]`になる
-#       (GitHubの既知挙動・event=pull_requestで発火したrunであっても同様・
-#       実物PR#149/run 35058504745で実証済み)。この家はPRを作ってすぐmerge
-#       する運用のため、heartbeatチェックが実行される頃には対象PRはほぼ
-#       常にmerge済みであり、旧方式は実質ほぼ常に「stale」を誤って報告する
-#       構造だった。★PRのhead_sha(`.head.sha`)とworkflow runの`head_sha`を
-#       直接突き合わせる方式に変更。PRがmerge済みでも、そのheadのcommitが
-#       runに使われた事実は変わらないため正しく突き合わせられる。
-#
-#   _ci_heartbeat_match_head_sha <pr_head_sha> <runs_json>
-#     → runs_json([{head_sha,created_at}, ...]の配列)からpr_head_shaに一致する
-#       最初のrunのcreated_atを返す(見つからなければ空文字)。gh apiを叩かず
-#       単体テスト可能な純関数(ci_heartbeat_judgeと同方針)。
 #
 #   ci_heartbeat_judge <pr_created_epoch> <matched_run_epoch> <grace_sec> <now_epoch>
 #     → "<status>|<detail>" を返す。status は ok / stale のいずれか(pure関数・
@@ -81,31 +66,17 @@ ci_heartbeat_fetch() {
     return
   fi
 
-  local pr_head_sha
-  pr_head_sha=$(gh api "repos/${owner_repo}/pulls/${pr_number}" --jq '.head.sha // ""' 2>/dev/null)
-  if [[ ! "$pr_head_sha" =~ ^[0-9a-f]{7,40}$ ]]; then
-    # PR詳細取得失敗・head_sha取得不能 → runとの突き合わせ不能。
-    # pr_created_epochはそのまま返しjudge側のgrace_secに委ねる(gh api全体の
-    # 断ではないため-1|-1にはしない)。
-    echo "${pr_created_epoch}|0"
-    return
-  fi
-
-  local runs_json matched_iso matched_epoch
-  runs_json=$(gh api "repos/${owner_repo}/actions/workflows/${workflow_file}/runs?per_page=20" \
-    --jq '[.workflow_runs[] | {head_sha, created_at}]' 2>/dev/null)
-  matched_iso=$(_ci_heartbeat_match_head_sha "$pr_head_sha" "$runs_json")
+  # pr_numberは直前でGitHub API自身の.number(整数)であることを検証済み
+  # (0でなければ数値)。gh api --jqは--argを受け付けない(gh api本体の引数と
+  # 解釈され "accepts 1 arg(s)" で失敗する・将軍実測)ため、jqフィルタ文字列へ
+  # 直接埋め込む。
+  local matched_iso matched_epoch
+  matched_iso=$(gh api "repos/${owner_repo}/actions/workflows/${workflow_file}/runs?per_page=20" \
+    --jq ".workflow_runs[] | select((.pull_requests // []) | any(.number == ${pr_number})) | .created_at" \
+    2>/dev/null | head -1)
   matched_epoch=$(_ci_iso_to_epoch "$matched_iso")
 
   echo "${pr_created_epoch}|${matched_epoch}"
-}
-
-_ci_heartbeat_match_head_sha() {
-  local pr_head_sha="$1"
-  local runs_json="$2"
-  [[ -z "$runs_json" ]] && { echo ""; return; }
-  echo "$runs_json" | jq -r --arg sha "$pr_head_sha" \
-    '[.[] | select(.head_sha == $sha)] | (.[0].created_at // "")' 2>/dev/null
 }
 
 ci_heartbeat_judge() {

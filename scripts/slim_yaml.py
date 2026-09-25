@@ -9,6 +9,7 @@ Removes completed/archived items from YAML queue files to maintain performance.
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -256,6 +257,153 @@ def slim_reports(dry_run=False):
     return archived_count
 
 
+_TIMESTAMP_KEY_RE = re.compile(r'(?:^|_)timestamp$', re.IGNORECASE)
+
+
+def _top_level_duplicate_keys(node):
+    """Top-level mapping keys that appear more than once in a document's
+    *raw* composed node -- i.e. before PyYAML's constructor silently keeps
+    only the last value and hides the collision. Returns a list of the
+    duplicated key names (empty if the document isn't a top-level mapping
+    or has no duplicates)."""
+    if not isinstance(node, yaml.MappingNode):
+        return []
+    keys = [k.value for k, _ in node.value if isinstance(k, yaml.ScalarNode)]
+    seen = set()
+    dupes = []
+    for k in keys:
+        if k in seen and k not in dupes:
+            dupes.append(k)
+        seen.add(k)
+    return dupes
+
+
+def _max_nested_timestamp(node):
+    """Recursively find the latest parseable ISO-8601 value under any key
+    matching /(_|^)timestamp$/ anywhere inside a nested dict/list (not just
+    the top level -- real canonical reports nest a `timestamp` field one or
+    more levels under a named report key, e.g. `report_854_...: {timestamp:
+    ...}`). Returns a naive datetime (tzinfo stripped) or None if no
+    parseable timestamp is found anywhere in the document.
+
+    tzinfo is stripped rather than reconciled because this repo writes
+    timestamps consistently with a +09:00 (JST) offset; stripping preserves
+    relative order without needing to handle mixed offsets, and is only
+    used to compare documents against each other, never shown to a human."""
+    best = None
+
+    def visit(value):
+        nonlocal best
+        if isinstance(value, dict):
+            for key, val in value.items():
+                if isinstance(key, str) and _TIMESTAMP_KEY_RE.search(key) and isinstance(val, str):
+                    try:
+                        parsed = datetime.fromisoformat(val).replace(tzinfo=None)
+                    except ValueError:
+                        parsed = None
+                    if parsed is not None and (best is None or parsed > best):
+                        best = parsed
+                visit(val)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(node)
+    return best
+
+
+def _collect_task_ids(node, out):
+    """Recursively collect every value found under a `task_id` key anywhere
+    inside a nested dict/list, into the `out` set."""
+    if isinstance(node, dict):
+        for key, val in node.items():
+            if key == 'task_id' and isinstance(val, str):
+                out.add(val)
+            _collect_task_ids(val, out)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_task_ids(item, out)
+
+
+def _current_task_id_for_agent(agent_id):
+    """The task_id queue/tasks/{agent_id}.yaml currently assigns this
+    agent, or None if the file is missing/idle/malformed."""
+    task_file = get_queue_dir() / 'tasks' / f'{agent_id}.yaml'
+    data = load_yaml(task_file)
+    task = data.get('task') if isinstance(data, dict) else None
+    if isinstance(task, dict):
+        task_id = task.get('task_id')
+        if isinstance(task_id, str):
+            return task_id
+    return None
+
+
+def _select_current_entry(entries, agent_id):
+    """Pick which document in a multi-document canonical report is the
+    live/current one -- WITHOUT relying on its position in the file
+    (家老起票2026-09-25 redo・B1: 実データで「先頭が最新」であることが
+    判明し、「末尾が最新」という旧前提が偽であると確認された。位置は
+    信頼できる新旧の手がかりではない)。
+
+    Priority (軍師が示唆した方式を軸に据える):
+      1) queue/tasks/{agent_id}.yaml の現在のtask_idと一致する、
+         ただ1件のドキュメント(存在すれば最有力の裏付け)。
+      2) ドキュメント内のどこかに現れるtimestampフィールドの再帰的な
+         最大値(存在するドキュメントの中で最大のものが現在値)。
+      3) いずれでも一意に決められない場合は判定不能として扱い、
+         何も退避しない(安全側に倒す)。
+
+    Returns (current_entry_or_None, archived_entries, warnings).
+    archived_entries is only ever entries *provably* older than the
+    chosen current entry; anything whose recency can't be determined
+    (no timestamp, or tied for newest) is left out of archived_entries so
+    it stays in the file untouched rather than risk discarding live data."""
+    warnings = []
+
+    if len(entries) == 1:
+        return entries[0], [], warnings
+
+    current_task_id = _current_task_id_for_agent(agent_id)
+    if current_task_id:
+        matches = []
+        for e in entries:
+            ids = set()
+            _collect_task_ids(e['doc'], ids)
+            if current_task_id in ids:
+                matches.append(e)
+        if len(matches) == 1:
+            archived = [e for e in entries if e is not matches[0]]
+            return matches[0], archived, warnings
+        if len(matches) > 1:
+            warnings.append(
+                f"現在のtask_id({current_task_id})が複数ドキュメントに現れており"
+                "一意に判定できないため、このファイルは一切退避しない"
+            )
+            return None, [], warnings
+
+    timestamped = [(e, _max_nested_timestamp(e['doc'])) for e in entries]
+    determinable = [(e, ts) for e, ts in timestamped if ts is not None]
+    if not determinable:
+        warnings.append(
+            "いずれのドキュメントにも比較可能なtimestampが見つからず"
+            "新旧を判定できないため、このファイルは一切退避しない"
+        )
+        return None, [], warnings
+
+    max_ts = max(ts for _, ts in determinable)
+    winners = [e for e, ts in determinable if ts == max_ts]
+    if len(winners) > 1:
+        warnings.append(
+            "最大timestampを持つドキュメントが複数あり一意に判定できないため、"
+            "このファイルは一切退避しない"
+        )
+        return None, [], warnings
+
+    current = winners[0]
+    archived = [e for e, ts in determinable if ts < max_ts]
+    return current, archived, warnings
+
+
 def slim_canonical_reports(dry_run=False):
     """Bloat countermeasure for canonical per-agent report YAML files
     (ashigaru{1-8}_report.yaml / gunshi_report.yaml), which slim_reports()
@@ -263,26 +411,23 @@ def slim_canonical_reports(dry_run=False):
     current-status entry karo/gunshi read directly, not a stale/parent_cmd
     -linked artifact that can simply be moved wholesale.
 
-    Two independent, structurally-safe signals -- deliberately NOT a
-    semantic "does this look old" guess, to avoid ever archiving away the
-    live current status these files are read for:
+    家老起票2026-09-25(subtask_karo_20260925_watchdog_fixes_redo1)による
+    是正: 旧実装は「多重YAMLドキュメントは常に末尾が最新」という前提で
+    `docs[:-1]`を無条件に退避していたが、実データ(ashigaru2_report.yaml)
+    でこの前提が偽であると判明した(先頭ドキュメントの方が末尾より新しい
+    実例が実在した)。現在値の判定はファイル内の位置に一切依存せず、
+    `_select_current_entry()`(queue/tasks/{agent}.yamlとの突合を優先し、
+    次いでドキュメント内timestampの再帰比較、いずれでも一意に定まらなければ
+    何も退避しない)に委ねる。
 
-      A) Multi-document YAML stream (`---`-separated). Agents only ever
-         append a new document at the END of the file (cmd_726 report_flow
-         append pattern), so every document except the last is a strictly
-         older, fully-superseded entry -- true by construction, not
-         inferred from content.
-      B) Within the remaining single document, top-level keys the writing
-         agent itself already named as historical
-         (CANONICAL_REPORT_OLD_KEY_PREFIXES) -- a self-declared signal from
-         the author, not a heuristic guess.
+    加えて、同一ドキュメント内でトップレベルキーが重複する場合(YAMLの
+    safe_loadは黙って後勝ちで前の値を握り潰す)を検知し、該当ドキュメントは
+    今回のスイープでは一切触れない(触れれば「握り潰された値」を含む状態を
+    そのまま確定させてしまうため)。
 
-    A third bloat pattern exists in the wild (undecorated report_cmdXXX_*
-    or bare cmdXXX_* sibling keys with no old/previous self-labeling,
-    e.g. ashigaru4/ashigaru6) where "which key is current" cannot be
-    determined safely from structure alone; this function intentionally
-    leaves those untouched rather than risk archiving away a live status
-    entry.
+    退避後も残る2つ目の独立シグナル(B): 現在ドキュメント内で、書いた本人が
+    既に「古い」と自己申告しているtrailerキー(CANONICAL_REPORT_OLD_KEY_
+    PREFIXES)。
 
     Returns the number of archived documents+keys across all canonical
     report files, or -1 on error."""
@@ -293,7 +438,7 @@ def slim_canonical_reports(dry_run=False):
     if not reports_dir.exists():
         return 0
 
-    timestamp = get_timestamp()
+    file_timestamp = get_timestamp()
     archived_count = 0
 
     for filepath in sorted(reports_dir.glob('*.yaml')):
@@ -302,22 +447,69 @@ def slim_canonical_reports(dry_run=False):
 
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                docs = [doc for doc in yaml.safe_load_all(f) if doc is not None]
+                text = f.read()
+        except OSError as e:
+            print(f"Error reading {filepath}: {e}", file=sys.stderr)
+            continue
+
+        # nodes(構造・重複キー検知用)と docs(構築済みの値そのもの)は、
+        # 同一テキストに対するYAMLの決定的なドキュメント境界解析なので
+        # 必ず1対1で対応する。生テキストを都度スライスして再パースする
+        # 手法は、複数行ブロックスカラー等を含む実データで境界がずれ
+        # 「mapping values are not allowed here」を誘発したため採らない
+        # (実データでの検証で発覚・将軍実測)。
+        try:
+            nodes = [n for n in yaml.compose_all(text) if n is not None]
+            docs = [d for d in yaml.safe_load_all(text) if d is not None]
         except yaml.YAMLError as e:
             print(f"Error parsing {filepath}: {e}", file=sys.stderr)
             continue
 
-        if not docs:
+        if len(nodes) != len(docs):
+            # 理論上は起こり得ない(同一テキストの決定的な境界解析)が、
+            # 万一の食い違いを検知したら安全側に倒し一切触れない。
+            print(
+                f"[WARN] {filepath}: ドキュメント数の解析結果が一致しない"
+                f"({len(nodes)} nodes vs {len(docs)} docs)ため、"
+                "このファイルは今回のスイープでは一切変更しない",
+                file=sys.stderr,
+            )
             continue
 
-        archived_docs = docs[:-1]
-        current = docs[-1]
+        entries = []
+        blocked = False
+        for node, doc in zip(nodes, docs):
+            dupes = _top_level_duplicate_keys(node)
+            if dupes:
+                print(
+                    f"[WARN] {filepath}: ドキュメント内でトップレベルキー{dupes}が"
+                    "重複している(safe_loadが黙って後勝ちで前の値を握り潰す)ため、"
+                    "このファイルは今回のスイープでは一切変更しない",
+                    file=sys.stderr,
+                )
+                blocked = True
+                continue
+            entries.append({'doc': doc})
 
+        if blocked or not entries:
+            continue
+
+        agent_id = filepath.stem[:-len('_report')] if filepath.stem.endswith('_report') else filepath.stem
+        current_entry, archived_entries, warnings = _select_current_entry(entries, agent_id)
+        for w in warnings:
+            print(f"[WARN] {filepath}: {w}", file=sys.stderr)
+
+        if current_entry is None:
+            continue
+
+        current_doc = current_entry['doc']
         archived_keys = {}
-        if isinstance(current, dict):
-            for key in list(current.keys()):
+        if isinstance(current_doc, dict):
+            for key in list(current_doc.keys()):
                 if isinstance(key, str) and key.startswith(CANONICAL_REPORT_OLD_KEY_PREFIXES):
-                    archived_keys[key] = current.pop(key)
+                    archived_keys[key] = current_doc.pop(key)
+
+        archived_docs = [e['doc'] for e in archived_entries]
 
         if not archived_docs and not archived_keys:
             continue
@@ -336,16 +528,31 @@ def slim_canonical_reports(dry_run=False):
         if archived_keys:
             archive_payload['archived_keys'] = archived_keys
 
-        archive_path = archive_dir / f'{filepath.stem}_{timestamp}.yaml'
+        archive_path = archive_dir / f'{filepath.stem}_{file_timestamp}.yaml'
         if archive_path.exists():
             # 同一秒内に複数の正典reportを処理する場合の衝突回避
-            archive_path = archive_dir / f'{filepath.stem}_{timestamp}_{len(archived_docs)}_{len(archived_keys)}.yaml'
+            archive_path = archive_dir / f'{filepath.stem}_{file_timestamp}_{len(archived_docs)}_{len(archived_keys)}.yaml'
         ensure_parent_dir(archive_path)
         if not save_yaml(archive_path, archive_payload):
             return -1
 
-        if not save_yaml(filepath, current):
-            return -1
+        # current以外にも、判定不能で退避しなかった安全な残存ドキュメントが
+        # あり得る(位置に依存しない判定の帰結として、生き残るのは1件とは
+        # 限らない)。元の相対順序を保ったまま書き戻す。
+        archived_ids = {id(e) for e in archived_entries}
+        remaining = [e['doc'] for e in entries if id(e) not in archived_ids]
+
+        if len(remaining) == 1:
+            if not save_yaml(filepath, remaining[0]):
+                return -1
+        else:
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    yaml.dump_all(remaining, f, allow_unicode=True, sort_keys=False,
+                                  default_flow_style=False)
+            except Exception as e:
+                print(f"Error writing {filepath}: {e}", file=sys.stderr)
+                return -1
 
         # ★console_stall_watchdog.sh(console_subtask_epoch)等、report
         # ファイルのmtimeを「最終活動時刻」の代理指標として読む消費者がいる。
