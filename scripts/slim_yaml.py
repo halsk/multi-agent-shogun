@@ -278,7 +278,7 @@ def _top_level_duplicate_keys(node):
     return dupes
 
 
-def _max_nested_timestamp(node):
+def _max_nested_timestamp(doc):
     """Recursively find the latest parseable ISO-8601 value under any key
     matching /(_|^)timestamp$/ anywhere inside a nested dict/list (not just
     the top level -- real canonical reports nest a `timestamp` field one or
@@ -308,7 +308,7 @@ def _max_nested_timestamp(node):
             for item in value:
                 visit(item)
 
-    visit(node)
+    visit(doc)
     return best
 
 
