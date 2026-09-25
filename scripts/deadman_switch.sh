@@ -109,6 +109,25 @@ NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog �
 NIGHT_END_HOUR=8
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
 
+# cmd_880: Healthchecks.io ping URL 確保 (launchd global env → Keychain、
+# yaml-slim-launcher.sh / stall-watchdog-launcher.sh 前例に倣う。本スクリプトは
+# 直接 launchd から起動されるためラッパーを持たず、ここで直接取得する。
+# get-secret.sh の op fallback が非対話セッションで無期限に hang しうる
+# (cmd_828 実例) ため timeout で縛る)。
+GET_SECRET="${DEADMAN_GET_SECRET:-$SCRIPT_DIR/scripts/get-secret.sh}"
+# ★未設定(${VAR+x}が空)の時のみ取得を試みる。空文字を明示指定された場合は
+# 「意図的にno-opにしたい」呼び出し(テスト等)ゆえ取得を試みない
+# (yaml-slim-launcher.sh等の別ラッパー構成と異なり、本スクリプトは取得と
+# ping送信が同一プロセス内にあるため、空文字==未設定 とみなす単純な
+# `-z "${VAR:-}"` 判定だと空文字指定でも毎回Keychainへ再取得してしまう)。
+if [[ -z "${HC_PING_URL_DEADMAN+x}" ]]; then
+  if [[ -f "$GET_SECRET" ]] && command -v timeout &>/dev/null; then
+    HC_PING_URL_DEADMAN="$(timeout 5 bash -c "source '$GET_SECRET'; get_secret 'hc-ping-url-deadman'" 2>/dev/null)" || true
+  fi
+  [[ -z "${HC_PING_URL_DEADMAN:-}" ]] && echo "[deadman_switch] WARN: HC_PING_URL_DEADMAN not found in env/Keychain (or lookup timed out) — pings disabled" >&2
+  export HC_PING_URL_DEADMAN
+fi
+
 # cmd_784: inbox(mailbox)の最古の未読(read:false)エントリのtimestampをepochで返す
 # (未読が無ければ何も出力しない=手番待ちでなく正常idle)。家老/将軍の生存信号に用いる。
 # ★read行はtimestamp行より前(entry内はcontent,from,id,read,timestamp,typeの
@@ -256,6 +275,13 @@ if [ -f "$DASHBOARD" ] && grep -q '<!-- deadman_switch:heartbeat -->' "$DASHBOAR
   awk -v line="$heartbeat_line" '{ if ($0 ~ /<!-- deadman_switch:heartbeat -->/) print line; else print }' "$DASHBOARD" > "$_hb_tmp" && mv "$_hb_tmp" "$DASHBOARD"
 else
   printf '\n%s\n' "$heartbeat_line" >> "$DASHBOARD"
+fi
+
+# cmd_880: Healthchecks.io ping — scan tick 完了 (HC_PING_URL_DEADMAN 未設定時は no-op)。
+# stalled の有無に関わらずここまで到達すれば「網が動いている」ことの信号であり、
+# stall_watchdog.sh の同種ping(scan tick完了時に無条件送信)と同じ意味づけ。
+if [[ -n "${HC_PING_URL_DEADMAN:-}" ]]; then
+  curl -fsS -m 5 --retry 2 "${HC_PING_URL_DEADMAN}" >/dev/null 2>&1 || true
 fi
 
 # ここから先は「停止」判定時のみ
