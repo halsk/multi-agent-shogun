@@ -557,6 +557,8 @@ Hook 9 が実際に捕捉するのは、Bash ツールへ渡された**そのコ
 
 ★もう一つの頻度の高い罠(軍師が本QC中に実際に踏んだもの): 対象操作の語(例: `gh pr merge`)は、実行するコマンド本体でなく説明文・grepの検索語・echoのラベルに書いただけでも検知される(Hook 11で繰り返し踏んだ「地の文が検知される」病と同型)。調べ物をする時は語を分割するか、ファイル経由で渡すこと。
 
+★Hook1・Hook3の効き目について(cmd_903・軍師設計 queue/reports/cmd903_hook1_hook3_design.md§9): 両者が見るのは Bash ツールへ渡る文字列に現れる git の呼出のみである。直接形・引用符や `\` で包んだ語・フルパス・包み(env/timeout等)・変数/関数エイリアス・`bash -c`/`eval`/パイプで解釈系へ渡した中身までは捕捉する。しかし子プロセスの内部から呼ばれるgitは一切見えない(cmd_901の空ツリーのコミットは、この経路で本物のmainに入った)。「mainへのコミットはもう構造的に防がれた」と思い込むな。第一の守りは、テストやスクリプトが本物のリポに触れない設計である(GIT_\*を引き継がない・一時dirを確かめる)。
+
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.claude/settings.json` ではない。将軍実測: `~/.claude/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）
 テスト: `scripts/hooks/test_hooks.sh`

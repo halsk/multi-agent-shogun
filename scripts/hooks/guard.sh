@@ -159,6 +159,27 @@ _mask_heredoc_bodies_for_git_detection() {
       }
       return n
     }
+    # cmd_903 §4是正(軍師設計 queue/reports/cmd903_hook1_hook3_design.md):
+    # 単一/二重引用符の中の文字を \001 に潰した写しを返す(occurs() の(d)判定
+    # を「引用符の外の出現だけ」にするための下ごしらえ)。今回の誤爆
+    # (design文書N14相当): 書き出し先のパスが、後続の echo 本文の単一引用符の
+    # 中でもう一度言及されただけで(d)が「再利用」と誤認しマスクを外していた。
+    # 引用符の中は実行されないデータであり、そこにパス文字列が現れても
+    # cat > s.sh <<EOF … EOF; bash s.sh のような本物の再実行形とは異なる。
+    function strip_quoted_spans(s,    out, i, c, n2, q) {
+      out = ""; n2 = length(s); q = ""
+      for (i = 1; i <= n2; i++) {
+        c = substr(s, i, 1)
+        if (q == "") {
+          if (c == "\047" || c == "\"") { q = c; out = out "\001" }
+          else out = out c
+        } else {
+          out = out "\001"
+          if (c == q) q = ""
+        }
+      }
+      return out
+    }
     # FU-1是正(PR#125 v2 followup): 行に bash/sh/zsh/source/. のいずれかの
     # 起動語と glob 文字(* ? [)が同一行に現れるか(宛先を glob で実行する
     # N8b のような形を、リテラル一致に頼らず捕らえる)。
@@ -208,10 +229,12 @@ _mask_heredoc_bodies_for_git_detection() {
               if (target == "") sink = 0
             }
             # (d) 書き出し先が他の場所に再び現れないか(開始行の2回目以降・本文外の全行)
-            if (sink && occurs(line, target) > 1) sink = 0
+            # ★引用符の外の出現だけを数える(cmd_903 §4是正・上のstrip_quoted_spans
+            # コメント参照)。地の文としての言及(単一/二重引用符の中)は再利用ではない。
+            if (sink && occurs(strip_quoted_spans(line), target) > 1) sink = 0
             for (j = 1; j <= n && sink; j++) {
               if (j >= i && j <= e) continue
-              if (occurs(L[j], target) > 0) sink = 0
+              if (occurs(strip_quoted_spans(L[j]), target) > 0) sink = 0
               if (has_glob_exec_risk(L[j])) sink = 0
             }
             # (e) 本文に置換記号が無いか(unquoted heredoc は展開される)
@@ -275,6 +298,545 @@ has_git_subcmd() {
 }
 
 # ============================================================
+# cmd_903(軍師設計 queue/reports/cmd903_hook1_hook3_design.md): Hook1/Hook3
+# 専用の字句の状態機械 + 解決器
+# ------------------------------------------------------------
+# 背景: 上の has_git_subcmd は正規表現のみで判定するため引用符を理解せず、
+# FP(誤爆・例: 単一引用符のinbox本文・二重引用符のecho文言・heredocの地の文)と
+# FN(見逃し・例: 引用符で包んだ"git" commit・$'git' commit・git -c … commit・
+# 引用符の中のcdがHook3の確認先を逸らす)の双方を持つ(設計文書§0の実測表)。
+# ここでは Hook1・Hook3 に限り、引用符・入れ子(command substitution/バック
+# クォート/subshell/group)を1文字ずつ理解する状態機械で git 呼出を検出する。
+# D003/D004(Hook2)・Hook6は has_git_subcmd のまま(本is正の範囲外・設計文書§7)。
+# ★確信が持てぬ入力(引用符/括弧が閉じない等)は UNCERTAIN とし、has_git_subcmd
+# を使った旧判定へ倒す(fail-closed・設計文書§2.4)。
+#
+# ★適用範囲: この検知は、Bash ツールへ渡るコマンド文字列の中で、git の呼出が
+# 実行位置にあるものだけを見る。node/python等の子プロセスが内部で呼ぶgit
+# (execFileSync('git', …) 等)は文字列に現れないため一切見えない(cmd_902実測:
+# 使い捨てリポのmainで、node run.mjsの中のコミット作成が阻まれずに通った)。
+# これはPreToolUse hookの原理的な限界であり、欠陥ではない。子プロセスのgitから
+# 守るのは、試験の側の隔離(env のGIT_*を除く・一時dirを確かめる)の役目である。
+#
+# 出力プロトコル(1文字ずつ歩くawk本体 _lex_one_level と、再走査を担うbash
+# 側の _lex_git_invocations に分かれる。awk<->bash間はTAB区切り1行1レコード):
+#   INV<TAB>subcmd<TAB>cddir(またはUNKNOWN)   … git呼出1件
+#   RESCAN<TAB>text<TAB>cdhint                … bash -c/eval/trap/xargs/
+#                                                find -exec/パイプ先interpreter等
+#                                                の中身を独立した文字列として
+#                                                再走査せよ(設計文書§3.3)
+#   UNCERTAIN<TAB>reason                      … 確信が持てぬ(旧判定へ倒す)
+# ============================================================
+_lex_one_level() {
+  local text="$1" init_cdhint="$2"
+  awk -v INIT_CDHINT="$init_cdhint" '
+    function basename_of(s,    n, parts) {
+      if (index(s, "/") == 0) return s
+      n = split(s, parts, "/")
+      return parts[n]
+    }
+    function resolve_head(val, varname,    v) {
+      if (varname != "") {
+        if (varname in BIND) return resolve_head(BIND[varname], "")
+        return ""
+      }
+      if (val in ALIAS) return "git"
+      return basename_of(val)
+    }
+    function push_frame(ftype,    nd) {
+      nd = depth + 1
+      depth = nd
+      frametype[nd] = ftype
+      state[nd] = "N"
+      cdhint[nd] = cdhint[nd - 1]
+      funcname[nd] = ""
+      curword[nd] = ""; wstarted[nd] = 0; wq[nd] = ""; wu[nd] = ""; purevar[nd] = ""
+      in_herestring[nd] = 0
+      nwords[nd] = 0
+      pipe_pending[nd] = ""
+      heredoc_active[nd] = 0; heredoc_tag[nd] = ""; heredoc_striptabs[nd] = 0
+    }
+    # 上流の単純コマンドの全ての語を捕らえておく(設計文書§3.3: パイプ先が
+    # interpreterで受け手が"-c"を持たぬ場合、上流の語を独立した文字列として
+    # 再走査する対象にする・例: echo git-push-etc | sh)。捕らえた語は
+    # awk<->bash間のTAB区切りプロトコルを壊さぬよう改行結合せず1語ずつ
+    # 個別のRESCAN行として後で出す。
+    function capture_pipe_upstream(d,    k) {
+      close_word(d)
+      pipe_pending_n[d] = nwords[d]
+      for (k = 1; k <= nwords[d]; k++) pipe_pending_w[d, k] = cmdword[d, k]
+      pipe_pending[d] = (nwords[d] > 0) ? "1" : ""
+    }
+    function pop_frame(ftype_of_closed,    nd) {
+      nd = depth - 1
+      if (ftype_of_closed == "CMDSUB" || ftype_of_closed == "BACKTICK" || ftype_of_closed == "PROCSUB") {
+        wu[nd] = "x"; wstarted[nd] = 1
+      }
+      depth = nd
+    }
+    # depth dの語を確定させる。<<< here-stringの対象語の最中ならherestring_body
+    # 側へ逃がす(設計文書§3.3: bash <<< 本文 のような受け手がinterpreterの時
+    # だけ再走査対象にする)。
+    function close_word(d) {
+      if (in_herestring[d]) {
+        if (wstarted[d]) {
+          herestring_body[d] = curword[d]
+          curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
+        }
+        in_herestring[d] = 0
+        return
+      }
+      end_word(d)
+    }
+    function end_word(d,    w, flags, widx) {
+      if (!wstarted[d]) { purevar[d] = ""; return }
+      widx = nwords[d] + 1
+      if (purevar[d] != "" && curword[d] == "") {
+        VARNAME[d, widx] = purevar[d]
+        w = ""
+      } else {
+        w = curword[d]
+      }
+      flags = (wq[d] == "q" ? "q" : "u") (wu[d] == "x" ? "x" : "")
+      nwords[d] = widx
+      cmdword[d, widx] = w
+      cmdflag[d, widx] = flags
+      curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
+    }
+    function resolve_word(d, j,    v) {
+      if (j < 1 || j > nwords[d]) return ""
+      if ((d, j) in VARNAME) {
+        v = VARNAME[d, j]
+        return (v in BIND) ? BIND[v] : ""
+      }
+      return cmdword[d, j]
+    }
+    function end_simple_cmd(d,    idx, tok, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, j, body, k, cflag, foundexec) {
+      close_word(d)
+      if (nwords[d] == 0) { herestring_body[d] = ""; return }
+      idx = 1
+      while (idx <= nwords[d]) {
+        tok = cmdword[d, idx]
+        if (!((d, idx) in VARNAME) && tok ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+          eqpos = index(tok, "=")
+          BIND[substr(tok, 1, eqpos - 1)] = substr(tok, eqpos + 1)
+          idx++; continue
+        }
+        if (tok == "if" || tok == "then" || tok == "elif" || tok == "else" || tok == "do" || \
+            tok == "while" || tok == "until" || tok == "!" || tok == "time") { idx++; continue }
+        if (tok == "export" || tok == "local" || tok == "declare" || tok == "readonly") { idx++; continue }
+        if (tok == "command" || tok == "exec" || tok == "nohup" || tok == "stdbuf" || \
+            tok == "ionice" || tok == "caffeinate" || tok == "unbuffer") { idx++; continue }
+        if (tok == "nice") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) {
+            if (cmdword[d, idx] == "-n") idx += 2; else idx++
+          }
+          continue
+        }
+        if (tok == "sudo") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) {
+            if (cmdword[d, idx] == "-u") idx += 2; else idx++
+          }
+          continue
+        }
+        if (tok == "timeout") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) idx++
+          idx++
+          continue
+        }
+        if (tok == "env") {
+          idx++
+          while (idx <= nwords[d]) {
+            t2 = cmdword[d, idx]
+            if (t2 ~ /^-/) { idx++; continue }
+            if (!((d, idx) in VARNAME) && t2 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { idx++; continue }
+            break
+          }
+          continue
+        }
+        break
+      }
+      if (idx > nwords[d]) {
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (nwords[d] == 1 && !((d, 1) in VARNAME) && cmdword[d, 1] ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)$/) {
+        pending_funcname = substr(cmdword[d, 1], 1, length(cmdword[d, 1]) - 2)
+      } else {
+        pending_funcname = ""
+      }
+      headraw = cmdword[d, idx]
+      headvar = ((d, idx) in VARNAME) ? VARNAME[d, idx] : ""
+      resolved = resolve_head(headraw, headvar)
+      if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
+      if (resolved == "git") {
+        j = idx + 1
+        cddir = ""
+        while (j <= nwords[d]) {
+          tok = cmdword[d, j]
+          if (tok == "-C") { cddir = resolve_word(d, j + 1); j += 2; continue }
+          if (tok == "-c" || tok == "--git-dir" || tok == "--work-tree" || tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
+          if (tok ~ /^--(git-dir|work-tree|namespace|exec-path)=/) { j++; continue }
+          if (tok == "-p" || tok == "-P" || tok == "--paginate" || tok == "--no-pager" || tok == "--bare" || \
+              tok == "--no-replace-objects" || tok == "--literal-pathspecs" || tok == "--glob-pathspecs" || \
+              tok == "--noglob-pathspecs" || tok == "--icase-pathspecs" || tok == "--no-optional-locks" || tok == "--no-advice") { j++; continue }
+          if (tok ~ /^-/) { j++; continue }
+          break
+        }
+        if (j <= nwords[d]) {
+          subcmd = resolve_word(d, j)
+          if (subcmd != "") {
+            if (cddir == "") cddir = cdhint[d]
+            if (cddir == "") cddir = "UNKNOWN"
+            printf "INV\t%s\t%s\n", subcmd, cddir
+          }
+        }
+        if (frametype[d] == "GROUP" && funcname[d] != "") {
+          for (k = idx + 1; k <= nwords[d]; k++) {
+            tok = cmdword[d, k]
+            if (tok == "$@" || tok == "$*" || tok ~ /^\$[0-9]+$/) { ALIAS[funcname[d]] = 1; break }
+          }
+        }
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (resolved == "cd" || resolved == "pushd") {
+        if (idx + 1 <= nwords[d]) {
+          tok = resolve_word(d, idx + 1)
+          if (tok == "") cdhint[d] = "UNKNOWN"
+          else if (tok ~ /^\//) cdhint[d] = tok
+          else if (cdhint[d] != "" && cdhint[d] != "UNKNOWN") cdhint[d] = cdhint[d] "/" tok
+          else cdhint[d] = "UNKNOWN"
+        }
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (resolved == "popd") { cdhint[d] = "UNKNOWN"; nwords[d] = 0; herestring_body[d] = ""; return }
+      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh") {
+        j = idx + 1; cflag = 0
+        while (j <= nwords[d]) {
+          tok = cmdword[d, j]
+          if (tok ~ /^-[A-Za-z]*c[A-Za-z]*$/) { cflag = 1; j++; continue }
+          if (tok ~ /^-/) { j++; continue }
+          break
+        }
+        if (cflag && j <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, j], cdhint[d]
+        if (herestring_body[d] != "") printf "RESCAN\t%s\t%s\n", herestring_body[d], cdhint[d]
+        if (pipe_pending[d] != "") {
+          for (k = 1; k <= pipe_pending_n[d]; k++) {
+            if (pipe_pending_w[d, k] != "") printf "RESCAN\t%s\t%s\n", pipe_pending_w[d, k], cdhint[d]
+          }
+        }
+      }
+      if (resolved == "eval") {
+        body = ""
+        for (k = idx + 1; k <= nwords[d]; k++) body = body (k > idx + 1 ? " " : "") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      if (resolved == "trap") {
+        if (idx + 1 <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, idx + 1], cdhint[d]
+      }
+      if (resolved == "xargs") {
+        body = ""
+        for (k = idx + 1; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      if (resolved == "find") {
+        foundexec = 0; body = ""
+        for (k = idx + 1; k <= nwords[d]; k++) {
+          tok = cmdword[d, k]
+          if (!foundexec) { if (tok == "-exec" || tok == "-execdir") foundexec = 1; continue }
+          if (tok == ";" || tok == "+") { printf "RESCAN\t%s\t%s\n", body, cdhint[d]; body = ""; foundexec = 0; continue }
+          body = body (body == "" ? "" : " ") tok
+        }
+      }
+      nwords[d] = 0; herestring_body[d] = ""
+    }
+    BEGIN {
+      depth = 0
+      frametype[0] = "ROOT"
+      state[0] = "N"
+      cdhint[0] = (INIT_CDHINT == "" ? "UNKNOWN" : INIT_CDHINT)
+      curword[0] = ""; wstarted[0] = 0; wq[0] = ""; wu[0] = ""; purevar[0] = ""
+      in_herestring[0] = 0; herestring_body[0] = ""
+      nwords[0] = 0
+      pipe_pending[0] = ""
+      heredoc_active[0] = 0; heredoc_tag[0] = ""; heredoc_striptabs[0] = 0
+      pending_funcname = ""
+      toolarge = 0
+      totalchars = 0
+    }
+    {
+      line = $0
+      if (heredoc_active[depth]) {
+        hdcheck = line
+        if (heredoc_striptabs[depth]) sub(/^\t+/, "", hdcheck)
+        if (hdcheck == heredoc_tag[depth]) {
+          heredoc_active[depth] = 0
+          next
+        }
+      }
+      totalchars += length(line) + 1
+      if (totalchars > 65536) toolarge = 1
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        d = depth
+        st = state[d]
+        if (st != "S" && c == "\\") {
+          nc = substr(line, i + 1, 1)
+          if (nc == "") { i++; continue }
+          if (st == "D") {
+            if (nc == "\"" || nc == "\\" || nc == "$" || nc == "`") { curword[d] = curword[d] nc; wq[d] = "q" }
+            else { curword[d] = curword[d] c nc }
+          } else {
+            curword[d] = curword[d] nc
+          }
+          wstarted[d] = 1
+          i += 2; continue
+        }
+        if (st == "S") {
+          if (c == "\047") { state[d] = "N"; i++; continue }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "A") {
+          if (c == "\047") { state[d] = "N"; i++; continue }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "D") {
+          if (c == "\"") { state[d] = "N"; i++; continue }
+          if (c == "$" && substr(line, i + 1, 1) == "(") { push_frame("CMDSUB"); savedst[depth] = "D"; i += 2; continue }
+          if (c == "`") {
+            if (d > 0 && frametype[d] == "BACKTICK") {
+              end_simple_cmd(d); sv = savedst[d]; pop_frame("BACKTICK"); state[depth] = sv
+              i++; continue
+            }
+            push_frame("BACKTICK"); savedst[depth] = "D"; i++; continue
+          }
+          if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && purevar[d] == "") {
+            j2 = i + 2
+            while (j2 <= n && substr(line, j2, 1) != "}") j2++
+            if (j2 <= n) { purevar[d] = substr(line, i + 2, j2 - i - 2); wstarted[d] = 1; i = j2 + 1; continue }
+          }
+          if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && purevar[d] == "") {
+            j2 = i + 1
+            while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+            purevar[d] = substr(line, i + 1, j2 - i - 1); wstarted[d] = 1; i = j2; continue
+          }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "C") {
+          if (c == "\n") state[d] = "N"
+          i++; continue
+        }
+        if (c == "\047") { state[d] = "S"; wstarted[d] = 1; i++; continue }
+        if (c == "\"") { state[d] = "D"; wstarted[d] = 1; i++; continue }
+        if (c == "$" && substr(line, i + 1, 1) == "\047") { state[d] = "A"; wstarted[d] = 1; i += 2; continue }
+        if (c == "#" && curword[d] == "" && !wstarted[d]) { state[d] = "C"; i++; continue }
+        if (c == "$" && substr(line, i + 1, 2) == "((") { i = skip_arith(line, i + 3, 2); continue }
+        if (c == "(" && substr(line, i + 1, 1) == "(" && curword[d] == "" && !wstarted[d]) { i = skip_arith(line, i + 2, 2); continue }
+        if (c == "(" && substr(line, i + 1, 1) == ")" && curword[d] != "") {
+          curword[d] = curword[d] "()"; wstarted[d] = 1; i += 2; continue
+        }
+        if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && !wstarted[d]) {
+          j2 = i + 2
+          while (j2 <= n && substr(line, j2, 1) != "}") j2++
+          if (j2 <= n) { purevar[d] = substr(line, i + 2, j2 - i - 2); wstarted[d] = 1; i = j2 + 1; continue }
+        }
+        if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && !wstarted[d]) {
+          j2 = i + 1
+          while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+          purevar[d] = substr(line, i + 1, j2 - i - 1); wstarted[d] = 1; i = j2; continue
+        }
+        if (c == "$" && substr(line, i + 1, 1) == "(") { push_frame("CMDSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == "`") {
+          if (d > 0 && frametype[d] == "BACKTICK") {
+            end_simple_cmd(d); sv = savedst[d]; pop_frame("BACKTICK"); state[depth] = sv
+            i++; continue
+          }
+          push_frame("BACKTICK"); savedst[depth] = "N"; i++; continue
+        }
+        if (c == "<" && substr(line, i + 1, 1) == "(") { push_frame("PROCSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == ">" && substr(line, i + 1, 1) == "(") { push_frame("PROCSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == "(" && curword[d] == "" && !wstarted[d]) {
+          end_simple_cmd(d)
+          push_frame("SUBSHELL"); savedst[depth] = "N"; i++; continue
+        }
+        if (c == "{" && curword[d] == "" && !wstarted[d] && (substr(line, i + 1, 1) == " " || substr(line, i + 1, 1) == "\t" || substr(line, i + 1, 1) == "\n" || substr(line, i + 1, 1) == "")) {
+          end_simple_cmd(d)
+          push_frame("GROUP"); savedst[depth] = "N"; funcname[depth] = pending_funcname; pending_funcname = ""
+          i++; continue
+        }
+        if (c == ")") {
+          if (d > 0 && (frametype[d] == "CMDSUB" || frametype[d] == "BACKTICK" || frametype[d] == "PROCSUB" || frametype[d] == "SUBSHELL")) {
+            end_simple_cmd(d)
+            ft = frametype[d]; sv = savedst[d]
+            pop_frame(ft)
+            state[depth] = sv
+            i++; continue
+          } else {
+            end_simple_cmd(d); i++; continue
+          }
+        }
+        if (c == "}" && d > 0 && frametype[d] == "GROUP" && curword[d] == "" && !wstarted[d]) {
+          end_simple_cmd(d)
+          sv = savedst[d]
+          pop_frame("GROUP")
+          state[depth] = sv
+          i++; continue
+        }
+        if (c == "<" && substr(line, i + 1, 2) == "<<") {
+          close_word(d)
+          i += 3
+          while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+          in_herestring[d] = 1
+          continue
+        }
+        if (c == "<" && substr(line, i + 1, 1) == "<") {
+          j2 = i + 2
+          hdstriptabs = 0
+          if (substr(line, j2, 1) == "-") { hdstriptabs = 1; j2++ }
+          while (substr(line, j2, 1) == " " || substr(line, j2, 1) == "\t") j2++
+          qc2 = substr(line, j2, 1)
+          if (qc2 == "\"" || qc2 == "\047") {
+            j2++; tagstart = j2
+            while (j2 <= n && substr(line, j2, 1) != qc2) j2++
+            hdtag = substr(line, tagstart, j2 - tagstart)
+            if (j2 <= n) j2++
+          } else {
+            if (qc2 == "\\") j2++
+            tagstart = j2
+            while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+            hdtag = substr(line, tagstart, j2 - tagstart)
+          }
+          if (hdtag != "") {
+            heredoc_active[d] = 1; heredoc_tag[d] = hdtag; heredoc_striptabs[d] = hdstriptabs
+            i = j2
+            continue
+          }
+        }
+        if (c == ">" || c == "<") {
+          j2 = i + 1
+          if (substr(line, j2, 1) == c) j2++
+          if (substr(line, j2, 1) == "&") j2++
+          i = j2
+          while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+          i = skip_one_word(line, i, n)
+          continue
+        }
+        if (c == ";") {
+          end_simple_cmd(d); pipe_pending[d] = ""; i++
+          if (substr(line, i, 1) == ";") i++
+          continue
+        }
+        if (c == "&") {
+          if (substr(line, i + 1, 1) == "&") { end_simple_cmd(d); pipe_pending[d] = ""; i += 2; continue }
+          if (substr(line, i + 1, 1) == ">") {
+            i += 2
+            while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+            i = skip_one_word(line, i, n)
+            continue
+          }
+          end_simple_cmd(d); pipe_pending[d] = ""; i++; continue
+        }
+        if (c == "|") {
+          if (substr(line, i + 1, 1) == "|") { end_simple_cmd(d); pipe_pending[d] = ""; i += 2; continue }
+          if (substr(line, i + 1, 1) == "&") { capture_pipe_upstream(d); end_simple_cmd(d); i += 2; continue }
+          capture_pipe_upstream(d); end_simple_cmd(d); i++; continue
+        }
+        if (c == " " || c == "\t") { close_word(d); i++; continue }
+        if (c == "\n") { close_word(d); end_simple_cmd(d); pipe_pending[d] = ""; i++; continue }
+        curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = ""
+        i++
+      }
+      if (heredoc_active[depth]) {
+        end_simple_cmd(depth); pipe_pending[depth] = ""
+        state[depth] = "N"; curword[depth] = ""; wstarted[depth] = 0
+        wq[depth] = ""; wu[depth] = ""; purevar[depth] = ""
+      }
+    }
+    function skip_one_word(l, start, len,    j3, qc, c3) {
+      j3 = start
+      if (j3 > len) return j3
+      if (substr(l, j3, 1) == "\"" || substr(l, j3, 1) == "\047") {
+        qc = substr(l, j3, 1); j3++
+        while (j3 <= len && substr(l, j3, 1) != qc) j3++
+        j3++
+        return j3
+      }
+      while (j3 <= len) {
+        c3 = substr(l, j3, 1)
+        if (c3 == " " || c3 == "\t" || c3 == ";" || c3 == "&" || c3 == "|" || c3 == "<" || c3 == ">") break
+        j3++
+      }
+      return j3
+    }
+    function skip_arith(l, start, initdepth,    j4, depth2, c4) {
+      j4 = start; depth2 = initdepth
+      while (j4 <= length(l) && depth2 > 0) {
+        c4 = substr(l, j4, 1)
+        if (c4 == "(") depth2++
+        else if (c4 == ")") depth2--
+        j4++
+      }
+      return j4
+    }
+    END {
+      close_word(depth)
+      end_simple_cmd(depth)
+      if (depth != 0) print "UNCERTAIN\tunclosed-bracket"
+      if (state[depth] == "S" || state[depth] == "D" || state[depth] == "A") print "UNCERTAIN\tunterminated-quote"
+      if (toolarge) print "UNCERTAIN\tinput-too-large"
+    }
+  ' <<<"$text"
+}
+
+# 再走査(§3.3)を担う再帰的なbash側ドライバ。UNCERTAINは(mutableな変数へ
+# 副作用させず)標準出力に"UNCERTAIN"という1行として流す——呼び出し側が
+# コマンド置換(サブシェルを作る)で結果を捕らえるため、副作用変数はそこで
+# 失われる(実装時に一度この罠を踏んで気づいた・回帰防止のため明記する)。
+_LEX_DEPTH_LIMIT=8
+_LEX_SIZE_LIMIT=65536
+_lex_git_invocations() {
+  local text="$1" cdhint="${2:-UNKNOWN}" rdepth="${3:-0}"
+  if [[ $rdepth -gt $_LEX_DEPTH_LIMIT ]]; then echo "UNCERTAIN"; return; fi
+  if [[ ${#text} -gt $_LEX_SIZE_LIMIT ]]; then echo "UNCERTAIN"; return; fi
+  if [[ $rdepth -eq 0 ]]; then
+    text="$(_mask_heredoc_bodies_for_git_detection "$text")"
+  fi
+  local out
+  out="$(_lex_one_level "$text" "$cdhint")"
+  [[ -z "$out" ]] && return
+  local line kind a b hint
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    kind="${line%%$'\t'*}"
+    case "$kind" in
+      UNCERTAIN)
+        echo "UNCERTAIN"
+        ;;
+      INV)
+        a="${line#*$'\t'}"
+        echo "$a"
+        ;;
+      RESCAN)
+        a="${line#*$'\t'}"
+        b="${a%%$'\t'*}"
+        hint="${a#*$'\t'}"
+        _lex_git_invocations "$b" "$hint" "$((rdepth + 1))"
+        ;;
+    esac
+  done <<<"$out"
+}
+
+# ============================================================
 # Skip: Marker file `.guard-skip` present
 # ----------------------------------------------------------------
 # リポルートに .guard-skip ファイルがあれば全 hook をスキップ。
@@ -291,8 +853,42 @@ fi
 
 # ============================================================
 # Hook 1: Co-Authored-By 禁止
+# ------------------------------------------------------------
+# ★適用範囲(cmd_903設計文書§9): この検知は、Claude Code の Bash ツールへ
+# 渡るコマンド文字列の中で、git の呼出が実行位置にあるものだけを見る。
+# node・python等の子プロセスが内部で呼ぶgit(execFileSync('git', …)等)は、
+# 文字列に現れないため一切見えない(cmd_902で実測: 使い捨てリポのmainで、
+# node run.mjsの中のコミット作成が阻まれずに通った)。これはPreToolUse hook
+# の原理的な限界であり、欠陥ではない。子プロセスのgitから守るのは、試験の
+# 側の隔離(envのGIT_*を除く・一時dirを確かめる)の役目である。
+# ------------------------------------------------------------
+# cmd_903是正: has_git_subcmd(引用符を理解しない正規表現)から、上の
+# _lex_git_invocations(字句の状態機械)へ置き換えた。理由・設計・既知の
+# 限界は上の「cmd_903(軍師設計...)」ブロックのコメントを見よ。
+# ★「COMMAND中に"git"という文字列が無ければ事前にawkを起動せず省く」という
+# 事前フィルタは★採らない——設計文書P6(g''it commit のような引用符での
+# 語分割)が実証するとおり、生の文字列上は "git" が連続して現れずとも
+# 引用符除去後に git へ解決される形が存在し、この種の事前フィルタは
+# まさに検知したい回避形そのものを取りこぼす(実装時に実際にこの罠で
+# P6の回帰を起こした)。
 # ============================================================
-if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+_GIT_INV_RESULT="$(_lex_git_invocations "$COMMAND" "$GIT_TARGET_DIR" 0)"
+_GIT_INV_UNCERTAIN=0
+if grep -qx 'UNCERTAIN' <<<"$_GIT_INV_RESULT"; then
+  _GIT_INV_UNCERTAIN=1
+fi
+
+if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
+  # 確信が持てぬ(引用符/括弧が閉じない等)→ 旧判定へ倒す(fail-closed)。
+  if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+    echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
+    exit 2
+  fi
+elif echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+  # ★trailer(Co-Authored-By)の検索は従来どおりCOMMAND全体を対象とする
+  # (trailerは-mの引数・heredoc等、正当に引用符の中に入るものであるため)。
+  # 誤爆の源だったのは「commit呼出そのものの検知」の側であり、そちらだけを
+  # 字句の状態機械で厳密化した(設計文書§1)。
   echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
   exit 2
 fi
@@ -1138,16 +1734,47 @@ fi
 
 # ============================================================
 # Hook 3: main ブランチ保護
+# ★適用範囲(cmd_903設計文書§9): この検知は、Claude Code の Bash ツールへ
+# 渡るコマンド文字列の中で、git の呼出が実行位置にあるものだけを見る。
+# node・python等の子プロセスが内部で呼ぶgit(execFileSync('git', …)等)は、
+# 文字列に現れないため一切見えない(cmd_902で実測: 使い捨てリポのmainで、
+# node run.mjsの中のコミット作成が阻まれずに通った)。これはPreToolUse hook
+# の原理的な限界であり、欠陥ではない。子プロセスのgitから守るのは、試験の
+# 側の隔離(envのGIT_*を除く・一時dirを確かめる)の役目である。
 # Uses GIT_TARGET_DIR to check the correct repo's branch
 # (prevents false block when CWD is multi-agent-shogun/main
 #  but command targets an external repo on a feature branch)
+# ------------------------------------------------------------
+# cmd_903是正: Hook1で計算済みの _GIT_INV_RESULT/_GIT_INV_UNCERTAIN を
+# 再利用する(has_git_subcmdの正規表現ベース判定を、字句の状態機械+解決器へ
+# 置き換え・二重計算はしない)。設計・既知の限界は has_git_subcmd の直後の
+# コメントブロックを見よ。
 # ============================================================
-if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
-  CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
-  if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-    echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
-    exit 2
+if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
+  # 確信が持てぬ→旧判定(fail-closed)。GIT_TARGET_DIR一つだけを見る点も従来どおり。
+  if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
+    CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+      echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+      exit 2
+    fi
   fi
+else
+  # ★各git呼出ごとに確認先dirを決める(設計文書§3.4)。cddirが"UNKNOWN"
+  # (呼出内に-C/cdの手掛かりが一切無い)場合は、resolve_git_dirが今まで
+  # どおり導いたGIT_TARGET_DIR(手掛かり候補・hookのcwd相当)を確認する。
+  while IFS=$'\t' read -r _inv_subcmd _inv_dir; do
+    [[ -z "$_inv_subcmd" ]] && continue
+    if [[ "$_inv_subcmd" == "commit" || "$_inv_subcmd" == "push" ]]; then
+      _inv_confirm_dir="$_inv_dir"
+      [[ "$_inv_confirm_dir" == "UNKNOWN" ]] && _inv_confirm_dir="$GIT_TARGET_DIR"
+      _inv_branch=$(git -C "$_inv_confirm_dir" branch --show-current 2>/dev/null || echo "")
+      if [[ "$_inv_branch" == "main" || "$_inv_branch" == "master" ]]; then
+        echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+        exit 2
+      fi
+    fi
+  done <<<"$_GIT_INV_RESULT"
 fi
 
 # ============================================================

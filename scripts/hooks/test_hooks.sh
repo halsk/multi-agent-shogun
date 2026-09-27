@@ -685,6 +685,115 @@ fi
 rm -rf "$FNH3_EXEC" "$FNH3_MAIN"
 
 echo ""
+echo "=== cmd_903: Hook1/Hook3 字句の状態機械+解決器 (軍師設計 queue/reports/cmd903_hook1_hook3_design.md §6.1/§6.2) ==="
+# $M(main)・$F(feature)は使い捨てリポ(既存のGITC_TMP/GITC_FEATと同じ作り方)。
+# 各々に1回だけ空commitを打ち、そのHEADと一致する.code-review-doneを置いて
+# Hook6(push前lint)が本節の対象外(has_git_subcmdのまま・cmd_903の範囲外)で
+# 誤って割り込まぬようにする——本節はHook1/Hook3の判定のみを見る。
+CMD903_M=$(mktemp -d)
+CMD903_F=$(mktemp -d)
+git -C "$CMD903_M" init -q -b main
+git -C "$CMD903_M" -c commit.gpgsign=false -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$CMD903_M" rev-parse HEAD > "$CMD903_M/.code-review-done"
+git -C "$CMD903_F" init -q -b feat
+git -C "$CMD903_F" -c commit.gpgsign=false -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$CMD903_F" rev-parse HEAD > "$CMD903_F/.code-review-done"
+M="$CMD903_M"; F="$CMD903_F"
+
+echo "--- N1-N17(陰性対照・allow) ---"
+check "cmd903 N1: inbox_write.sh引数の単一引用符内の地の文" allow "cd $M && bash /Users/hal/tools/multi-agent-shogun/scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
+check "cmd903 N2: 二重引用符echoの地の文(Co-Authored-Byも同居)" allow 'cd '"$M"' && echo "git commit -m x Co-Authored-By: a <a@a>"'
+check "cmd903 N3: 地の文の後の別コマンド(2件目見落とし対策)" allow "cd $M && echo 'first git commit' ; echo \"second git push\""
+check "cmd903 N4: 地の文内の;|&(区切り誤認対策)" allow "cd $M && echo 'a; git commit | b & c'"
+check "cmd903 N5: 二重引用符内のアポストロフィ" allow 'cd '"$M"' && echo "don'"'"'t git commit"'
+check "cmd903 N6: エスケープされた二重引用符" allow 'cd '"$M"' && echo "say \"git commit\" now"'
+check "cmd903 N7: コメント内の地の文" allow "cd $M && echo ok # git commit -m x"
+check "cmd903 N8: \$(date)のみが評価されgit pushは地の文" allow 'cd '"$M"' && echo "$(date) git push"'
+check "cmd903 N9: printfでファイルへ書き出すだけ(実行しない)" allow "cd $M && printf '%s\\n' 'git push origin main' > /tmp/cmd903_n9.txt"
+check "cmd903 N10: 変数へ代入した地の文をechoするだけ" allow "cd $M && MSG='git commit'; echo \"\$MSG\""
+check "cmd903 N11: here-stringの受け手がgrep(データ系)" allow "cd $M && grep x <<< 'git commit'"
+check "cmd903 N12: git logのgrepオプション(subcmdはlog)" allow "cd $M && git log --grep='commit' -1"
+check "cmd903 N13: git commit-graph(完全一致でないsubcmd)" allow "cd $M && git commit-graph write"
+check "cmd903 N14: マスクされぬheredoc地の文+末尾で書き出し先を再言及(§4(d)引用符外判定)" allow "cd $M && cat > /tmp/cmd903_n14.md <<'EOF'
+git commit と Co-Authored-By の地の文
+EOF
+echo 'wrote /tmp/cmd903_n14.md'"
+check "cmd903 N15: featureブランチでのcommit(既存・過剰ブロック防止)" allow "cd $F && git commit --allow-empty -m x"
+check "cmd903 N16: git -C featureでのcommit(既存)" allow "git -C $F commit --allow-empty -m x"
+check "cmd903 N17: パイプ下流がtee(データ系)" allow "cd $M && echo \"git push\" | tee /tmp/cmd903_n17.txt"
+
+echo "--- P1-P34(陽性対照・block) ---"
+check "cmd903 P1: 直接形" block "cd $M && git commit --allow-empty -m x"
+check "cmd903 P2: \"git\" commit(旧FN)" block "cd $M && \"git\" commit --allow-empty -m x"
+check "cmd903 P3: 'git' commit" block "cd $M && 'git' commit --allow-empty -m x"
+check "cmd903 P4: \\git commit(バックスラッシュエスケープ)" block "cd $M && \\git commit --allow-empty -m x"
+check "cmd903 P5: \$'git' commit(ANSI-C引用・旧FN)" block "cd $M && \$'git' commit --allow-empty -m x"
+check "cmd903 P6: g''it commit(引用で分割した語)" block "cd $M && g''it commit --allow-empty -m x"
+check "cmd903 P7: /usr/bin/git commit(フルパス)" block "cd $M && /usr/bin/git commit --allow-empty -m x"
+check "cmd903 P8a: command git commit" block "cd $M && command git commit --allow-empty -m x"
+check "cmd903 P8b: env git commit" block "cd $M && env git commit --allow-empty -m x"
+check "cmd903 P8c: env -i git commit" block "cd $M && env -i git commit --allow-empty -m x"
+check "cmd903 P8d: exec git commit" block "cd $M && exec git commit --allow-empty -m x"
+check "cmd903 P8e: nohup git commit" block "cd $M && nohup git commit --allow-empty -m x"
+check "cmd903 P8f: time git commit" block "cd $M && time git commit --allow-empty -m x"
+check "cmd903 P8g: timeout 30 git commit" block "cd $M && timeout 30 git commit --allow-empty -m x"
+check "cmd903 P8h: nice -n 5 git commit(-nが引数を取る包み)" block "cd $M && nice -n 5 git commit --allow-empty -m x"
+check "cmd903 P9: git -C <main>(既存)" block "git -C $M commit --allow-empty -m x"
+check "cmd903 P10: git -c user.name=a commit(旧FN・グローバル選択肢読み飛ばし)" block "cd $M && git -c user.name=a commit --allow-empty -m x"
+check "cmd903 P11a: git --no-pager commit" block "cd $M && git --no-pager commit --allow-empty -m x"
+check "cmd903 P11b: git -P commit" block "cd $M && git -P commit --allow-empty -m x"
+check "cmd903 P11c: git --git-dir=... commit" block "cd $M && git --git-dir=$M/.git commit --allow-empty -m x"
+check "cmd903 P12a: g=git; \$g commit(既存)" block "cd $M && g=git; \$g commit --allow-empty -m x"
+check "cmd903 P12b: g=git; \"\${g}\" commit(二重引用符の中の\${VAR})" block 'cd '"$M"' && g=git; "${g}" commit --allow-empty -m x'
+check "cmd903 P12c: export G=git; \$G commit" block "cd $M && export G=git; \$G commit --allow-empty -m x"
+check "cmd903 P13a: S=commit; git \$S(既存)" block "cd $M && S=commit; git \$S --allow-empty -m x"
+check "cmd903 P13b: S=commit; git \"\$S\"(二重引用符のsubcmd変数・旧FN)" block 'cd '"$M"' && S=commit; git "$S" --allow-empty -m x'
+check "cmd903 P14: 関数エイリアス f(){ git \"\$@\"; }; f commit(既存)" block "cd $M && f() { git \"\$@\"; }; f commit --allow-empty -m x"
+check "cmd903 P15a: bash -c 'git commit'(既存)" block "cd $M && bash -c 'git commit --allow-empty -m x'"
+check "cmd903 P15b: sh -c \"git commit\"" block "cd $M && sh -c \"git commit --allow-empty -m x\""
+check "cmd903 P15c: zsh -c 'git commit'" block "cd $M && zsh -c 'git commit --allow-empty -m x'"
+check "cmd903 P15d: bash -lc 'git commit'(束ね形オプション)" block "cd $M && bash -lc 'git commit --allow-empty -m x'"
+check "cmd903 P16a: eval \"git commit\"(既存)" block "cd $M && eval \"git commit --allow-empty -m x\""
+check "cmd903 P16b: eval 'git commit'" block "cd $M && eval 'git commit --allow-empty -m x'"
+check "cmd903 P17a: echo 'git commit'|bash(パイプ先interpreter・-c無し)" block "cd $M && echo 'git commit --allow-empty -m x' | bash"
+check "cmd903 P17b: printf '%s' 'git push ...'|sh" block "cd $M && printf '%s' 'git push origin main' | sh"
+check "cmd903 P18: bash <<< 'git commit'(既存)" block "cd $M && bash <<< 'git commit --allow-empty -m x'"
+check "cmd903 P19: trap 'git commit' EXIT" block "cd $M && trap 'git commit --allow-empty -m x' EXIT"
+check "cmd903 P20a: echo \"\$(git commit)\"(既存)" block "cd $M && echo \"\$(git commit --allow-empty -m x)\""
+check "cmd903 P20b: echo \`git commit\`(バッククォート)" block "cd $M && echo \`git commit --allow-empty -m x\`"
+check "cmd903 P21: cat <(git commit)(プロセス置換)" block "cd $M && cat <(git commit --allow-empty -m x)"
+check "cmd903 P22a: (cd \$M && git commit)(サブシェル)" block "(cd $M && git commit --allow-empty -m x)"
+check "cmd903 P22b: { cd \$M; git commit; }(グループ)" block "{ cd $M; git commit --allow-empty -m x; }"
+check "cmd903 P23a: echo x | xargs git commit" block "cd $M && echo x | xargs git commit --allow-empty -m"
+check "cmd903 P23b: find -exec git commit ;" block "cd $M && find . -maxdepth 0 -exec git commit --allow-empty -m x \\;"
+check "cmd903 P24: git commit後の地の文中の別cd(旧FN1・引用符の中のcdは手掛かりを動かさない)" block "cd $M && git commit --allow-empty -m x; echo \"cd $F\""
+check "cmd903 P25: heredoc本文のアポストロフィが外の引用状態を汚さない" block "cd $M && tee /dev/null <<EOF
+don't
+EOF
+git commit --allow-empty -m x"
+check "cmd903 P26: 行の継続(git \\<改行>commit)" block "cd $M && git \\
+commit --allow-empty -m x"
+check "cmd903 P27: if文の中" block "cd $M && if true; then git commit --allow-empty -m x; fi"
+check "cmd903 P28: caseパターンの中" block "cd $M && case a in a) git commit --allow-empty -m x;; esac"
+check "cmd903 P29: 地の文の後の本物のcommit(head -1近道の禁止)" block "cd $M && echo 'git commit'; git commit --allow-empty -m x"
+check "cmd903 P30: 閉じない引用符(UNCERTAIN→旧判定でblock)" block "cd $M && echo 'unterminated git commit"
+check "cmd903 P31: featureでのCo-Authored-By(Hook1・既存)" block "cd $F && git commit -m \"fix
+
+Co-Authored-By: a <a@a>\""
+check "cmd903 P32: git commit -F - <<EOF 本文にCo-Authored-By(Hook1)" block "cd $F && git commit -F - <<EOF
+x
+
+Co-Authored-By: a <a@a>
+EOF"
+check "cmd903 P33a: 変数エイリアス+Co-Authored-By(Hook1・既存)" block "cd $F && g=git && \$g commit -m \"x
+
+Co-Authored-By: a <a@a>\""
+check "cmd903 P33b: 関数エイリアス+Co-Authored-By(Hook1・既存)" block "cd $F && f() { git \"\$@\"; }; f commit -m \"…Co-Authored-By: a <a@a>\""
+check "cmd903 P34: featureへのpushはパイプ経由でも許可(過剰ブロック防止)" allow "cd $F && echo 'git push' | bash"
+
+rm -rf "$CMD903_M" "$CMD903_F"
+
+echo ""
 echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
 unset GH_TOKEN
 # BLOCK: --repo yohey-w/* を指定
