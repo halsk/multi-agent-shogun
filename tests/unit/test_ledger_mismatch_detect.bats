@@ -500,6 +500,25 @@ seed_inbox() {
   [[ "$output" != *"ashigaru9|"* ]]
 }
 
+# ── cmd_900③軍師QC条件付きPASS残件(PR#168): 報告のtask_idと現task YAMLの
+# task_idが★一致し、かつ本物のmismatch条件(status=done・閾値超過・task
+# statusがdone/cancelled/idleのいずれでもない)が揃った場合は、従来どおり
+# 検知される(鳴る)ことを確認する陽性試験。T-3WM-012(task_id不一致→鳴らない)
+# と対をなす——(a)のtask_id比較を誤って「常に鳴らさない」へ壊しても、
+# T-3WM-012のような不一致ケースだけを見る試験群では穴が見抜けない。
+
+@test "T-3WM-015: still flags when report's task_id matches the task YAML's current task_id (true mismatch, not suppressed)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru10_report.yaml" $'worker_id: ashigaru10\ntask_id: subtask_cmd900_taskid_match\nparent_cmd: cmd_900\ntimestamp: "2026-09-27T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru10.yaml" $'task:\n  task_id: subtask_cmd900_taskid_match\n  status: assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ashigaru10|cmd_900|"* ]]
+  [[ "$output" == *"|assigned|0|"* ]]
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # cmd_778 相乗り: RACE-001(同一ファイルへの複数task並行割当)の機械検知
 # detect_file_collisions / detect_undeclared_touches_files
