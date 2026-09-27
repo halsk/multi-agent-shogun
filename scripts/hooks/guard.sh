@@ -47,6 +47,14 @@ resolve_git_dir() {
 
 GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
 
+# cmd_903 §13点3: 「bash <path>/inbox_write.sh」を純データ扱いしてよいのは
+# 実体パスがこのguard.sh自身が属するプロジェクトのscripts/inbox_write.shと
+# 一致する時だけ(末尾一致・basename一致は不可・W3是正)。自己参照で導けば、
+# worktreeで実行してもそのworktree自身のinbox_write.shを指し、他機の
+# ハードコードパスに依存しない。
+_GUARD_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+_GUARD_CANON_INBOX_WRITE="$(cd "$_GUARD_SELF_DIR/../.." >/dev/null 2>&1 && pwd)/scripts/inbox_write.sh"
+
 # ============================================================
 # Helper: heredoc本文をgit検出用にマスクする (FP-H3是正・cmd_new_backtick_safety)
 # ------------------------------------------------------------
@@ -347,7 +355,7 @@ _has_git_subcmd_direct_strict() {
 # ============================================================
 _lex_one_level() {
   local text="$1" init_cdhint="$2"
-  awk -v INIT_CDHINT="$init_cdhint" '
+  awk -v INIT_CDHINT="$init_cdhint" -v CANON_INBOX_WRITE="$_GUARD_CANON_INBOX_WRITE" '
     function basename_of(s,    n, parts) {
       if (index(s, "/") == 0) return s
       n = split(s, parts, "/")
@@ -360,6 +368,16 @@ _lex_one_level() {
       }
       if (val in ALIAS) return "git"
       return basename_of(val)
+    }
+    # cmd_903 §13点1: is_pure_head()が「実行位置の語が/を含まぬ素の名前か」を
+    # 判じるための、basenameを剥がさない解決(resolve_headと同じ変数追跡だが
+    # basename_ofを呼ばない)。W16是正(./grepをbasename一致でgrepと誤認しない)。
+    function resolve_head_full(val, varname,    v) {
+      if (varname != "") {
+        if (varname in BIND) return resolve_head_full(BIND[varname], "")
+        return ""
+      }
+      return val
     }
     function push_frame(ftype,    nd) {
       nd = depth + 1
@@ -482,20 +500,19 @@ _lex_one_level() {
     # 実行位置)またはcmdflagのxビット(command substitution/backtick由来)が
     # 立っていれば、たとえ解決結果が一覧にある語と同じに見えても純データとは
     # 扱わない(間接参照そのものを不確実性として扱う・fail-closed)。
-    # ★rgはprobe4 Z2(rg --pre)の教訓により、--pre/--pre-glob(外部コマンドを
-    # プリプロセッサとして起動する)が無い時に限り純データとする。
-    function is_pure_head(d, idx, resolved,    flags, j5, tok, first) {
+    # ★rgはcmd_903 §13点4是正により純データの一覧から外した(W4是正:
+    # `rg --hostname-bin '…'`のように--pre以外にも外部コマンドを起動しうる
+    # 選択肢があり、--pre/--pre-globだけを個別に禁止列挙する方式は閉じない
+    # 穴を残す。grepで足りるため、rgそのものを一覧から除く)。
+    function is_pure_head(d, idx, resolved, full,    flags, j5, tok, first, iwpath) {
       if ((d, idx) in VARNAME) return 0
       flags = cmdflag[d, idx]
       if (flags ~ /x/) return 0
+      # cmd_903 §13点1: 純データの実行位置の語は「/」を含まぬ素の名前に限る
+      # (basenameで照らさない)。例外はinbox_write.shの引数パスのみ(下の
+      # bash分岐・点3)。W16是正(./grepをbasename一致でgrepと誤認しない)。
+      if (full != "" && index(full, "/") > 0) return 0
       if (resolved == "cd" || resolved == "pushd" || resolved == "popd") return 1
-      if (resolved == "rg") {
-        for (j5 = idx + 1; j5 <= nwords[d]; j5++) {
-          tok = cmdword[d, j5]
-          if (tok == "--pre" || tok == "--pre-glob" || tok ~ /^--pre(-glob)?=/) return 0
-        }
-        return 1
-      }
       if (resolved in PURE_HEAD_SET) return 1
       if (resolved == "bash") {
         j5 = idx + 1
@@ -507,13 +524,31 @@ _lex_one_level() {
         }
         if (j5 <= nwords[d]) {
           first = resolve_word(d, j5)
-          if (basename_of(first) == "inbox_write.sh") return 1
+          # cmd_903 §13点3: 末尾一致・basename一致ではなく、cdの手掛かりで
+          # 解いた実体のパスがプロジェクトのscripts/inbox_write.shと厳密に
+          # 一致する時だけ純データとする(W3是正: 偽の
+          # /tmp/scripts/inbox_write.shを弾く)。相対パスはcdhintが実在する
+          # 絶対パスの時だけ解決を試み、解けなければ純データとしない
+          # (fail-closed)。
+          if (first != "") {
+            if (first ~ /^\//) {
+              iwpath = first
+            } else if (cdhint[d] != "" && cdhint[d] != "UNKNOWN" && cdhint[d] ~ /^\//) {
+              iwpath = cdhint[d] "/" first
+            } else {
+              iwpath = ""
+            }
+            if (iwpath != "") {
+              gsub(/\/\.\//, "/", iwpath)
+              if (iwpath == CANON_INBOX_WRITE) return 1
+            }
+          }
         }
         return 0
       }
       return 0
     }
-    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid, aliasname, aliasval, eqpos2, aliasparts) {
+    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, full, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid, aliasname, aliasval, eqpos2, aliasparts, had_assign) {
       close_word(d)
       if (nwords[d] == 0) { herestring_body[d] = ""; return }
       idx = 1
@@ -522,6 +557,11 @@ _lex_one_level() {
         if (!((d, idx) in VARNAME) && tok ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
           eqpos = index(tok, "=")
           BIND[substr(tok, 1, eqpos - 1)] = substr(tok, eqpos + 1)
+          # cmd_903 §13点2: 代入(接頭・単独の文いずれも)は、以後の外部
+          # 命令の実行に影響しうるため、この単純コマンドを純データの対象
+          # から外す(下のidx>nwords[d]分岐とis_pure_head呼出の両方で使う・
+          # W15是正)。
+          had_assign = 1
           idx++; continue
         }
         # cmd_903追補#3(E37): `function NAME { … }` キーワード形。
@@ -582,7 +622,7 @@ _lex_one_level() {
             if (t2 == "-u" || t2 == "-C" || t2 == "-S" || \
                 t2 == "--unset" || t2 == "--chdir" || t2 == "--split-string") { idx += 2; continue }
             if (t2 ~ /^-/) { idx++; continue }
-            if (!((d, idx) in VARNAME) && t2 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { idx++; continue }
+            if (!((d, idx) in VARNAME) && t2 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { had_assign = 1; idx++; continue }
             break
           }
           continue
@@ -591,7 +631,12 @@ _lex_one_level() {
       }
       if (idx > nwords[d]) {
         # 代入・キーワードのみで実行位置の語が無い(例: MSG=git-commitのみの代入)。
-        # 何も実行しないため、純データ判定(§12)に影響しない(IMPUREにしない)。
+        # cmd_903 §13点2是正: 代入が一つでもあれば、以後の単純コマンドの実行に
+        # 影響しうる単独の代入文であるため、COMMAND全体をIMPUREとする
+        # (W15是正: `PATH=/tmp/bin:$PATH; grep x`のような単独文の後に続く
+        # 外部命令が差し替わる形)。代入が無い(if/then等のキーワードのみ)
+        # 場合は従来どおり何もしない。
+        if (had_assign) IMPURE = 1
         nwords[d] = 0; herestring_body[d] = ""
         return
       }
@@ -603,12 +648,16 @@ _lex_one_level() {
       headraw = cmdword[d, idx]
       headvar = ((d, idx) in VARNAME) ? VARNAME[d, idx] : ""
       resolved = resolve_head(headraw, headvar)
+      full = resolve_head_full(headraw, headvar)
       # cmd_903 §12: この単純コマンドの実行位置の語が純データの命令でなければ
       # (git・less・ag・未解決の実行位置語・展開を含む実行位置語を含め)
       # COMMAND全体をIMPUREとする(§3.3で再走査される文字列も、それぞれが
       # 独立した_lex_one_level呼出として同じチェックを経る・下のIMPURE行
       # 出力とbash側_lex_git_invocationsの伝播で全レベルに及ぶ)。
-      if (!is_pure_head(d, idx, resolved)) IMPURE = 1
+      # ★cmd_903 §13点2: 代入がこの単純コマンドに接頭していれば(had_assign)、
+      # 実行位置の語自体は純データの一覧にあっても、以後の実行に影響しうる
+      # ためIMPUREとする(W1/W2/W12是正)。
+      if (!is_pure_head(d, idx, resolved, full) || had_assign) IMPURE = 1
       if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
       if (resolved == "git") {
         j = idx + 1

@@ -728,7 +728,11 @@ git -C "$CMD903_F" rev-parse HEAD > "$CMD903_F/.code-review-done"
 M="$CMD903_M"; F="$CMD903_F"
 
 echo "--- N1-N17(陰性対照・allow) ---"
-check "cmd903 N1: inbox_write.sh引数の単一引用符内の地の文" allow "cd $M && bash /Users/hal/tools/multi-agent-shogun/scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
+# cmd_903 §13点3是正: inbox_write.shの純データ判定はbasename一致でなく実体
+# パスの一致になった(W3是正)。ハードコードされたメインリポの絶対パスは
+# worktreeで走らせた時に自身のinbox_write.shと一致しないため、$PROJ_ROOT
+# (このテストスクリプト自身が属するリポの絶対パス・冒頭で定義済み)を使う。
+check "cmd903 N1: inbox_write.sh引数の単一引用符内の地の文" allow "cd $M && bash $PROJ_ROOT/scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
 check "cmd903 N2: 二重引用符echoの地の文(Co-Authored-Byも同居)" allow 'cd '"$M"' && echo "git commit -m x Co-Authored-By: a <a@a>"'
 check "cmd903 N3: 地の文の後の別コマンド(2件目見落とし対策)" allow "cd $M && echo 'first git commit' ; echo \"second git push\""
 check "cmd903 N4: 地の文内の;|&(区切り誤認対策)" allow "cd $M && echo 'a; git commit | b & c'"
@@ -737,7 +741,12 @@ check "cmd903 N6: エスケープされた二重引用符" allow 'cd '"$M"' && e
 check "cmd903 N7: コメント内の地の文" allow "cd $M && echo ok # git commit -m x"
 check "cmd903 N8: \$(date)のみが評価されgit pushは地の文" allow 'cd '"$M"' && echo "$(date) git push"'
 check "cmd903 N9: printfでファイルへ書き出すだけ(実行しない)" allow "cd $M && printf '%s\\n' 'git push origin main' > /tmp/cmd903_n9.txt"
-check "cmd903 N10: 変数へ代入した地の文をechoするだけ" allow "cd $M && MSG='git commit'; echo \"\$MSG\""
+# cmd_903 §13点2是正(設計文書§13の明記された代償): 代入(接頭・単独の文の
+# いずれも)が一つでもあればCOMMAND全体を純データでないと判じるようになった
+# ため、代入の後に続く命令が何であれ(echoでもbash inbox_write.shでも)旧
+# 判定(has_git_subcmd相当)に戻りblockになる。個別の危険変数を列挙しない
+# 設計上、受け入れた代償である(basenameでなく実体で判じる締め付けの裏返し)。
+check "cmd903 N10: 変数へ代入した地の文をechoするだけ(§13是正で代入は純データでないため退行ではなくblockへ)" block "cd $M && MSG='git commit'; echo \"\$MSG\""
 check "cmd903 N11: here-stringの受け手がgrep(データ系)" allow "cd $M && grep x <<< 'git commit'"
 check "cmd903 N12: git logのgrepオプション(subcmdはlog)" allow "cd $M && git log --grep='commit' -1"
 check "cmd903 N13: git commit-graph(完全一致でないsubcmd)" allow "cd $M && git commit-graph write"
@@ -892,7 +901,10 @@ check "cmd903 probe4 Z14: git log --format=cmd | sh(gitは純データ一覧か�
 check "cmd903 probe4 Z15: \$(echo 'cmd')が実行位置の語になる(展開を含む実行位置語は純データでない)" block 'cd '"$M"' && $(echo '\''git commit --allow-empty -m x'\'')'
 check "cmd903 probe4 Z16: eval \"\$(echo 'cmd')\"" block 'cd '"$M"' && eval "$(echo '\''git commit --allow-empty -m x'\'')"'
 check "cmd903 probe4 Z17: inbox_write本文をパイプでshへ(既存網羅・退行ではない)" block "cd $M && bash scripts/inbox_write.sh karo 'git commit --allow-empty -m x' x gunshi | sh"
-check "cmd903 probe4 ok1: inbox本文の単一引用符プロース(本日の誤爆・引き続きallow)" allow "cd $M && bash scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
+# cmd_903 §13点3是正: 実体パス一致になったため、$Mから見た相対パスでなく
+# $PROJ_ROOTの絶対パスで呼ぶ(CLAUDE.mdが推奨する「他リポを触った直後は
+# project rootへ戻すか絶対パスで呼ぶ」作法とも一致する)。
+check "cmd903 probe4 ok1: inbox本文の単一引用符プロース(本日の誤爆・引き続きallow)" allow "cd $M && bash $PROJ_ROOT/scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
 check "cmd903 probe4 ok2: grep quoted(本日の誤爆・引き続きallow)" allow "cd $M && grep -n 'git commit' README.md"
 check "cmd903 probe4 ok3: echoの地の文(本日の誤爆・引き続きallow)" allow "cd $M && echo \"git commit は禁止\""
 check "cmd903 probe4 ok4: git log --grep(既存・引き続きallow)" allow "cd $M && git log --grep='commit' -1"
@@ -900,6 +912,27 @@ check "cmd903 probe4 ok5: cat heredocの地の文(本日の誤爆・引き続き
 git commit の地の文
 EOF"
 check "cmd903 probe4 ok6: echo > file(実行しない・本日の誤爆・引き続きallow)" allow "cd $M && echo 'git commit の手順' > /tmp/cmd903_ok6.txt"
+
+echo "--- 三度目のやり直し(subtask_cmd903_hook1_hook3_impl4)の軍師QCで判明した「純データ」定義の甘さ7件(§13・probe5+追加3件) ---"
+# 出所: queue/reports/cmd903_prototype/probe5_puredata_attack.py(W1-W4)+
+# queue/reports/cmd903_hook1_hook3_design.md §13の追加3件(W12/W15/W16)。
+# 是正前(本コミット直前・PR#169 head a5ecb84のコード)でいずれも実際に
+# 落ちる(RED)ことを実測済み(scratchpadのred_green_w7.shで検証)。
+mkdir -p /tmp/cmd903_bin /tmp/scripts
+check "cmd903 W1: BASH_ENVの接頭でinbox_write.shの実行位置を変える(純データの実行位置に代入があれば純データでない)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' > /tmp/cmd903_w1.sh; BASH_ENV=/tmp/cmd903_w1.sh bash $PROJ_ROOT/scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 W2: ENVの接頭でsh系の実行位置を変える(同上)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' > /tmp/cmd903_w2.sh; ENV=/tmp/cmd903_w2.sh bash $PROJ_ROOT/scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 W3: 偽のinbox_write.sh(実体が別ファイル・末尾一致では通ってしまう)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' > /tmp/scripts/inbox_write.sh; bash /tmp/scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 W4: rg --hostname-bin(rgに実行の選択肢が残っている・rgを一覧から除外)" block \
+  "cd $M && rg --hostname-bin 'sh -c \"git commit --allow-empty -m x\"' x ."
+check "cmd903 W12: PATHの接頭でecho自体を差し替える(実行位置の語そのものが純データでも代入があれば不純)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' > /tmp/cmd903_bin/echo; PATH=/tmp/cmd903_bin:\$PATH echo 'git commit の話'"
+check "cmd903 W15: 単独のPATH代入文の後のgrep(以後の外部命令が差し替わりうる)" block \
+  "cd $M && PATH=/tmp/cmd903_bin:\$PATH; grep 'git commit' README.md"
+check "cmd903 W16: ./grep(basename一致で本物のgrepと誤認・実行位置の語は/を含まぬ素の名前に限る)" block \
+  "cd $M && ./grep 'git commit' README.md"
 
 rm -rf "$CMD903_M" "$CMD903_F"
 
