@@ -491,7 +491,16 @@ _lex_one_level() {
           if (subcmd != "") {
             if (cddir == "") cddir = cdhint[d]
             if (cddir == "") cddir = "UNKNOWN"
-            printf "INV\t%s\t%s\n", subcmd, cddir
+            # ★セルフレビュー是正: subcmd/cddirの値そのものに改行やTABが
+            # 含まれると(例: 埋め込み改行を持つ -C 引数)、awk<->bash間の
+            # 1行1レコードのプロトコルを壊し、bash側が値を切り詰めて誤った
+            # 確認先で判定してしまいうる(fail-open方向の穴になる恐れ)。
+            # 安全側でUNCERTAINとし旧判定へ倒す。
+            if (subcmd ~ /[\n\t]/ || cddir ~ /[\n\t]/) {
+              print "UNCERTAIN\tvalue-contains-newline-or-tab"
+            } else {
+              printf "INV\t%s\t%s\n", subcmd, cddir
+            }
           }
         }
         if (frametype[d] == "GROUP" && funcname[d] != "") {
@@ -808,6 +817,10 @@ _lex_git_invocations() {
   local text="$1" cdhint="${2:-UNKNOWN}" rdepth="${3:-0}"
   if [[ $rdepth -gt $_LEX_DEPTH_LIMIT ]]; then echo "UNCERTAIN"; return; fi
   if [[ ${#text} -gt $_LEX_SIZE_LIMIT ]]; then echo "UNCERTAIN"; return; fi
+  # ★設計文書§2.4: awk<->bash間の出力プロトコルはTAB区切り1行1レコードで
+  # ある。字句そのものにTABが含まれると(dir/subcmdの値へ紛れ込み)このプロト
+  # コルが壊れうる——安全側でUNCERTAIN(旧判定へfail-closed)とする。
+  if [[ "$text" == *$'\t'* ]]; then echo "UNCERTAIN"; return; fi
   if [[ $rdepth -eq 0 ]]; then
     text="$(_mask_heredoc_bodies_for_git_detection "$text")"
   fi
