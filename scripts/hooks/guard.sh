@@ -1141,13 +1141,24 @@ _lex_one_level() {
           # で得た生の文字列を素朴に引用符除去するのみで、状態機械の語
           # 構築(curword)は経由しない(この対象語はコマンドの引数ではなく
           # リダイレクト先であるため、従来どおり単純コマンドの語には含めない)。
-          if (c == ">" && !redir_isdup) {
+          if (c == ">") {
             redir_tgt = substr(line, redir_tgt_start, i - redir_tgt_start)
             if (length(redir_tgt) >= 2 && (substr(redir_tgt, 1, 1) == "\"" || substr(redir_tgt, 1, 1) == "\047") \
                 && substr(redir_tgt, length(redir_tgt), 1) == substr(redir_tgt, 1, 1)) {
               redir_tgt = substr(redir_tgt, 2, length(redir_tgt) - 2)
             }
-            if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+            # cmd_903 §16: ">&word"は、wordが数字のみか"-"ならfdの複製
+            # (例: 2>&1・>&2・>&-)で書き込みではない。それ以外の語なら
+            # bashはword宛のファイル書き込みとして扱う(r_err_and_out・
+            # probe8 Q10是正)。redir_isdupでない通常の>/>>/>|はこれまで
+            # どおり常にチェックする。
+            if (redir_isdup) {
+              if (!(redir_tgt ~ /^[0-9]+$/ || redir_tgt == "-")) {
+                if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+              }
+            } else {
+              if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+            }
           }
           continue
         }
@@ -1161,7 +1172,21 @@ _lex_one_level() {
           if (substr(line, i + 1, 1) == ">") {
             i += 2
             while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+            redir_tgt_start = i
             i = skip_one_word(line, i, n)
+            # cmd_903 §16: "&>word"は常にstdout/stderrをword宛のファイルへ
+            # 書き込む形(fd複製の特例なし・probe8 Q2是正)。"&>>word"(追記)
+            # は"&>"の2文字を消費した直後にもう一つの">"が残るため
+            # skip_one_wordが即座に空語を返し(">"は語の区切り文字)、
+            # 続く">word"はこのループの次のイテレーションで通常の
+            # ">"リダイレクトとして正しく検知される(§16実測で確認済み・
+            # 二重に検知することはない)。
+            redir_tgt = substr(line, redir_tgt_start, i - redir_tgt_start)
+            if (length(redir_tgt) >= 2 && (substr(redir_tgt, 1, 1) == "\"" || substr(redir_tgt, 1, 1) == "\047") \
+                && substr(redir_tgt, length(redir_tgt), 1) == substr(redir_tgt, 1, 1)) {
+              redir_tgt = substr(redir_tgt, 2, length(redir_tgt) - 2)
+            }
+            if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
             continue
           }
           end_simple_cmd(d); pipe_pending[d] = ""; i++; continue

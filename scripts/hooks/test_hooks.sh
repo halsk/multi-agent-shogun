@@ -1089,6 +1089,38 @@ check_installed "cmd903 probe7 A5: 素のgit commit(対照・mainなので従来
   "git commit --allow-empty -m x" \
   "$CMD903_INSTMAIN"
 
+echo ""
+echo "--- 六度目のやり直し(subtask_cmd903_hook1_hook3_impl7)の軍師QCで判明した2つの穴(§16・probe8 Q2/Q10) ---"
+# 出所: queue/reports/cmd903_hook1_hook3_design.md §16。probe8
+# (queue/reports/cmd903_prototype/probe8_write_forms_on_main.py・gitignore対象で
+# 本リポには含まれない)で見つかった、書き込み判定が`&>`・`>&`という
+# リダイレクトの形を見落としていた退行2件。同じ$CMD903_INSTMAIN(mainの
+# 使い捨てリポ)を使う——check_installedはコマンドを実行せずguard.shへの
+# 判定材料として渡すのみのため、probe7のA1〜A3(inbox_write.sh/venv pythonへの
+# 追記・上書きを装った文字列)を経ても実ファイルは汚れておらず、そのまま
+# 再利用できる。
+#
+# 是正前(PR#169 head 6c677d0)での実測(probe8_result_6c677d0.txt参照):
+#   Q2 (&> then run)   → allow (★退行: mainは正しくblockするがPRはallow)
+#   Q10 (>& file)      → allow (★退行: 同上)
+# 原因: `&>word`はskip_one_wordで対象語を読み飛ばすのみでIMPURE判定が
+# 無く、`>&word`はfd複製(`>&2`等)と同一視され、wordが数字/`-`でなくても
+# 無条件に書き込み判定を免れていた。是正後(下のcheck_installedで検証)は
+# いずれもblock(RED→GREEN)。
+check_installed "cmd903 probe8 Q2: echo … &> scripts/inbox_write.sh; 実行(§16是正前は退行・allowだった)" block \
+  "echo 'git commit --allow-empty -m x' &> scripts/inbox_write.sh; bash scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe8 Q10: echo … >& scripts/inbox_write.sh; 実行(§16是正前は退行・allowだった)" block \
+  "echo 'git commit --allow-empty -m x' >& scripts/inbox_write.sh; bash scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+# 対照(既に阻まれていることの確認・退行させぬための固定): &>>・>&digit(fd複製)
+check_installed "cmd903 probe8 Q9対照: &>>(既にblock・§16の変更で崩さぬことの確認)" block \
+  "echo 'git commit --allow-empty -m x' &>> scripts/inbox_write.sh; bash scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe8 fd-dup対照: 2>&1(fd複製・書き込みでないためallowのまま)" allow \
+  "bash scripts/inbox_write.sh karo hi x gunshi 2>&1" \
+  "$CMD903_INSTMAIN"
+
 rm -rf "$CMD903_INSTMAIN"
 
 echo ""
