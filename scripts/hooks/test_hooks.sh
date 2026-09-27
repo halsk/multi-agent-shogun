@@ -68,6 +68,33 @@ check() {
   fi
 }
 
+# checkと同じだが、hookのcwd(=Claude Codeがコマンドを実行する場所)を
+# 第4引数で明示指定する。cmd_903追補のE32-E35(コマンド文字列中の
+# cdとhookのcwdが食い違う形)を試すのに要る——checkは常にtest_hooks.sh
+# 自身のcwdでhookを起動するため、これらは試せなかった。
+check_cwd() {
+  local desc="$1"
+  local expected="$2"
+  local cmd="$3"
+  local hookcwd="$4"
+  # shellcheck disable=SC2155
+  local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}"
+
+  echo "$json" | (cd "$hookcwd" && bash "$GUARD") >/dev/null 2>&1
+  local exit_code=$?
+
+  if [[ "$expected" == "block" && $exit_code -eq 2 ]]; then
+    echo "  ✅ BLOCK: $desc"
+    ((PASS++)) || true
+  elif [[ "$expected" == "allow" && $exit_code -eq 0 ]]; then
+    echo "  ✅ ALLOW: $desc"
+    ((PASS++)) || true
+  else
+    echo "  ❌ FAIL: $desc (expected=$expected, got exit_code=$exit_code)"
+    ((FAIL++)) || true
+  fi
+}
+
 echo "=== Hook 1: Co-Authored-By 禁止 ==="
 # shellcheck disable=SC2016
 check "git commit with Co-Authored-By" block 'git commit -m "$(cat <<EOF
@@ -790,6 +817,21 @@ check "cmd903 P33a: 変数エイリアス+Co-Authored-By(Hook1・既存)" block 
 Co-Authored-By: a <a@a>\""
 check "cmd903 P33b: 関数エイリアス+Co-Authored-By(Hook1・既存)" block "cd $F && f() { git \"\$@\"; }; f commit -m \"…Co-Authored-By: a <a@a>\""
 check "cmd903 P34: featureへのpushはパイプ経由でも許可(過剰ブロック防止)" allow "cd $F && echo 'git push' | bash"
+
+echo "--- やり直し(subtask_cmd903_hook1_hook3_impl2): PR#169軍師QC(敵対的探索)で判明した退行5件+残FN5件 ---"
+# 出所: queue/reports/cmd903_prototype/probe2_adversarial.py。是正前(本コミット直前のPR#169コード)で
+# 実際に落ちる(RED)ことを確認済み(手元probeで実証: E7/E9/E10/E16/E17は main では正しくblockし
+# PR169コードでのみallowへ退行、E32/E33/E34/E35/E37は main・PR169いずれもallowの残存FN)。
+check "cmd903 E7: command -p git commit(包みの選択肢-pの読み飛ばし漏れ・退行)" block "cd $M && command -p git commit --allow-empty -m x"
+check "cmd903 E9: env -u FOO git commit(envの引数を取る選択肢の読み飛ばし漏れ・退行)" block "cd $M && env -u FOO git commit --allow-empty -m x"
+check_cwd "cmd903 E10: xargs -I{} git commit(xargs自身の選択肢の読み飛ばし漏れ・退行)" block "echo x | xargs -I{} git commit --allow-empty -m {}" "$M"
+check "cmd903 E16: source <(echo 'git commit ...')(プロセス置換をsourceが読む形・退行)" block "cd $M && source <(echo 'git commit --allow-empty -m x')"
+check "cmd903 E17: . <(printf ...)(同上・dotコマンド)" block "cd $M && . <(printf '%s' 'git commit --allow-empty -m x')"
+check_cwd "cmd903 E32: git -C . after cd(-Cの相対パスをcdの手掛かりに対して解く・残FN)" block "cd $M && git -C . commit --allow-empty -m x" "$F"
+check_cwd "cmd903 E33: --git-dir=/--work-tree=がmainを指す(cwdはfeature・cmd_901型の穴・残FN)" block "cd $F && git --git-dir=$M/.git --work-tree=$M commit --allow-empty -m x" "$F"
+check_cwd "cmd903 E34: GIT_DIR=接頭がmainを指す(cwdはfeature・残FN)" block "cd $F && GIT_DIR=$M/.git git commit --allow-empty -m x" "$F"
+check_cwd "cmd903 E35: cdの引数が変数(束縛表で解く・残FN)" block "D=$M; cd \$D && git commit --allow-empty -m x" "$F"
+check "cmd903 E37: function f { git \"\$@\"; }; f commit(functionキーワード形・残FN)" block "cd $M && function f { git \"\$@\"; }; f commit --allow-empty -m x"
 
 rm -rf "$CMD903_M" "$CMD903_F"
 

@@ -297,6 +297,23 @@ has_git_subcmd() {
   return 1
 }
 
+# cmd_903追補#1専用: 構造的な守り(安全網)だけで使う、直接隣接のみを見る
+# 厳密判定。has_git_subcmd の直接パターン(git\s+$subcmd\b)を再利用しない
+# 理由: POSIX ERE の \b は英数字/アンダースコアと非英数字の境界を指すため、
+# 「commit」の直後に「-」が続く別subcmd(commit-graph・commit-tree等)も
+# 誤って一致させる(旧来からの欠陥・cmd903 N13で実際に踏んだ)。安全網は
+# 「新判定(字句解析器)が旧判定の穴を見逃していないか」を確かめる目的で
+# あり、旧判定自身が持つ既知の別の欠陥まで再現する必要は無い——そのため
+# ここだけ厳密な語末(空白/演算子/文字列末)を要求する。has_git_subcmdの
+# 他のパターン(-C/フルパス/包み/関数エイリアス/変数エイリアス/変数
+# subcmd)は、新しい字句解析器+解決器が既により精密に(BIND/ALIASで)
+# 判定済みのため、安全網では見ない(直接隣接だけが「未知の包みの読み
+# 飛ばし漏れ」を拾う一般形)。
+_has_git_subcmd_direct_strict() {
+  local cmd="$1" subcmd="$2"
+  echo "$cmd" | grep -qE "git[[:space:]]+$subcmd([^A-Za-z0-9_-]|\$)"
+}
+
 # ============================================================
 # cmd_903(軍師設計 queue/reports/cmd903_hook1_hook3_design.md): Hook1/Hook3
 # 専用の字句の状態機械 + 解決器
@@ -355,6 +372,7 @@ _lex_one_level() {
       nwords[nd] = 0
       pipe_pending[nd] = ""
       heredoc_active[nd] = 0; heredoc_tag[nd] = ""; heredoc_striptabs[nd] = 0
+      pending_ps_id[nd] = 0
     }
     # 上流の単純コマンドの全ての語を捕らえておく(設計文書§3.3: パイプ先が
     # interpreterで受け手が"-c"を持たぬ場合、上流の語を独立した文字列として
@@ -367,10 +385,27 @@ _lex_one_level() {
       for (k = 1; k <= nwords[d]; k++) pipe_pending_w[d, k] = cmdword[d, k]
       pipe_pending[d] = (nwords[d] > 0) ? "1" : ""
     }
-    function pop_frame(ftype_of_closed,    nd) {
+    # cmd_903追補#2: プロセス置換 <(…) の中身の単純コマンドの語を捕らえておく。
+    # source <(echo '…') / . <(printf …) のように、置換の"出力"を
+    # source/./bash/sh/zsh 等が読む形は、中身の語それぞれを独立した再走査
+    # 候補にする(capture_pipe_upstreamと同じ発想。設計文書§追補2)。
+    function capture_procsub_words(d,    k) {
+      close_word(d)
+      ps_pending_n[d] = nwords[d]
+      for (k = 1; k <= nwords[d]; k++) ps_pending_w[d, k] = cmdword[d, k]
+    }
+    function pop_frame(ftype_of_closed,    nd, k, id) {
       nd = depth - 1
       if (ftype_of_closed == "CMDSUB" || ftype_of_closed == "BACKTICK" || ftype_of_closed == "PROCSUB") {
         wu[nd] = "x"; wstarted[nd] = 1
+      }
+      if (ftype_of_closed == "PROCSUB" && ps_pending_n[depth] > 0) {
+        ps_id_counter++
+        id = ps_id_counter
+        ps_cap_n[id] = ps_pending_n[depth]
+        for (k = 1; k <= ps_pending_n[depth]; k++) ps_cap_w[id, k] = ps_pending_w[depth, k]
+        ps_pending_n[depth] = 0
+        pending_ps_id[nd] = id
       }
       depth = nd
     }
@@ -388,19 +423,42 @@ _lex_one_level() {
       }
       end_word(d)
     }
-    function end_word(d,    w, flags, widx) {
-      if (!wstarted[d]) { purevar[d] = ""; return }
+    function end_word(d,    w, flags, widx, wsafe) {
+      if (!wstarted[d]) { purevar[d] = ""; pending_ps_id[d] = 0; return }
       widx = nwords[d] + 1
+      # ★セルフレビュー是正(E35の根本原因): VARNAME[d,widx]/WORD_PS_ID[d,widx]は
+      # 同じ深さdの★前の単純コマンドが同じ語index widxで書いた値が残ったまま
+      # になりうる(nwords[d]は単純コマンドごとにリセットされるが、これら
+      # 補助連想配列はwidxキーで上書きされない限り消えない)。今回の語が
+      # purevar/procsubでなければ明示的にdeleteし、古い変数束縛が別の語
+      # (例: git呼出のsubcmd語)に化けて誤読される事故を防ぐ
+      # (D=/tmp/x; cd $D && git branch --show-current で実際に踏んだ:
+      #  "branch"がVARNAME[0,2]="D"の残骸によりBIND["D"]の値に化けた)。
       if (purevar[d] != "" && curword[d] == "") {
         VARNAME[d, widx] = purevar[d]
         w = ""
       } else {
         w = curword[d]
+        delete VARNAME[d, widx]
+      }
+      if (pending_ps_id[d] != 0) {
+        WORD_PS_ID[d, widx] = pending_ps_id[d]; pending_ps_id[d] = 0
+      } else {
+        delete WORD_PS_ID[d, widx]
       }
       flags = (wq[d] == "q" ? "q" : "u") (wu[d] == "x" ? "x" : "")
       nwords[d] = widx
       cmdword[d, widx] = w
       cmdflag[d, widx] = flags
+      # cmd_903追補#1(構造的な守り): 引用符の中の文字を含んだ語(データ)を
+      # 伏せ字("QDATA")へ置き換えた、平らな語の並びを併せて作る。旧
+      # has_git_subcmd をこの伏せ字済み文字列へもう一度当て、まだ一致
+      # すれば新判定がallowでもblockを維持する(設計文書§追補1)。深さ・
+      # 入れ子を問わず全ての語を出現順にここへ積む——has_git_subcmdは
+      # 隣接語の正規表現に過ぎず、区切り記号の有無は見ないため、これで足りる。
+      wsafe = w
+      gsub(/[\n\t]/, " ", wsafe)
+      MASKOUT = MASKOUT (flags ~ /q/ ? "QDATA" : wsafe) " "
       curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
     }
     function resolve_word(d, j,    v) {
@@ -411,7 +469,7 @@ _lex_one_level() {
       }
       return cmdword[d, j]
     }
-    function end_simple_cmd(d,    idx, tok, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, j, body, k, cflag, foundexec) {
+    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid) {
       close_word(d)
       if (nwords[d] == 0) { herestring_body[d] = ""; return }
       idx = 1
@@ -422,10 +480,31 @@ _lex_one_level() {
           BIND[substr(tok, 1, eqpos - 1)] = substr(tok, eqpos + 1)
           idx++; continue
         }
+        # cmd_903追補#3(E37): `function NAME { … }` キーワード形。
+        # `NAME() { … }`(既存のnwords==1判定)と並ぶもう一つの関数定義の書き方。
+        if (tok == "function") {
+          idx++
+          if (idx <= nwords[d] && !((d, idx) in VARNAME)) {
+            fname_tmp = cmdword[d, idx]
+            sub(/\(\)$/, "", fname_tmp)
+            pending_funcname = fname_tmp
+            idx++
+          }
+          continue
+        }
         if (tok == "if" || tok == "then" || tok == "elif" || tok == "else" || tok == "do" || \
             tok == "while" || tok == "until" || tok == "!" || tok == "time") { idx++; continue }
         if (tok == "export" || tok == "local" || tok == "declare" || tok == "readonly") { idx++; continue }
-        if (tok == "command" || tok == "exec" || tok == "nohup" || tok == "stdbuf" || \
+        # cmd_903追補#5(E7): `command` の選択肢(-p/-v/-V、いずれも引数を
+        # 取らない)を読み飛ばす。旧実装は "command" 自体を1語読み飛ばす
+        # だけで、次の語が選択肢(-p等)だと誤ってそれを実行位置の語と
+        # みなしていた。
+        if (tok == "command") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) idx++
+          continue
+        }
+        if (tok == "exec" || tok == "nohup" || tok == "stdbuf" || \
             tok == "ionice" || tok == "caffeinate" || tok == "unbuffer") { idx++; continue }
         if (tok == "nice") {
           idx++
@@ -451,6 +530,13 @@ _lex_one_level() {
           idx++
           while (idx <= nwords[d]) {
             t2 = cmdword[d, idx]
+            # cmd_903追補#5(E9): env の -u/-C/-S(long: --unset/--chdir/
+            # --split-string)は次の語を引数として取る。旧実装は
+            # "-"で始まる語を無条件に1語だけ読み飛ばしており、-u NAME の
+            # NAME を実行位置の語と誤認していた(env -u FOO git commit で、
+            # FOOをheadと誤解決しgit呼出を丸ごと見失っていた)。
+            if (t2 == "-u" || t2 == "-C" || t2 == "-S" || \
+                t2 == "--unset" || t2 == "--chdir" || t2 == "--split-string") { idx += 2; continue }
             if (t2 ~ /^-/) { idx++; continue }
             if (!((d, idx) in VARNAME) && t2 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { idx++; continue }
             break
@@ -474,12 +560,40 @@ _lex_one_level() {
       if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
       if (resolved == "git") {
         j = idx + 1
-        cddir = ""
+        cddir = ""; cddir_wt = ""
         while (j <= nwords[d]) {
           tok = cmdword[d, j]
-          if (tok == "-C") { cddir = resolve_word(d, j + 1); j += 2; continue }
-          if (tok == "-c" || tok == "--git-dir" || tok == "--work-tree" || tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
-          if (tok ~ /^--(git-dir|work-tree|namespace|exec-path)=/) { j++; continue }
+          # cmd_903追補#4: -C の値が相対パスなら、cd の手掛かり(cdhint)に
+          # 対して解く(旧: 値をそのまま使い、hookのcwdに対して解かれて
+          # しまい、cd $M && git -C . のような形でずれていた・E32是正)。
+          if (tok == "-C") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 != "" && tok2 !~ /^\//) {
+              tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            }
+            cddir = tok2
+            j += 2; continue
+          }
+          # cmd_903追補#3(E33): --git-dir の値を確認先候補として捕らえる
+          # (旧は読み飛ばすのみで、Hook3の確認先には反映していなかった)。
+          # 値がgit-dirを指す時はbash側で `git --git-dir=` を使って branch
+          # を見る必要があるため、"GITDIR:" 印を付けて渡す(§3.4追補)。
+          if (tok == "--git-dir") { cddir = "GITDIR:" resolve_word(d, j + 1); j += 2; continue }
+          if (tok ~ /^--git-dir=/) { cddir = "GITDIR:" substr(tok, 11); j++; continue }
+          # --work-tree はgit-dirより優先度は下だが、-C相当の確認先候補として捕らえる
+          # (cddir_wt。-C/--git-dirが無い時だけフォールバックで使う・§3.4追補)。
+          if (tok == "--work-tree") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 != "" && tok2 !~ /^\//) tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            cddir_wt = tok2; j += 2; continue
+          }
+          if (tok ~ /^--work-tree=/) {
+            tok2 = substr(tok, 13)
+            if (tok2 != "" && tok2 !~ /^\//) tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            cddir_wt = tok2; j++; continue
+          }
+          if (tok == "-c" || tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
+          if (tok ~ /^--(namespace|exec-path)=/) { j++; continue }
           if (tok == "-p" || tok == "-P" || tok == "--paginate" || tok == "--no-pager" || tok == "--bare" || \
               tok == "--no-replace-objects" || tok == "--literal-pathspecs" || tok == "--glob-pathspecs" || \
               tok == "--noglob-pathspecs" || tok == "--icase-pathspecs" || tok == "--no-optional-locks" || tok == "--no-advice") { j++; continue }
@@ -489,6 +603,13 @@ _lex_one_level() {
         if (j <= nwords[d]) {
           subcmd = resolve_word(d, j)
           if (subcmd != "") {
+            # cmd_903追補#3(E34): GIT_DIR=… の代入接頭(このコマンドの
+            # プレフィクスとしてBINDへ既に記録済み)を、-C/--git-dirが
+            # 無い時のフォールバックとして使う(実際のgitのGIT_DIR環境変数
+            # の優先順位と同じ: -C/--git-dir が無い時のみ効く)。
+            if (cddir == "" && ("GIT_DIR" in BIND)) cddir = "GITDIR:" BIND["GIT_DIR"]
+            if (cddir == "" && cddir_wt != "") cddir = cddir_wt
+            if (cddir == "" && ("GIT_WORK_TREE" in BIND)) cddir = BIND["GIT_WORK_TREE"]
             if (cddir == "") cddir = cdhint[d]
             if (cddir == "") cddir = "UNKNOWN"
             # ★セルフレビュー是正: subcmd/cddirの値そのものに改行やTABが
@@ -540,6 +661,21 @@ _lex_one_level() {
           }
         }
       }
+      # cmd_903追補#2(E16/E17): source/./bash/sh/zsh 等がプロセス置換
+      # <(…) を(-cの有無に関わらず)引数として読む形。捕らえておいた
+      # 中身の語(WORD_PS_ID経由)を、それぞれ独立した再走査対象として出す
+      # (capture_pipe_upstreamと同じ発想。設計文書§追補2)。
+      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh" || \
+          resolved == "source" || resolved == ".") {
+        for (j = idx + 1; j <= nwords[d]; j++) {
+          if ((d, j) in WORD_PS_ID) {
+            psid = WORD_PS_ID[d, j]
+            for (k = 1; k <= ps_cap_n[psid]; k++) {
+              if (ps_cap_w[psid, k] != "") printf "RESCAN\t%s\t%s\n", ps_cap_w[psid, k], cdhint[d]
+            }
+          }
+        }
+      }
       if (resolved == "eval") {
         body = ""
         for (k = idx + 1; k <= nwords[d]; k++) body = body (k > idx + 1 ? " " : "") cmdword[d, k]
@@ -549,8 +685,20 @@ _lex_one_level() {
         if (idx + 1 <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, idx + 1], cdhint[d]
       }
       if (resolved == "xargs") {
+        # cmd_903追補#5(E10): xargs自身の選択肢(-I/-L/-n/-P/-d/-s/-a、
+        # 分離形は引数を1語取る)を読み飛ばしてから残りをrescanする。旧実装は
+        # xargsの直後から無条件に全語を1本の文字列にして再走査していたため、
+        # xargs -I{} git commit … のように先頭に選択肢があると、その選択肢
+        # 自体が(再走査後の)実行位置の語と誤認され、本来のgit呼出が
+        # 見えなくなっていた。
+        j = idx + 1
+        while (j <= nwords[d] && cmdword[d, j] ~ /^-/) {
+          tok = cmdword[d, j]
+          if (tok == "-I" || tok == "-L" || tok == "-n" || tok == "-P" || tok == "-d" || tok == "-s" || tok == "-a") { j += 2 }
+          else { j++ }
+        }
         body = ""
-        for (k = idx + 1; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
+        for (k = j; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
         if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
       }
       if (resolved == "find") {
@@ -577,6 +725,9 @@ _lex_one_level() {
       pending_funcname = ""
       toolarge = 0
       totalchars = 0
+      MASKOUT = ""
+      pending_ps_id[0] = 0
+      ps_id_counter = 0
     }
     {
       line = $0
@@ -685,6 +836,7 @@ _lex_one_level() {
         }
         if (c == ")") {
           if (d > 0 && (frametype[d] == "CMDSUB" || frametype[d] == "BACKTICK" || frametype[d] == "PROCSUB" || frametype[d] == "SUBSHELL")) {
+            if (frametype[d] == "PROCSUB") capture_procsub_words(d)
             end_simple_cmd(d)
             ft = frametype[d]; sv = savedst[d]
             pop_frame(ft)
@@ -803,6 +955,7 @@ _lex_one_level() {
       if (depth != 0) print "UNCERTAIN\tunclosed-bracket"
       if (state[depth] == "S" || state[depth] == "D" || state[depth] == "A") print "UNCERTAIN\tunterminated-quote"
       if (toolarge) print "UNCERTAIN\tinput-too-large"
+      print "MASKED\t" MASKOUT
     }
   ' <<<"$text"
 }
@@ -846,6 +999,24 @@ _lex_git_invocations() {
         _lex_git_invocations "$b" "$hint" "$((rdepth + 1))"
         ;;
     esac
+  done <<<"$out"
+}
+
+# cmd_903追補#1(構造的な守り): トップレベル(再走査を経ない、hookが直接
+# 受け取ったコマンド文字列そのもの)だけを対象に、_lex_one_level の
+# MASKED 行(引用符の中の語を伏せ字にした平らな語の並び)を取り出す。
+# 再走査(RESCAN)先の文字列は、それぞれが独立に _lex_git_invocations で
+# 解析され、そこでgit呼出が見つかればINVとして既に出てくるため、ここでは
+# 見ない(深さ0のみでよい・設計文書§追補1)。
+_lex_get_masked() {
+  local text="$1"
+  local out line
+  out="$(_lex_one_level "$text" "UNKNOWN")"
+  while IFS= read -r line; do
+    if [[ "${line%%$'\t'*}" == "MASKED" ]]; then
+      echo "${line#*$'\t'}"
+      return
+    fi
   done <<<"$out"
 }
 
@@ -897,13 +1068,25 @@ if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
     echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
     exit 2
   fi
-elif echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
-  # ★trailer(Co-Authored-By)の検索は従来どおりCOMMAND全体を対象とする
-  # (trailerは-mの引数・heredoc等、正当に引用符の中に入るものであるため)。
-  # 誤爆の源だったのは「commit呼出そのものの検知」の側であり、そちらだけを
-  # 字句の状態機械で厳密化した(設計文書§1)。
-  echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
-  exit 2
+else
+  # cmd_903追補#1(構造的な守り・最優先): 新判定(_GIT_INV_RESULT)が旧判定
+  # (has_git_subcmd)の block を allow に覆してよいのは、旧判定の一致が
+  # すべて「データとして扱った引用の中」にある時だけ。データの引用の語を
+  # 伏せ字にした文字列(_GIT_DATA_MASKED)へ旧has_git_subcmdをもう一度当て、
+  # まだ一致すれば(=引用の外にも一致があった)新判定の穴を疑い、旧同様に
+  # 扱う。これにより、包み・選択肢の網羅漏れ(command -p / env -u 等)が
+  # あっても、引用の外に現れたgit呼出を見逃す退行は原理的に起きない
+  # (設計文書§追補1・PR#169のQCで見つかったE7/E9/E10の退行がこれ)。
+  _GIT_DATA_MASKED="$(_lex_get_masked "$(_mask_heredoc_bodies_for_git_detection "$COMMAND")")"
+  if { echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" || _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "commit"; } \
+     && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+    # ★trailer(Co-Authored-By)の検索は従来どおりCOMMAND全体を対象とする
+    # (trailerは-mの引数・heredoc等、正当に引用符の中に入るものであるため)。
+    # 誤爆の源だったのは「commit呼出そのものの検知」の側であり、そちらだけを
+    # 字句の状態機械で厳密化した(設計文書§1)。
+    echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
+    exit 2
+  fi
 fi
 
 # ============================================================
@@ -1781,13 +1964,35 @@ else
     if [[ "$_inv_subcmd" == "commit" || "$_inv_subcmd" == "push" ]]; then
       _inv_confirm_dir="$_inv_dir"
       [[ "$_inv_confirm_dir" == "UNKNOWN" ]] && _inv_confirm_dir="$GIT_TARGET_DIR"
-      _inv_branch=$(git -C "$_inv_confirm_dir" branch --show-current 2>/dev/null || echo "")
+      # cmd_903追補#3: --git-dir=/GIT_DIR= の値は "GITDIR:" 印付きで渡ってくる。
+      # このdirはworktreeでなくgit-dirそのものなので `-C` でなく `--git-dir=`
+      # で見る(cmd_901の事故の経路・§3.4追補)。
+      if [[ "$_inv_confirm_dir" == GITDIR:* ]]; then
+        _inv_branch=$(git --git-dir="${_inv_confirm_dir#GITDIR:}" branch --show-current 2>/dev/null || echo "")
+      else
+        _inv_branch=$(git -C "$_inv_confirm_dir" branch --show-current 2>/dev/null || echo "")
+      fi
       if [[ "$_inv_branch" == "main" || "$_inv_branch" == "master" ]]; then
         echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
         exit 2
       fi
     fi
   done <<<"$_GIT_INV_RESULT"
+  # cmd_903追補#1(構造的な守り): Hook1と同じ安全網。新判定(INVの列挙)が
+  # 包み・選択肢の網羅漏れで実行位置のgit呼出を1件でも見逃していないか、
+  # データの引用を伏せた文字列へ旧has_git_subcmdをもう一度当てて確かめる。
+  # まだ一致すれば、確認先が不明な時と同じ扱い(GIT_TARGET_DIRを見る・
+  # 保守側)でblock判定する。★上のwhileループで既に正しく確認済みの呼出
+  # (feature上のcommit等)がここでも再び一致するのは無害(二重に安全側へ
+  # 倒すだけで、許可済みの判定を覆しはしない——block条件が満たされない
+  # 限りexitしないため)。
+  if _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "commit" || _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "push"; then
+    CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+      echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+      exit 2
+    fi
+  fi
 fi
 
 # ============================================================
