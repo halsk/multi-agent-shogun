@@ -36,16 +36,38 @@ _arg_after() {
   echo "$1" | grep -oE "$2[[:space:]]+(\"[^\"]+\"|[^[:space:]&;|]+)" | sed -E "s/^$2[[:space:]]+//" | tail -1 | tr -d '"'
 }
 
+# cmd_903 §15点1: 最初のcdの手掛かりは、resolve_git_dirがCOMMAND中に
+# cd/-Cを一切見つけられなかった時(相対パスのinbox_write.sh呼出のように、
+# project rootからcdを挟まず直接呼ぶ形——CLAUDE.mdの例そのもの)、
+# ★hookの実際のcwd(pwd -P)とする。旧来の"."は、後段でそのまま文字列連結
+# される箇所(is_pure_headのbash分岐でcdhint[d] "/" first)で絶対パスとして
+# 扱えず(cdhint ~ /^\// を満たさない)、相対パスのinbox_write.shが常に
+# CANONと一致しない(fail-closedで純データと判じられずblockのまま)欠陥の
+# 原因だった(設計文書§15点1・probe7で実証)。pwd -Pで揃えるのは、/tmp と
+# /private/tmp のようなsymlinkの食い違いでCANONと不一致になるのを避ける
+# ため(CANON側も同じくpwd -Pにする・下記)。
+_GUARD_HOOK_CWD="$(pwd -P)"
+
 resolve_git_dir() {
   local cmd="$1" target
   # Prefer `git -C <dir>` (git operates there regardless of cwd), else last `cd <dir>`.
   target=$(_arg_after "$cmd" 'git[[:space:]]+-C')
   if [[ -n "$target" && -d "$target" ]]; then echo "$target"; return; fi
   target=$(_arg_after "$cmd" 'cd')
-  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; else echo "."; fi
+  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; else echo "$_GUARD_HOOK_CWD"; fi
 }
 
 GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
+
+# cmd_903 §13点3: 「bash <path>/inbox_write.sh」を純データ扱いしてよいのは
+# 実体パスがこのguard.sh自身が属するプロジェクトのscripts/inbox_write.shと
+# 一致する時だけ(末尾一致・basename一致は不可・W3是正)。自己参照で導けば、
+# worktreeで実行してもそのworktree自身のinbox_write.shを指し、他機の
+# ハードコードパスに依存しない。
+# cmd_903 §15点1: ここもpwd -Pで揃える(上のGIT_TARGET_DIR/cdhintと同じ
+# symlink食い違い対策)。
+_GUARD_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+_GUARD_CANON_INBOX_WRITE="$(cd "$_GUARD_SELF_DIR/../.." >/dev/null 2>&1 && pwd -P)/scripts/inbox_write.sh"
 
 # ============================================================
 # Helper: heredoc本文をgit検出用にマスクする (FP-H3是正・cmd_new_backtick_safety)
@@ -159,6 +181,27 @@ _mask_heredoc_bodies_for_git_detection() {
       }
       return n
     }
+    # cmd_903 §4是正(軍師設計 queue/reports/cmd903_hook1_hook3_design.md):
+    # 単一/二重引用符の中の文字を \001 に潰した写しを返す(occurs() の(d)判定
+    # を「引用符の外の出現だけ」にするための下ごしらえ)。今回の誤爆
+    # (design文書N14相当): 書き出し先のパスが、後続の echo 本文の単一引用符の
+    # 中でもう一度言及されただけで(d)が「再利用」と誤認しマスクを外していた。
+    # 引用符の中は実行されないデータであり、そこにパス文字列が現れても
+    # cat > s.sh <<EOF … EOF; bash s.sh のような本物の再実行形とは異なる。
+    function strip_quoted_spans(s,    out, i, c, n2, q) {
+      out = ""; n2 = length(s); q = ""
+      for (i = 1; i <= n2; i++) {
+        c = substr(s, i, 1)
+        if (q == "") {
+          if (c == "\047" || c == "\"") { q = c; out = out "\001" }
+          else out = out c
+        } else {
+          out = out "\001"
+          if (c == q) q = ""
+        }
+      }
+      return out
+    }
     # FU-1是正(PR#125 v2 followup): 行に bash/sh/zsh/source/. のいずれかの
     # 起動語と glob 文字(* ? [)が同一行に現れるか(宛先を glob で実行する
     # N8b のような形を、リテラル一致に頼らず捕らえる)。
@@ -208,10 +251,12 @@ _mask_heredoc_bodies_for_git_detection() {
               if (target == "") sink = 0
             }
             # (d) 書き出し先が他の場所に再び現れないか(開始行の2回目以降・本文外の全行)
-            if (sink && occurs(line, target) > 1) sink = 0
+            # ★引用符の外の出現だけを数える(cmd_903 §4是正・上のstrip_quoted_spans
+            # コメント参照)。地の文としての言及(単一/二重引用符の中)は再利用ではない。
+            if (sink && occurs(strip_quoted_spans(line), target) > 1) sink = 0
             for (j = 1; j <= n && sink; j++) {
               if (j >= i && j <= e) continue
-              if (occurs(L[j], target) > 0) sink = 0
+              if (occurs(strip_quoted_spans(L[j]), target) > 0) sink = 0
               if (has_glob_exec_risk(L[j])) sink = 0
             }
             # (e) 本文に置換記号が無いか(unquoted heredoc は展開される)
@@ -274,6 +319,1005 @@ has_git_subcmd() {
   return 1
 }
 
+# cmd_903 §12専用(旧追補#1由来): 安全網(§12のlegacy信号)だけで使う、
+# 直接隣接のみを見る厳密判定。has_git_subcmd の直接パターン(git\s+$subcmd\b)
+# を再利用しない
+# 理由: POSIX ERE の \b は英数字/アンダースコアと非英数字の境界を指すため、
+# 「commit」の直後に「-」が続く別subcmd(commit-graph・commit-tree等)も
+# 誤って一致させる(旧来からの欠陥・cmd903 N13で実際に踏んだ)。安全網は
+# 「新判定(字句解析器)が旧判定の穴を見逃していないか」を確かめる目的で
+# あり、旧判定自身が持つ既知の別の欠陥まで再現する必要は無い——そのため
+# ここだけ厳密な語末(空白/演算子/文字列末)を要求する。has_git_subcmdの
+# 他のパターン(-C/フルパス/包み/関数エイリアス/変数エイリアス/変数
+# subcmd)は、新しい字句解析器+解決器が既により精密に(BIND/ALIASで)
+# 判定済みのため、安全網では見ない(直接隣接だけが「未知の包みの読み
+# 飛ばし漏れ」を拾う一般形)。
+_has_git_subcmd_direct_strict() {
+  local cmd="$1" subcmd="$2"
+  echo "$cmd" | grep -qE "git[[:space:]]+$subcmd([^A-Za-z0-9_-]|\$)"
+}
+
+# ============================================================
+# cmd_903(軍師設計 queue/reports/cmd903_hook1_hook3_design.md): Hook1/Hook3
+# 専用の字句の状態機械 + 解決器
+# ------------------------------------------------------------
+# 背景: 上の has_git_subcmd は正規表現のみで判定するため引用符を理解せず、
+# FP(誤爆・例: 単一引用符のinbox本文・二重引用符のecho文言・heredocの地の文)と
+# FN(見逃し・例: 引用符で包んだ"git" commit・$'git' commit・git -c … commit・
+# 引用符の中のcdがHook3の確認先を逸らす)の双方を持つ(設計文書§0の実測表)。
+# ここでは Hook1・Hook3 に限り、引用符・入れ子(command substitution/バック
+# クォート/subshell/group)を1文字ずつ理解する状態機械で git 呼出を検出する。
+# D003/D004(Hook2)・Hook6は has_git_subcmd のまま(本is正の範囲外・設計文書§7)。
+# ★確信が持てぬ入力(引用符/括弧が閉じない等)は UNCERTAIN とし、has_git_subcmd
+# を使った旧判定へ倒す(fail-closed・設計文書§2.4)。
+#
+# ★適用範囲: この検知は、Bash ツールへ渡るコマンド文字列の中で、git の呼出が
+# 実行位置にあるものだけを見る。node/python等の子プロセスが内部で呼ぶgit
+# (execFileSync('git', …) 等)は文字列に現れないため一切見えない(cmd_902実測:
+# 使い捨てリポのmainで、node run.mjsの中のコミット作成が阻まれずに通った)。
+# これはPreToolUse hookの原理的な限界であり、欠陥ではない。子プロセスのgitから
+# 守るのは、試験の側の隔離(env のGIT_*を除く・一時dirを確かめる)の役目である。
+#
+# 出力プロトコル(1文字ずつ歩くawk本体 _lex_one_level と、再走査を担うbash
+# 側の _lex_git_invocations に分かれる。awk<->bash間はTAB区切り1行1レコード):
+#   INV<TAB>subcmd<TAB>cddir(またはUNKNOWN)   … git呼出1件
+#   RESCAN<TAB>text<TAB>cdhint                … bash -c/eval/trap/xargs/
+#                                                find -exec/パイプ先interpreter等
+#                                                の中身を独立した文字列として
+#                                                再走査せよ(設計文書§3.3)
+#   UNCERTAIN<TAB>reason                      … 確信が持てぬ(旧判定へ倒す)
+# ============================================================
+_lex_one_level() {
+  local text="$1" init_cdhint="$2"
+  awk -v INIT_CDHINT="$init_cdhint" -v CANON_INBOX_WRITE="$_GUARD_CANON_INBOX_WRITE" '
+    function basename_of(s,    n, parts) {
+      if (index(s, "/") == 0) return s
+      n = split(s, parts, "/")
+      return parts[n]
+    }
+    function resolve_head(val, varname,    v) {
+      if (varname != "") {
+        if (varname in BIND) return resolve_head(BIND[varname], "")
+        return ""
+      }
+      if (val in ALIAS) return "git"
+      return basename_of(val)
+    }
+    # cmd_903 §13点1: is_pure_head()が「実行位置の語が/を含まぬ素の名前か」を
+    # 判じるための、basenameを剥がさない解決(resolve_headと同じ変数追跡だが
+    # basename_ofを呼ばない)。W16是正(./grepをbasename一致でgrepと誤認しない)。
+    function resolve_head_full(val, varname,    v) {
+      if (varname != "") {
+        if (varname in BIND) return resolve_head_full(BIND[varname], "")
+        return ""
+      }
+      return val
+    }
+    function push_frame(ftype,    nd) {
+      nd = depth + 1
+      depth = nd
+      frametype[nd] = ftype
+      state[nd] = "N"
+      cdhint[nd] = cdhint[nd - 1]
+      funcname[nd] = ""
+      curword[nd] = ""; wstarted[nd] = 0; wq[nd] = ""; wu[nd] = ""; purevar[nd] = ""
+      in_herestring[nd] = 0
+      nwords[nd] = 0
+      pipe_pending[nd] = ""
+      heredoc_active[nd] = 0; heredoc_tag[nd] = ""; heredoc_striptabs[nd] = 0
+      pending_ps_id[nd] = 0
+    }
+    # 上流の単純コマンドの全ての語を捕らえておく(設計文書§3.3: パイプ先が
+    # interpreterで受け手が"-c"を持たぬ場合、上流の語を独立した文字列として
+    # 再走査する対象にする・例: echo git-push-etc | sh)。捕らえた語は
+    # awk<->bash間のTAB区切りプロトコルを壊さぬよう改行結合せず1語ずつ
+    # 個別のRESCAN行として後で出す。
+    function capture_pipe_upstream(d,    k) {
+      close_word(d)
+      pipe_pending_n[d] = nwords[d]
+      for (k = 1; k <= nwords[d]; k++) pipe_pending_w[d, k] = cmdword[d, k]
+      pipe_pending[d] = (nwords[d] > 0) ? "1" : ""
+    }
+    # cmd_903追補#2: プロセス置換 <(…) の中身の単純コマンドの語を捕らえておく。
+    # source <(echo '…') / . <(printf …) のように、置換の"出力"を
+    # source/./bash/sh/zsh 等が読む形は、中身の語それぞれを独立した再走査
+    # 候補にする(capture_pipe_upstreamと同じ発想。設計文書§追補2)。
+    function capture_procsub_words(d,    k) {
+      close_word(d)
+      ps_pending_n[d] = nwords[d]
+      for (k = 1; k <= nwords[d]; k++) ps_pending_w[d, k] = cmdword[d, k]
+    }
+    function pop_frame(ftype_of_closed,    nd, k, id) {
+      nd = depth - 1
+      if (ftype_of_closed == "CMDSUB" || ftype_of_closed == "BACKTICK" || ftype_of_closed == "PROCSUB") {
+        wu[nd] = "x"; wstarted[nd] = 1
+      }
+      if (ftype_of_closed == "PROCSUB" && ps_pending_n[depth] > 0) {
+        ps_id_counter++
+        id = ps_id_counter
+        ps_cap_n[id] = ps_pending_n[depth]
+        for (k = 1; k <= ps_pending_n[depth]; k++) ps_cap_w[id, k] = ps_pending_w[depth, k]
+        ps_pending_n[depth] = 0
+        pending_ps_id[nd] = id
+      }
+      depth = nd
+    }
+    # depth dの語を確定させる。<<< here-stringの対象語の最中ならherestring_body
+    # 側へ逃がす(設計文書§3.3: bash <<< 本文 のような受け手がinterpreterの時
+    # だけ再走査対象にする)。
+    function close_word(d) {
+      if (in_herestring[d]) {
+        if (wstarted[d]) {
+          herestring_body[d] = curword[d]
+          curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
+        }
+        in_herestring[d] = 0
+        return
+      }
+      end_word(d)
+    }
+    function end_word(d,    w, flags, widx, wsafe) {
+      if (!wstarted[d]) { purevar[d] = ""; pending_ps_id[d] = 0; return }
+      widx = nwords[d] + 1
+      # ★セルフレビュー是正(E35の根本原因): VARNAME[d,widx]/WORD_PS_ID[d,widx]は
+      # 同じ深さdの★前の単純コマンドが同じ語index widxで書いた値が残ったまま
+      # になりうる(nwords[d]は単純コマンドごとにリセットされるが、これら
+      # 補助連想配列はwidxキーで上書きされない限り消えない)。今回の語が
+      # purevar/procsubでなければ明示的にdeleteし、古い変数束縛が別の語
+      # (例: git呼出のsubcmd語)に化けて誤読される事故を防ぐ
+      # (D=/tmp/x; cd $D && git branch --show-current で実際に踏んだ:
+      #  "branch"がVARNAME[0,2]="D"の残骸によりBIND["D"]の値に化けた)。
+      if (purevar[d] != "" && curword[d] == "") {
+        VARNAME[d, widx] = purevar[d]
+        w = ""
+      } else {
+        w = curword[d]
+        delete VARNAME[d, widx]
+      }
+      if (pending_ps_id[d] != 0) {
+        WORD_PS_ID[d, widx] = pending_ps_id[d]; pending_ps_id[d] = 0
+      } else {
+        delete WORD_PS_ID[d, widx]
+      }
+      flags = (wq[d] == "q" ? "q" : "u") (wu[d] == "x" ? "x" : "")
+      nwords[d] = widx
+      cmdword[d, widx] = w
+      cmdflag[d, widx] = flags
+      # cmd_903 §12是正: MASKOUT/QDATAの構築(旧§11・引数ごとのデータ判定)は
+      # ここでは行わない。§11の「引数ごとに、データ系の命令ならその引用を
+      # 緩める」も、許可一覧そのものを攻める形(probe4・less '+!…'/rg --pre/
+      # 書いて実行/出力が実行へ流れる、の14件)で漏れた——引数単位でどれだけ
+      # 精緻にしても、データの流れ(選択肢経由の実行・ファイル経由の実行・
+      # パイプ/置換経由の実行)を全て列挙し尽くすことはできない。
+      # §12は判定の単位を引数からCOMMAND全体へ改め、「COMMAND中の全ての
+      # 単純コマンドの実行位置の語が、純データの命令の狭い一覧にある時だけ」
+      # 旧判定(has_git_subcmd)の一致をCOMMAND全体について無視してよいとする。
+      # 一つでも一覧に無い実行位置の語があれば、旧判定を生のCOMMAND文字列
+      # (引用符を一切伏せない)へそのまま当てる——is_pure_head()参照。
+      curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
+    }
+    function resolve_word(d, j,    v) {
+      if (j < 1 || j > nwords[d]) return ""
+      if ((d, j) in VARNAME) {
+        v = VARNAME[d, j]
+        return (v in BIND) ? BIND[v] : ""
+      }
+      return cmdword[d, j]
+    }
+    # cmd_903 §12是正(設計文書§12・第三の訂正): この単純コマンドの実行位置の
+    # 語(resolved)が「純データの命令」か否かを判定する。§11の一覧(§12より
+    # 広い)から less・ag・git の全subcmdを外し、cd/pushd/popd(データを実行
+    # しない移動のみ)とtee(stdoutをファイルへ複写するのみ・データを実行
+    # しない)を明示的に追加した狭い一覧とする。
+    # ★実行位置の語そのものに展開($(…)・$VAR)があってはならない(設計文書
+    # §12「実行位置の語そのものに展開が無い」)——VARNAME経由(変数展開由来の
+    # 実行位置)またはcmdflagのxビット(command substitution/backtick由来)が
+    # 立っていれば、たとえ解決結果が一覧にある語と同じに見えても純データとは
+    # 扱わない(間接参照そのものを不確実性として扱う・fail-closed)。
+    # ★rgはcmd_903 §13点4是正により純データの一覧から外した(W4是正:
+    # `rg --hostname-bin '…'`のように--pre以外にも外部コマンドを起動しうる
+    # 選択肢があり、--pre/--pre-globだけを個別に禁止列挙する方式は閉じない
+    # 穴を残す。grepで足りるため、rgそのものを一覧から除く)。
+    function is_pure_head(d, idx, resolved, full,    flags, j5, tok, first, iwpath, teetgt) {
+      if ((d, idx) in VARNAME) return 0
+      flags = cmdflag[d, idx]
+      if (flags ~ /x/) return 0
+      # cmd_903 §13点1: 純データの実行位置の語は「/」を含まぬ素の名前に限る
+      # (basenameで照らさない)。例外はinbox_write.shの引数パスのみ(下の
+      # bash分岐・点3)。W16是正(./grepをbasename一致でgrepと誤認しない)。
+      if (full != "" && index(full, "/") > 0) return 0
+      if (resolved == "cd" || resolved == "pushd" || resolved == "popd") return 1
+      if (resolved in PURE_HEAD_SET) return 1
+      if (resolved == "bash") {
+        j5 = idx + 1
+        while (j5 <= nwords[d]) {
+          tok = cmdword[d, j5]
+          if (tok ~ /^-[A-Za-z]*c[A-Za-z]*$/) return 0
+          if (tok ~ /^-/) { j5++; continue }
+          break
+        }
+        if (j5 <= nwords[d]) {
+          first = resolve_word(d, j5)
+          # cmd_903 §13点3: 末尾一致・basename一致ではなく、cdの手掛かりで
+          # 解いた実体のパスがプロジェクトのscripts/inbox_write.shと厳密に
+          # 一致する時だけ純データとする(W3是正: 偽の
+          # /tmp/scripts/inbox_write.shを弾く)。相対パスはcdhintが実在する
+          # 絶対パスの時だけ解決を試み、解けなければ純データとしない
+          # (fail-closed)。
+          if (first != "") {
+            if (first ~ /^\//) {
+              iwpath = first
+            } else if (cdhint[d] != "" && cdhint[d] != "UNKNOWN" && cdhint[d] ~ /^\//) {
+              iwpath = cdhint[d] "/" first
+            } else {
+              iwpath = ""
+            }
+            if (iwpath != "") {
+              gsub(/\/\.\//, "/", iwpath)
+              if (iwpath == CANON_INBOX_WRITE) return 1
+            }
+          }
+        }
+        return 0
+      }
+      # cmd_903 §15点2: teeは無条件の純データ一覧(PURE_HEAD_SET)から外した
+      # (下のBEGINブロック参照)。teeが実際に書き込むファイルを一つでも
+      # 引数に持てば純データではない——ただし/dev/nullへの書き込みは実害が
+      # 無いため例外とする(redirectの/dev/null例外と対称に揃える。P25/Z10の
+      # 既存試験が"tee /dev/null"を安全な慣用句として扱っている前提とも
+      # 整合させるため)。フラグの引数(-a/--append/-i/--ignore-interrupts/
+      # -p/--output-error[=…])は読み飛ばし、残りの語(束縛が解けぬ変数も
+      # 含め・fail-closedで/dev/null扱いしない)が一つでも/dev/null以外なら
+      # 純データでないと判じる。
+      if (resolved == "tee") {
+        j5 = idx + 1
+        while (j5 <= nwords[d]) {
+          tok = cmdword[d, j5]
+          if (tok == "-a" || tok == "--append" || tok == "-i" || tok == "--ignore-interrupts" || \
+              tok == "-p" || tok == "--output-error") { j5++; continue }
+          if (tok ~ /^--output-error=/) { j5++; continue }
+          if (tok == "--") { j5++; continue }
+          teetgt = resolve_word(d, j5)
+          if (teetgt != "/dev/null") return 0
+          j5++
+        }
+        return 1
+      }
+      return 0
+    }
+    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, full, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid, aliasname, aliasval, eqpos2, aliasparts, had_assign) {
+      close_word(d)
+      if (nwords[d] == 0) { herestring_body[d] = ""; return }
+      idx = 1
+      while (idx <= nwords[d]) {
+        tok = cmdword[d, idx]
+        if (!((d, idx) in VARNAME) && tok ~ /^[A-Za-z_][A-Za-z0-9_]*=/) {
+          eqpos = index(tok, "=")
+          BIND[substr(tok, 1, eqpos - 1)] = substr(tok, eqpos + 1)
+          # cmd_903 §13点2: 代入(接頭・単独の文いずれも)は、以後の外部
+          # 命令の実行に影響しうるため、この単純コマンドを純データの対象
+          # から外す(下のidx>nwords[d]分岐とis_pure_head呼出の両方で使う・
+          # W15是正)。
+          had_assign = 1
+          idx++; continue
+        }
+        # cmd_903追補#3(E37): `function NAME { … }` キーワード形。
+        # `NAME() { … }`(既存のnwords==1判定)と並ぶもう一つの関数定義の書き方。
+        if (tok == "function") {
+          idx++
+          if (idx <= nwords[d] && !((d, idx) in VARNAME)) {
+            fname_tmp = cmdword[d, idx]
+            sub(/\(\)$/, "", fname_tmp)
+            pending_funcname = fname_tmp
+            idx++
+          }
+          continue
+        }
+        if (tok == "if" || tok == "then" || tok == "elif" || tok == "else" || tok == "do" || \
+            tok == "while" || tok == "until" || tok == "!" || tok == "time") { idx++; continue }
+        if (tok == "export" || tok == "local" || tok == "declare" || tok == "readonly") { idx++; continue }
+        # cmd_903追補#5(E7): `command` の選択肢(-p/-v/-V、いずれも引数を
+        # 取らない)を読み飛ばす。旧実装は "command" 自体を1語読み飛ばす
+        # だけで、次の語が選択肢(-p等)だと誤ってそれを実行位置の語と
+        # みなしていた。
+        if (tok == "command") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) idx++
+          continue
+        }
+        if (tok == "exec" || tok == "nohup" || tok == "stdbuf" || \
+            tok == "ionice" || tok == "caffeinate" || tok == "unbuffer") { idx++; continue }
+        if (tok == "nice") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) {
+            if (cmdword[d, idx] == "-n") idx += 2; else idx++
+          }
+          continue
+        }
+        if (tok == "sudo") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) {
+            if (cmdword[d, idx] == "-u") idx += 2; else idx++
+          }
+          continue
+        }
+        if (tok == "timeout") {
+          idx++
+          while (idx <= nwords[d] && cmdword[d, idx] ~ /^-/) idx++
+          idx++
+          continue
+        }
+        if (tok == "env") {
+          idx++
+          while (idx <= nwords[d]) {
+            t2 = cmdword[d, idx]
+            # cmd_903追補#5(E9): env の -u/-C/-S(long: --unset/--chdir/
+            # --split-string)は次の語を引数として取る。旧実装は
+            # "-"で始まる語を無条件に1語だけ読み飛ばしており、-u NAME の
+            # NAME を実行位置の語と誤認していた(env -u FOO git commit で、
+            # FOOをheadと誤解決しgit呼出を丸ごと見失っていた)。
+            if (t2 == "-u" || t2 == "-C" || t2 == "-S" || \
+                t2 == "--unset" || t2 == "--chdir" || t2 == "--split-string") { idx += 2; continue }
+            if (t2 ~ /^-/) { idx++; continue }
+            if (!((d, idx) in VARNAME) && t2 ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { had_assign = 1; idx++; continue }
+            break
+          }
+          continue
+        }
+        break
+      }
+      if (idx > nwords[d]) {
+        # 代入・キーワードのみで実行位置の語が無い(例: MSG=git-commitのみの代入)。
+        # cmd_903 §13点2是正: 代入が一つでもあれば、以後の単純コマンドの実行に
+        # 影響しうる単独の代入文であるため、COMMAND全体をIMPUREとする
+        # (W15是正: `PATH=/tmp/bin:$PATH; grep x`のような単独文の後に続く
+        # 外部命令が差し替わる形)。代入が無い(if/then等のキーワードのみ)
+        # 場合は従来どおり何もしない。
+        if (had_assign) IMPURE = 1
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (nwords[d] == 1 && !((d, 1) in VARNAME) && cmdword[d, 1] ~ /^[A-Za-z_][A-Za-z0-9_]*\(\)$/) {
+        pending_funcname = substr(cmdword[d, 1], 1, length(cmdword[d, 1]) - 2)
+      } else {
+        pending_funcname = ""
+      }
+      headraw = cmdword[d, idx]
+      headvar = ((d, idx) in VARNAME) ? VARNAME[d, idx] : ""
+      resolved = resolve_head(headraw, headvar)
+      full = resolve_head_full(headraw, headvar)
+      # cmd_903 §12: この単純コマンドの実行位置の語が純データの命令でなければ
+      # (git・less・ag・未解決の実行位置語・展開を含む実行位置語を含め)
+      # COMMAND全体をIMPUREとする(§3.3で再走査される文字列も、それぞれが
+      # 独立した_lex_one_level呼出として同じチェックを経る・下のIMPURE行
+      # 出力とbash側_lex_git_invocationsの伝播で全レベルに及ぶ)。
+      # ★cmd_903 §13点2: 代入がこの単純コマンドに接頭していれば(had_assign)、
+      # 実行位置の語自体は純データの一覧にあっても、以後の実行に影響しうる
+      # ためIMPUREとする(W1/W2/W12是正)。
+      if (!is_pure_head(d, idx, resolved, full) || had_assign) IMPURE = 1
+      if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
+      if (resolved == "git") {
+        j = idx + 1
+        cddir = ""; cddir_wt = ""
+        while (j <= nwords[d]) {
+          tok = cmdword[d, j]
+          # cmd_903追補#4: -C の値が相対パスなら、cd の手掛かり(cdhint)に
+          # 対して解く(旧: 値をそのまま使い、hookのcwdに対して解かれて
+          # しまい、cd $M && git -C . のような形でずれていた・E32是正)。
+          if (tok == "-C") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 != "" && tok2 !~ /^\//) {
+              tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            }
+            cddir = tok2
+            j += 2; continue
+          }
+          # cmd_903追補#3(E33): --git-dir の値を確認先候補として捕らえる
+          # (旧は読み飛ばすのみで、Hook3の確認先には反映していなかった)。
+          # 値がgit-dirを指す時はbash側で `git --git-dir=` を使って branch
+          # を見る必要があるため、"GITDIR:" 印を付けて渡す(§3.4追補)。
+          if (tok == "--git-dir") { cddir = "GITDIR:" resolve_word(d, j + 1); j += 2; continue }
+          if (tok ~ /^--git-dir=/) { cddir = "GITDIR:" substr(tok, 11); j++; continue }
+          # --work-tree はgit-dirより優先度は下だが、-C相当の確認先候補として捕らえる
+          # (cddir_wt。-C/--git-dirが無い時だけフォールバックで使う・§3.4追補)。
+          if (tok == "--work-tree") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 != "" && tok2 !~ /^\//) tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            cddir_wt = tok2; j += 2; continue
+          }
+          if (tok ~ /^--work-tree=/) {
+            tok2 = substr(tok, 13)
+            if (tok2 != "" && tok2 !~ /^\//) tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
+            cddir_wt = tok2; j++; continue
+          }
+          # cmd_903 §11是正(X19): `-c alias.NAME=VALUE` はgitのaliasオプション。
+          # subcmdの位置にNAMEが来た時、VALUEの先頭語をsubcmdとして解く束縛を
+          # 記録する(git -c alias.c=commit…をcのsubcmdへ解く例)。
+          if (tok == "-c") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 ~ /^alias\./) {
+              eqpos2 = index(tok2, "=")
+              if (eqpos2 > 6) {
+                aliasname = substr(tok2, 7, eqpos2 - 7)
+                aliasval = substr(tok2, eqpos2 + 1)
+                sub(/^[ \t]+/, "", aliasval)
+                split(aliasval, aliasparts, /[ \t]+/)
+                if (aliasname != "" && aliasparts[1] != "") GIT_CALIAS[aliasname] = aliasparts[1]
+              }
+            }
+            j += 2; continue
+          }
+          if (tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
+          if (tok ~ /^--(namespace|exec-path)=/) { j++; continue }
+          if (tok == "-p" || tok == "-P" || tok == "--paginate" || tok == "--no-pager" || tok == "--bare" || \
+              tok == "--no-replace-objects" || tok == "--literal-pathspecs" || tok == "--glob-pathspecs" || \
+              tok == "--noglob-pathspecs" || tok == "--icase-pathspecs" || tok == "--no-optional-locks" || tok == "--no-advice") { j++; continue }
+          if (tok ~ /^-/) { j++; continue }
+          break
+        }
+        if (j <= nwords[d]) {
+          subcmd = resolve_word(d, j)
+          # cmd_903 §11是正(X19): -c alias.NAME=VALUE で記録した束縛があれば
+          # subcmdをVALUEの実体(NAMEでなく)へ解き直す。
+          if (subcmd in GIT_CALIAS) subcmd = GIT_CALIAS[subcmd]
+          if (subcmd != "") {
+            # cmd_903追補#3(E34): GIT_DIR=… の代入接頭(このコマンドの
+            # プレフィクスとしてBINDへ既に記録済み)を、-C/--git-dirが
+            # 無い時のフォールバックとして使う(実際のgitのGIT_DIR環境変数
+            # の優先順位と同じ: -C/--git-dir が無い時のみ効く)。
+            if (cddir == "" && ("GIT_DIR" in BIND)) cddir = "GITDIR:" BIND["GIT_DIR"]
+            if (cddir == "" && cddir_wt != "") cddir = cddir_wt
+            if (cddir == "" && ("GIT_WORK_TREE" in BIND)) cddir = BIND["GIT_WORK_TREE"]
+            if (cddir == "") cddir = cdhint[d]
+            if (cddir == "") cddir = "UNKNOWN"
+            # ★セルフレビュー是正: subcmd/cddirの値そのものに改行やTABが
+            # 含まれると(例: 埋め込み改行を持つ -C 引数)、awk<->bash間の
+            # 1行1レコードのプロトコルを壊し、bash側が値を切り詰めて誤った
+            # 確認先で判定してしまいうる(fail-open方向の穴になる恐れ)。
+            # 安全側でUNCERTAINとし旧判定へ倒す。
+            if (subcmd ~ /[\n\t]/ || cddir ~ /[\n\t]/) {
+              print "UNCERTAIN\tvalue-contains-newline-or-tab"
+            } else {
+              printf "INV\t%s\t%s\n", subcmd, cddir
+            }
+            # cmd_903 §11是正(X20): `git rebase --exec CMD`/`-x CMD` は
+            # CMDを各コミットへ実際に実行する。引用符の中でもコードとして
+            # 再走査する(設計文書§3.3と同じ発想の追加)。
+            if (subcmd == "rebase") {
+              for (k = j + 1; k <= nwords[d]; k++) {
+                tok = cmdword[d, k]
+                if (tok == "--exec" || tok == "-x") {
+                  if (k + 1 <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, k + 1], cdhint[d]
+                  k++
+                } else if (tok ~ /^--exec=/) {
+                  printf "RESCAN\t%s\t%s\n", substr(tok, 8), cdhint[d]
+                }
+              }
+            }
+          }
+        }
+        if (frametype[d] == "GROUP" && funcname[d] != "") {
+          for (k = idx + 1; k <= nwords[d]; k++) {
+            tok = cmdword[d, k]
+            if (tok == "$@" || tok == "$*" || tok ~ /^\$[0-9]+$/) { ALIAS[funcname[d]] = 1; break }
+          }
+        }
+        # cmd_903 §12: gitは常に純データの一覧から外れる(is_pure_headが
+        # 既にIMPUREを立てている)。git呼出自身の引用の中の語をここで
+        # 個別に伏せることはしない——旧判定はCOMMAND全体がIMPUREでない限り
+        # 効かないため、引数単位のマスクは不要になった(設計文書§12)。
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (resolved == "cd" || resolved == "pushd") {
+        if (idx + 1 <= nwords[d]) {
+          tok = resolve_word(d, idx + 1)
+          if (tok == "") cdhint[d] = "UNKNOWN"
+          else if (tok ~ /^\//) cdhint[d] = tok
+          else if (cdhint[d] != "" && cdhint[d] != "UNKNOWN") cdhint[d] = cdhint[d] "/" tok
+          else cdhint[d] = "UNKNOWN"
+        }
+        nwords[d] = 0; herestring_body[d] = ""
+        return
+      }
+      if (resolved == "popd") { cdhint[d] = "UNKNOWN"; nwords[d] = 0; herestring_body[d] = ""; return }
+      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh") {
+        j = idx + 1; cflag = 0
+        while (j <= nwords[d]) {
+          tok = cmdword[d, j]
+          if (tok ~ /^-[A-Za-z]*c[A-Za-z]*$/) { cflag = 1; j++; continue }
+          if (tok ~ /^-/) { j++; continue }
+          break
+        }
+        if (cflag && j <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, j], cdhint[d]
+        if (herestring_body[d] != "") printf "RESCAN\t%s\t%s\n", herestring_body[d], cdhint[d]
+        if (pipe_pending[d] != "") {
+          for (k = 1; k <= pipe_pending_n[d]; k++) {
+            if (pipe_pending_w[d, k] != "") printf "RESCAN\t%s\t%s\n", pipe_pending_w[d, k], cdhint[d]
+          }
+        }
+      }
+      # cmd_903追補#2(E16/E17): source/./bash/sh/zsh 等がプロセス置換
+      # <(…) を(-cの有無に関わらず)引数として読む形。捕らえておいた
+      # 中身の語(WORD_PS_ID経由)を、それぞれ独立した再走査対象として出す
+      # (capture_pipe_upstreamと同じ発想。設計文書§追補2)。
+      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh" || \
+          resolved == "source" || resolved == ".") {
+        for (j = idx + 1; j <= nwords[d]; j++) {
+          if ((d, j) in WORD_PS_ID) {
+            psid = WORD_PS_ID[d, j]
+            for (k = 1; k <= ps_cap_n[psid]; k++) {
+              if (ps_cap_w[psid, k] != "") printf "RESCAN\t%s\t%s\n", ps_cap_w[psid, k], cdhint[d]
+            }
+          }
+        }
+      }
+      if (resolved == "eval") {
+        body = ""
+        for (k = idx + 1; k <= nwords[d]; k++) body = body (k > idx + 1 ? " " : "") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      if (resolved == "trap") {
+        if (idx + 1 <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, idx + 1], cdhint[d]
+      }
+      if (resolved == "xargs") {
+        # cmd_903追補#5(E10): xargs自身の選択肢(-I/-L/-n/-P/-d/-s/-a、
+        # 分離形は引数を1語取る)を読み飛ばしてから残りをrescanする。旧実装は
+        # xargsの直後から無条件に全語を1本の文字列にして再走査していたため、
+        # xargs -I{} git commit … のように先頭に選択肢があると、その選択肢
+        # 自体が(再走査後の)実行位置の語と誤認され、本来のgit呼出が
+        # 見えなくなっていた。
+        j = idx + 1
+        while (j <= nwords[d] && cmdword[d, j] ~ /^-/) {
+          tok = cmdword[d, j]
+          if (tok == "-I" || tok == "-L" || tok == "-n" || tok == "-P" || tok == "-d" || tok == "-s" || tok == "-a") { j += 2 }
+          else { j++ }
+        }
+        body = ""
+        for (k = j; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      if (resolved == "find") {
+        foundexec = 0; body = ""
+        for (k = idx + 1; k <= nwords[d]; k++) {
+          tok = cmdword[d, k]
+          if (!foundexec) { if (tok == "-exec" || tok == "-execdir") foundexec = 1; continue }
+          if (tok == ";" || tok == "+") { printf "RESCAN\t%s\t%s\n", body, cdhint[d]; body = ""; foundexec = 0; continue }
+          body = body (body == "" ? "" : " ") tok
+        }
+      }
+      # cmd_903 §11是正(probe3 X6): `ssh HOST …` はHOSTの後の全引数を
+      # リモートで実行する(設計文書§3.3・遠隔だが保守的に再走査する)。
+      if (resolved == "ssh") {
+        j = idx + 1
+        while (j <= nwords[d] && cmdword[d, j] ~ /^-/) j++
+        if (j <= nwords[d]) j++
+        body = ""
+        for (k = j; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      # cmd_903 §11是正(probe3 X18): パイプ下流が`make -f -`の時も、
+      # stdinのMakefileレシピ行が実行されるため上流を再走査する。printfの
+      # \n/\t等のエスケープはmakeが読む前にprintf自身が実体化するため、
+      # 単純な語単位のRESCANでは剥がせない(bash側でprintf '%b' 相当の
+      # 実体化+改行分割を行う専用のRESCANMAKEへ渡す・§3.3の追加)。
+      if (resolved == "make" && pipe_pending[d] != "") {
+        body = ""
+        for (k = 1; k <= pipe_pending_n[d]; k++) body = body (body == "" ? "" : " ") pipe_pending_w[d, k]
+        if (body != "") printf "RESCANMAKE\t%s\t%s\n", body, cdhint[d]
+      }
+      nwords[d] = 0; herestring_body[d] = ""
+    }
+    BEGIN {
+      depth = 0
+      frametype[0] = "ROOT"
+      state[0] = "N"
+      cdhint[0] = (INIT_CDHINT == "" ? "UNKNOWN" : INIT_CDHINT)
+      curword[0] = ""; wstarted[0] = 0; wq[0] = ""; wu[0] = ""; purevar[0] = ""
+      in_herestring[0] = 0; herestring_body[0] = ""
+      nwords[0] = 0
+      pipe_pending[0] = ""
+      heredoc_active[0] = 0; heredoc_tag[0] = ""; heredoc_striptabs[0] = 0
+      pending_funcname = ""
+      toolarge = 0
+      totalchars = 0
+      pending_ps_id[0] = 0
+      ps_id_counter = 0
+      IMPURE = 0
+      # cmd_903 §12(第三の訂正・設計文書§12): 純データの命令の狭い一覧。
+      # §11の一覧からless・agを外し(選択肢/設定で外部コマンドを起動しうる
+      # ため・probe4 Z1/Z3)、gitは全subcmdを一覧から常に外す(is_pure_head
+      # 側でresolved=="git"が一覧照会に到達しないよう別扱い・probe4 Z4-Z6)。
+      # cd/pushd/popdとteeはis_pure_head内で個別に判定する(移動のみ・
+      # stdout複写のみでデータを実行しないため)。
+      # cmd_903 §15点2: teeは(移動のみのcd/pushd/popdと違い)引数の書き込み
+      # 先ファイルによって純データか否かが変わるため、無条件の本一覧からは
+      # 外し、is_pure_head内で個別に判定する(/dev/null以外への書き込み先が
+      # 一つでもあれば純データでない・probe7 A2是正)。
+      PURE_HEAD_SET["echo"] = 1
+      PURE_HEAD_SET["printf"] = 1
+      PURE_HEAD_SET["grep"] = 1
+      PURE_HEAD_SET["egrep"] = 1
+      PURE_HEAD_SET["fgrep"] = 1
+      PURE_HEAD_SET["cat"] = 1
+      PURE_HEAD_SET["head"] = 1
+      PURE_HEAD_SET["tail"] = 1
+      PURE_HEAD_SET["wc"] = 1
+      # cmd_903 §14是正: dateは一覧から外した。$(date)は通常のCMDSUB(算術・
+      # パラメータ展開に隠れない、素のコマンド置換)であるため既存の再帰(§3.3)
+      # がdateを独立した単純コマンドとしてこの一覧に照会する。一覧から外れた
+      # 以上、is_pure_headがdateを返さずCOMMAND全体がIMPUREになる——§14の
+      # $/バッククォート検知とは別経路(N8は旧判定に戻ることを受け入れる代償)。
+      PURE_HEAD_SET["true"] = 1
+      PURE_HEAD_SET["test"] = 1
+      PURE_HEAD_SET["jq"] = 1
+      PURE_HEAD_SET["inbox_write.sh"] = 1
+      PURE_HEAD_SET[":"] = 1
+      PURE_HEAD_SET["["] = 1
+    }
+    {
+      line = $0
+      if (heredoc_active[depth]) {
+        hdcheck = line
+        if (heredoc_striptabs[depth]) sub(/^\t+/, "", hdcheck)
+        if (hdcheck == heredoc_tag[depth]) {
+          heredoc_active[depth] = 0
+          next
+        }
+      }
+      totalchars += length(line) + 1
+      if (totalchars > 65536) toolarge = 1
+      n = length(line)
+      i = 1
+      while (i <= n) {
+        c = substr(line, i, 1)
+        d = depth
+        st = state[d]
+        if (st != "S" && c == "\\") {
+          nc = substr(line, i + 1, 1)
+          if (nc == "") { i++; continue }
+          if (st == "D") {
+            if (nc == "\"" || nc == "\\" || nc == "$" || nc == "`") { curword[d] = curword[d] nc; wq[d] = "q" }
+            else { curword[d] = curword[d] c nc }
+          } else {
+            curword[d] = curword[d] nc
+          }
+          wstarted[d] = 1
+          i += 2; continue
+        }
+        if (st == "S") {
+          if (c == "\047") { state[d] = "N"; i++; continue }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "A") {
+          if (c == "\047") { state[d] = "N"; i++; continue }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "D") {
+          if (c == "\"") { state[d] = "N"; i++; continue }
+          if (c == "$" && substr(line, i + 1, 1) == "(") { push_frame("CMDSUB"); savedst[depth] = "D"; i += 2; continue }
+          if (c == "`") {
+            if (d > 0 && frametype[d] == "BACKTICK") {
+              end_simple_cmd(d); sv = savedst[d]; pop_frame("BACKTICK"); state[depth] = sv
+              i++; continue
+            }
+            push_frame("BACKTICK"); savedst[depth] = "D"; i++; continue
+          }
+          if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && purevar[d] == "") {
+            j2 = i + 2
+            while (j2 <= n && substr(line, j2, 1) != "}") j2++
+            if (j2 <= n) {
+              pvbody = substr(line, i + 2, j2 - i - 2)
+              # cmd_903 §14是正: ${…}のデフォルト値等はopaqueに素の文字列として
+              # 捕らえるのみ(構文を追わない・旧来どおり)。しかし中に隠れた
+              # コマンド置換($(…)・バッククォート)がこの捕捉により一切走査
+              # されない穴があった(probe6 V5/V8)。捕らえた中身に$かバック
+              # クォートが一文字でもあればCOMMAND全体を純データでないと判じる。
+              if (pvbody ~ /[$`]/) IMPURE = 1
+              purevar[d] = pvbody; wstarted[d] = 1; i = j2 + 1; continue
+            }
+          }
+          if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && purevar[d] == "") {
+            j2 = i + 1
+            while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+            purevar[d] = substr(line, i + 1, j2 - i - 1); wstarted[d] = 1; i = j2; continue
+          }
+          curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = "q"
+          i++; continue
+        }
+        if (st == "C") {
+          if (c == "\n") state[d] = "N"
+          i++; continue
+        }
+        if (c == "\047") { state[d] = "S"; wstarted[d] = 1; i++; continue }
+        if (c == "\"") { state[d] = "D"; wstarted[d] = 1; i++; continue }
+        if (c == "$" && substr(line, i + 1, 1) == "\047") { state[d] = "A"; wstarted[d] = 1; i += 2; continue }
+        if (c == "#" && curword[d] == "" && !wstarted[d]) { state[d] = "C"; i++; continue }
+        if (c == "$" && substr(line, i + 1, 2) == "((") { i = skip_arith(line, i + 3, 2); continue }
+        if (c == "(" && substr(line, i + 1, 1) == "(" && curword[d] == "" && !wstarted[d]) { i = skip_arith(line, i + 2, 2); continue }
+        if (c == "(" && substr(line, i + 1, 1) == ")" && curword[d] != "") {
+          curword[d] = curword[d] "()"; wstarted[d] = 1; i += 2; continue
+        }
+        if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && !wstarted[d]) {
+          j2 = i + 2
+          while (j2 <= n && substr(line, j2, 1) != "}") j2++
+          if (j2 <= n) {
+            pvbody = substr(line, i + 2, j2 - i - 2)
+            # cmd_903 §14是正: 上のD状態の同型ブロックと同じ理由(probe6 V5/V8参照)。
+            if (pvbody ~ /[$`]/) IMPURE = 1
+            purevar[d] = pvbody; wstarted[d] = 1; i = j2 + 1; continue
+          }
+        }
+        if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && !wstarted[d]) {
+          j2 = i + 1
+          while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+          purevar[d] = substr(line, i + 1, j2 - i - 1); wstarted[d] = 1; i = j2; continue
+        }
+        if (c == "$" && substr(line, i + 1, 1) == "(") { push_frame("CMDSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == "`") {
+          if (d > 0 && frametype[d] == "BACKTICK") {
+            end_simple_cmd(d); sv = savedst[d]; pop_frame("BACKTICK"); state[depth] = sv
+            i++; continue
+          }
+          push_frame("BACKTICK"); savedst[depth] = "N"; i++; continue
+        }
+        if (c == "<" && substr(line, i + 1, 1) == "(") { push_frame("PROCSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == ">" && substr(line, i + 1, 1) == "(") { push_frame("PROCSUB"); savedst[depth] = "N"; i += 2; continue }
+        if (c == "(" && curword[d] == "" && !wstarted[d]) {
+          end_simple_cmd(d)
+          push_frame("SUBSHELL"); savedst[depth] = "N"; i++; continue
+        }
+        if (c == "{" && curword[d] == "" && !wstarted[d] && (substr(line, i + 1, 1) == " " || substr(line, i + 1, 1) == "\t" || substr(line, i + 1, 1) == "\n" || substr(line, i + 1, 1) == "")) {
+          end_simple_cmd(d)
+          push_frame("GROUP"); savedst[depth] = "N"; funcname[depth] = pending_funcname; pending_funcname = ""
+          i++; continue
+        }
+        if (c == ")") {
+          if (d > 0 && (frametype[d] == "CMDSUB" || frametype[d] == "BACKTICK" || frametype[d] == "PROCSUB" || frametype[d] == "SUBSHELL")) {
+            if (frametype[d] == "PROCSUB") capture_procsub_words(d)
+            end_simple_cmd(d)
+            ft = frametype[d]; sv = savedst[d]
+            pop_frame(ft)
+            state[depth] = sv
+            i++; continue
+          } else {
+            end_simple_cmd(d); i++; continue
+          }
+        }
+        if (c == "}" && d > 0 && frametype[d] == "GROUP" && curword[d] == "" && !wstarted[d]) {
+          end_simple_cmd(d)
+          sv = savedst[d]
+          pop_frame("GROUP")
+          state[depth] = sv
+          i++; continue
+        }
+        if (c == "<" && substr(line, i + 1, 2) == "<<") {
+          close_word(d)
+          i += 3
+          while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+          in_herestring[d] = 1
+          continue
+        }
+        if (c == "<" && substr(line, i + 1, 1) == "<") {
+          j2 = i + 2
+          hdstriptabs = 0
+          if (substr(line, j2, 1) == "-") { hdstriptabs = 1; j2++ }
+          while (substr(line, j2, 1) == " " || substr(line, j2, 1) == "\t") j2++
+          qc2 = substr(line, j2, 1)
+          if (qc2 == "\"" || qc2 == "\047") {
+            j2++; tagstart = j2
+            while (j2 <= n && substr(line, j2, 1) != qc2) j2++
+            hdtag = substr(line, tagstart, j2 - tagstart)
+            if (j2 <= n) j2++
+          } else {
+            if (qc2 == "\\") j2++
+            tagstart = j2
+            while (j2 <= n && substr(line, j2, 1) ~ /[A-Za-z0-9_]/) j2++
+            hdtag = substr(line, tagstart, j2 - tagstart)
+          }
+          if (hdtag != "") {
+            heredoc_active[d] = 1; heredoc_tag[d] = hdtag; heredoc_striptabs[d] = hdstriptabs
+            i = j2
+            continue
+          }
+        }
+        if (c == ">" || c == "<") {
+          j2 = i + 1
+          redir_isdup = 0
+          if (substr(line, j2, 1) == c) { j2++ }
+          else if (c == ">" && substr(line, j2, 1) == "|") { j2++ }
+          if (substr(line, j2, 1) == "&") { j2++; redir_isdup = 1 }
+          i = j2
+          while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+          redir_tgt_start = i
+          i = skip_one_word(line, i, n)
+          # cmd_903 §15点2: 出力方向(>/>>/>|、fd複製の>&Nは対象外)の書き込み
+          # 先が/dev/null以外なら、COMMAND全体を純データでないと判じる
+          # (probe7 A1是正: inbox_write.shへ危険な地の文を書き込んでから同じ
+          # COMMANDで実行する形は、これでCOMMAND全体が旧判定の安全網
+          # 「legacy AND NOT pure」に掛かる・§12参照)。ここはskip_one_word
+          # で得た生の文字列を素朴に引用符除去するのみで、状態機械の語
+          # 構築(curword)は経由しない(この対象語はコマンドの引数ではなく
+          # リダイレクト先であるため、従来どおり単純コマンドの語には含めない)。
+          if (c == ">") {
+            redir_tgt = substr(line, redir_tgt_start, i - redir_tgt_start)
+            if (length(redir_tgt) >= 2 && (substr(redir_tgt, 1, 1) == "\"" || substr(redir_tgt, 1, 1) == "\047") \
+                && substr(redir_tgt, length(redir_tgt), 1) == substr(redir_tgt, 1, 1)) {
+              redir_tgt = substr(redir_tgt, 2, length(redir_tgt) - 2)
+            }
+            # cmd_903 §16: ">&word"は、wordが数字のみか"-"ならfdの複製
+            # (例: 2>&1・>&2・>&-)で書き込みではない。それ以外の語なら
+            # bashはword宛のファイル書き込みとして扱う(r_err_and_out・
+            # probe8 Q10是正)。redir_isdupでない通常の>/>>/>|はこれまで
+            # どおり常にチェックする。
+            if (redir_isdup) {
+              if (!(redir_tgt ~ /^[0-9]+$/ || redir_tgt == "-")) {
+                if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+              }
+            } else {
+              if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+            }
+          }
+          continue
+        }
+        if (c == ";") {
+          end_simple_cmd(d); pipe_pending[d] = ""; i++
+          if (substr(line, i, 1) == ";") i++
+          continue
+        }
+        if (c == "&") {
+          if (substr(line, i + 1, 1) == "&") { end_simple_cmd(d); pipe_pending[d] = ""; i += 2; continue }
+          if (substr(line, i + 1, 1) == ">") {
+            i += 2
+            while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+            redir_tgt_start = i
+            i = skip_one_word(line, i, n)
+            # cmd_903 §16: "&>word"は常にstdout/stderrをword宛のファイルへ
+            # 書き込む形(fd複製の特例なし・probe8 Q2是正)。"&>>word"(追記)
+            # は"&>"の2文字を消費した直後にもう一つの">"が残るため
+            # skip_one_wordが即座に空語を返し(">"は語の区切り文字)、
+            # 続く">word"はこのループの次のイテレーションで通常の
+            # ">"リダイレクトとして正しく検知される(§16実測で確認済み・
+            # 二重に検知することはない)。
+            redir_tgt = substr(line, redir_tgt_start, i - redir_tgt_start)
+            if (length(redir_tgt) >= 2 && (substr(redir_tgt, 1, 1) == "\"" || substr(redir_tgt, 1, 1) == "\047") \
+                && substr(redir_tgt, length(redir_tgt), 1) == substr(redir_tgt, 1, 1)) {
+              redir_tgt = substr(redir_tgt, 2, length(redir_tgt) - 2)
+            }
+            if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+            continue
+          }
+          end_simple_cmd(d); pipe_pending[d] = ""; i++; continue
+        }
+        if (c == "|") {
+          if (substr(line, i + 1, 1) == "|") { end_simple_cmd(d); pipe_pending[d] = ""; i += 2; continue }
+          if (substr(line, i + 1, 1) == "&") { capture_pipe_upstream(d); end_simple_cmd(d); i += 2; continue }
+          capture_pipe_upstream(d); end_simple_cmd(d); i++; continue
+        }
+        if (c == " " || c == "\t") { close_word(d); i++; continue }
+        if (c == "\n") { close_word(d); end_simple_cmd(d); pipe_pending[d] = ""; i++; continue }
+        curword[d] = curword[d] c; wstarted[d] = 1; wq[d] = ""
+        i++
+      }
+      if (heredoc_active[depth]) {
+        end_simple_cmd(depth); pipe_pending[depth] = ""
+        state[depth] = "N"; curword[depth] = ""; wstarted[depth] = 0
+        wq[depth] = ""; wu[depth] = ""; purevar[depth] = ""
+      }
+    }
+    function skip_one_word(l, start, len,    j3, qc, c3) {
+      j3 = start
+      if (j3 > len) return j3
+      if (substr(l, j3, 1) == "\"" || substr(l, j3, 1) == "\047") {
+        qc = substr(l, j3, 1); j3++
+        while (j3 <= len && substr(l, j3, 1) != qc) j3++
+        j3++
+        return j3
+      }
+      while (j3 <= len) {
+        c3 = substr(l, j3, 1)
+        if (c3 == " " || c3 == "\t" || c3 == ";" || c3 == "&" || c3 == "|" || c3 == "<" || c3 == ">") break
+        j3++
+      }
+      return j3
+    }
+    # cmd_903 §14是正(設計文書§14): 算術展開($((…))・((…)))の中身は構文を
+    # 追わずopaqueに読み飛ばす(旧来どおり)。しかし中に隠れたコマンド置換
+    # ($(…)・バッククォート)がこの読み飛ばしにより一切走査されない穴が
+    # あった(probe6 V4/V7/V9)。個々の構文(コマンド置換・パラメータ展開等)
+    # を追い足すのでなく、読み飛ばす区間に$かバッククォートが一文字でも
+    # あればCOMMAND全体を純データでないと判じる、という条件を一つ足す。
+    function skip_arith(l, start, initdepth,    j4, depth2, c4) {
+      j4 = start; depth2 = initdepth
+      while (j4 <= length(l) && depth2 > 0) {
+        c4 = substr(l, j4, 1)
+        if (c4 == "(") depth2++
+        else if (c4 == ")") depth2--
+        else if (c4 == "$" || c4 == "`") IMPURE = 1
+        j4++
+      }
+      return j4
+    }
+    END {
+      close_word(depth)
+      end_simple_cmd(depth)
+      if (depth != 0) print "UNCERTAIN\tunclosed-bracket"
+      if (state[depth] == "S" || state[depth] == "D" || state[depth] == "A") print "UNCERTAIN\tunterminated-quote"
+      if (toolarge) print "UNCERTAIN\tinput-too-large"
+      if (IMPURE) print "IMPURE"
+    }
+  ' <<<"$text"
+}
+
+# 再走査(§3.3)を担う再帰的なbash側ドライバ。UNCERTAINは(mutableな変数へ
+# 副作用させず)標準出力に"UNCERTAIN"という1行として流す——呼び出し側が
+# コマンド置換(サブシェルを作る)で結果を捕らえるため、副作用変数はそこで
+# 失われる(実装時に一度この罠を踏んで気づいた・回帰防止のため明記する)。
+_LEX_DEPTH_LIMIT=8
+_LEX_SIZE_LIMIT=65536
+_lex_git_invocations() {
+  local text="$1" cdhint="${2:-UNKNOWN}" rdepth="${3:-0}"
+  if [[ $rdepth -gt $_LEX_DEPTH_LIMIT ]]; then echo "UNCERTAIN"; return; fi
+  if [[ ${#text} -gt $_LEX_SIZE_LIMIT ]]; then echo "UNCERTAIN"; return; fi
+  # ★設計文書§2.4: awk<->bash間の出力プロトコルはTAB区切り1行1レコードで
+  # ある。字句そのものにTABが含まれると(dir/subcmdの値へ紛れ込み)このプロト
+  # コルが壊れうる——安全側でUNCERTAIN(旧判定へfail-closed)とする。
+  if [[ "$text" == *$'\t'* ]]; then echo "UNCERTAIN"; return; fi
+  if [[ $rdepth -eq 0 ]]; then
+    text="$(_mask_heredoc_bodies_for_git_detection "$text")"
+  fi
+  local out
+  out="$(_lex_one_level "$text" "$cdhint")"
+  [[ -z "$out" ]] && return
+  local line kind a b hint mk_unescaped mk_line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    kind="${line%%$'\t'*}"
+    case "$kind" in
+      UNCERTAIN)
+        echo "UNCERTAIN"
+        ;;
+      IMPURE)
+        # cmd_903 §12: このレベル(トップ・パイプ・$()・バッククォート・
+        # 関数本体・再走査対象のいずれか)に純データでない単純コマンドが
+        # 1件でもあった。再帰の末端から呼出元まで素通しし、最終的に
+        # _GIT_INV_RESULT全体に含まれるかどうかで判定する(UNCERTAINと同じ
+        # 伝播の仕組み・上のコメント参照)。
+        echo "IMPURE"
+        ;;
+      INV)
+        a="${line#*$'\t'}"
+        echo "$a"
+        ;;
+      RESCAN)
+        a="${line#*$'\t'}"
+        b="${a%%$'\t'*}"
+        hint="${a#*$'\t'}"
+        _lex_git_invocations "$b" "$hint" "$((rdepth + 1))"
+        ;;
+      RESCANMAKE)
+        # cmd_903 §11是正(probe3 X18): printf等の出力がmakeへパイプされる時、
+        # printfの\n/\t等のエスケープは実行時にmake自身が読む前に実体化される。
+        # 生のバックスラッシュ列のまま再走査すると単なる1語に化けて見逃す
+        # ため、printf '%b' で同じエスケープ規則を模して実バイト化してから
+        # 実際の改行で分割し、Makefileレシピの慣習(先頭のTAB)を1つだけ
+        # 剥がして、各行を独立した単純コマンドとして再走査する。
+        a="${line#*$'\t'}"
+        b="${a%%$'\t'*}"
+        hint="${a#*$'\t'}"
+        mk_unescaped="$(printf '%b' "$b" 2>/dev/null || true)"
+        while IFS= read -r mk_line; do
+          [[ -z "$mk_line" ]] && continue
+          mk_line="${mk_line#$'\t'}"
+          _lex_git_invocations "$mk_line" "$hint" "$((rdepth + 1))"
+        done <<<"$mk_unescaped"
+        ;;
+    esac
+  done <<<"$out"
+}
+
 # ============================================================
 # Skip: Marker file `.guard-skip` present
 # ----------------------------------------------------------------
@@ -291,10 +1335,74 @@ fi
 
 # ============================================================
 # Hook 1: Co-Authored-By 禁止
+# ------------------------------------------------------------
+# ★適用範囲(cmd_903設計文書§9): この検知は、Claude Code の Bash ツールへ
+# 渡るコマンド文字列の中で、git の呼出が実行位置にあるものだけを見る。
+# node・python等の子プロセスが内部で呼ぶgit(execFileSync('git', …)等)は、
+# 文字列に現れないため一切見えない(cmd_902で実測: 使い捨てリポのmainで、
+# node run.mjsの中のコミット作成が阻まれずに通った)。これはPreToolUse hook
+# の原理的な限界であり、欠陥ではない。子プロセスのgitから守るのは、試験の
+# 側の隔離(envのGIT_*を除く・一時dirを確かめる)の役目である。
+# ------------------------------------------------------------
+# cmd_903是正: has_git_subcmd(引用符を理解しない正規表現)から、上の
+# _lex_git_invocations(字句の状態機械)へ置き換えた。理由・設計・既知の
+# 限界は上の「cmd_903(軍師設計...)」ブロックのコメントを見よ。
+# ★「COMMAND中に"git"という文字列が無ければ事前にawkを起動せず省く」という
+# 事前フィルタは★採らない——設計文書P6(g''it commit のような引用符での
+# 語分割)が実証するとおり、生の文字列上は "git" が連続して現れずとも
+# 引用符除去後に git へ解決される形が存在し、この種の事前フィルタは
+# まさに検知したい回避形そのものを取りこぼす(実装時に実際にこの罠で
+# P6の回帰を起こした)。
 # ============================================================
-if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
-  echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
-  exit 2
+_GIT_INV_RESULT="$(_lex_git_invocations "$COMMAND" "$GIT_TARGET_DIR" 0)"
+_GIT_INV_UNCERTAIN=0
+if grep -qx 'UNCERTAIN' <<<"$_GIT_INV_RESULT"; then
+  _GIT_INV_UNCERTAIN=1
+fi
+# cmd_903 §12(設計文書§12・第三の訂正): COMMAND全体(トップ・パイプ・$()・
+# バッククォート・関数本体・再走査対象の全レベル)に純データでない単純
+# コマンドが1件でもあれば_GIT_PURE=0。IMPUREはUNCERTAINと同じ仕組みで
+# 全レベルから伝播してくる(_lex_git_invocationsのIMPUREケース参照)。
+_GIT_PURE=1
+if grep -qx 'IMPURE' <<<"$_GIT_INV_RESULT"; then
+  _GIT_PURE=0
+fi
+# ★安全網の生地(legacy信号)には has_git_subcmd をそのまま使わない。
+# has_git_subcmd の \b は「英数字/アンダースコアと非英数字の境界」を指す
+# ため、ハイフンの前でも一致してしまい `git commit-graph` を `git commit`
+# と誤って一致させる(旧来からの欠陥・N13で実測)。§12の安全網はCOMMAND
+# 全体の生文字列(引用符を伏せない)へ当てるため、この欠陥を持ち込むと
+# N13のような既存の陰性対照を壊す。_has_git_subcmd_direct_strict は
+# この境界を厳密化した既存関数であり(cmd903追補#1で導入済み)、そのまま
+# 再利用する。heredoc本文のマスクはhas_git_subcmd同様ここで明示的に行う。
+_GIT_RAW_MASKED="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
+
+if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
+  # 確信が持てぬ(引用符/括弧が閉じない等)→ 旧判定へ倒す(fail-closed)。
+  if has_git_subcmd "$COMMAND" "commit" && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+    echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
+    exit 2
+  fi
+else
+  # cmd_903 §12(設計文書§12・第三の訂正・旧§10「構造的な守り」を置き換え):
+  # 新判定(_GIT_INV_RESULT)が旧判定(has_git_subcmd)のblockをallowへ覆して
+  # よいのは、COMMAND全体が純データの時だけ(block = new OR (legacy AND
+  # NOT pure))。旧§10/§11は「引数ごとにデータ系と証明できた分だけ緩める」
+  # 方式であったため、許可一覧そのものを攻める形(probe4・less '+!…'/
+  # rg --pre/書いて実行/出力が実行へ流れる)で14件漏れた(引数単位では
+  # データの流れを列挙し尽くせない)。旧判定はCOMMAND全体を引用符抜きの
+  # 生文字列のまま見るため、COMMAND中のどの単純コマンドも純データの命令
+  # でなければ(=is_pure_headの狭い一覧に無ければ)、包み・選択肢の網羅
+  # 漏れの有無に関わらず旧判定がそのまま効く。
+  if { echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" || { _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "commit" && [[ $_GIT_PURE -eq 0 ]]; }; } \
+     && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
+    # ★trailer(Co-Authored-By)の検索は従来どおりCOMMAND全体を対象とする
+    # (trailerは-mの引数・heredoc等、正当に引用符の中に入るものであるため)。
+    # 誤爆の源だったのは「commit呼出そのものの検知」の側であり、そちらだけを
+    # 字句の状態機械で厳密化した(設計文書§1)。
+    echo "❌ Co-Authored-By は禁止です。CLAUDE.md の Git Commit Rules を確認してください。" >&2
+    exit 2
+  fi
 fi
 
 # ============================================================
@@ -1138,15 +2246,68 @@ fi
 
 # ============================================================
 # Hook 3: main ブランチ保護
+# ★適用範囲(cmd_903設計文書§9): この検知は、Claude Code の Bash ツールへ
+# 渡るコマンド文字列の中で、git の呼出が実行位置にあるものだけを見る。
+# node・python等の子プロセスが内部で呼ぶgit(execFileSync('git', …)等)は、
+# 文字列に現れないため一切見えない(cmd_902で実測: 使い捨てリポのmainで、
+# node run.mjsの中のコミット作成が阻まれずに通った)。これはPreToolUse hook
+# の原理的な限界であり、欠陥ではない。子プロセスのgitから守るのは、試験の
+# 側の隔離(envのGIT_*を除く・一時dirを確かめる)の役目である。
 # Uses GIT_TARGET_DIR to check the correct repo's branch
 # (prevents false block when CWD is multi-agent-shogun/main
 #  but command targets an external repo on a feature branch)
+# ------------------------------------------------------------
+# cmd_903是正: Hook1で計算済みの _GIT_INV_RESULT/_GIT_INV_UNCERTAIN を
+# 再利用する(has_git_subcmdの正規表現ベース判定を、字句の状態機械+解決器へ
+# 置き換え・二重計算はしない)。設計・既知の限界は has_git_subcmd の直後の
+# コメントブロックを見よ。
 # ============================================================
-if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
-  CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
-  if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
-    echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
-    exit 2
+if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
+  # 確信が持てぬ→旧判定(fail-closed)。GIT_TARGET_DIR一つだけを見る点も従来どおり。
+  if has_git_subcmd "$COMMAND" "commit" || has_git_subcmd "$COMMAND" "push"; then
+    CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+      echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+      exit 2
+    fi
+  fi
+else
+  # ★各git呼出ごとに確認先dirを決める(設計文書§3.4)。cddirが"UNKNOWN"
+  # (呼出内に-C/cdの手掛かりが一切無い)場合は、resolve_git_dirが今まで
+  # どおり導いたGIT_TARGET_DIR(手掛かり候補・hookのcwd相当)を確認する。
+  while IFS=$'\t' read -r _inv_subcmd _inv_dir; do
+    [[ -z "$_inv_subcmd" ]] && continue
+    if [[ "$_inv_subcmd" == "commit" || "$_inv_subcmd" == "push" ]]; then
+      _inv_confirm_dir="$_inv_dir"
+      [[ "$_inv_confirm_dir" == "UNKNOWN" ]] && _inv_confirm_dir="$GIT_TARGET_DIR"
+      # cmd_903追補#3: --git-dir=/GIT_DIR= の値は "GITDIR:" 印付きで渡ってくる。
+      # このdirはworktreeでなくgit-dirそのものなので `-C` でなく `--git-dir=`
+      # で見る(cmd_901の事故の経路・§3.4追補)。
+      if [[ "$_inv_confirm_dir" == GITDIR:* ]]; then
+        _inv_branch=$(git --git-dir="${_inv_confirm_dir#GITDIR:}" branch --show-current 2>/dev/null || echo "")
+      else
+        _inv_branch=$(git -C "$_inv_confirm_dir" branch --show-current 2>/dev/null || echo "")
+      fi
+      if [[ "$_inv_branch" == "main" || "$_inv_branch" == "master" ]]; then
+        echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+        exit 2
+      fi
+    fi
+  done <<<"$_GIT_INV_RESULT"
+  # cmd_903 §12(設計文書§12・Hook1と同じ安全網): 旧判定(_has_git_subcmd_
+  # direct_strict・has_git_subcmdの直接隣接パターンの境界を厳密化したもの。
+  # 理由は上の_GIT_RAW_MASKED計算のコメントを見よ)がcommit/pushを検知して
+  # いて、かつCOMMAND全体が純データでない時だけ、確認先が不明な時と同じ
+  # 扱い(GIT_TARGET_DIRを見る・保守側)でblock判定する。★上のwhileループで
+  # 既に正しく確認済みの呼出(feature上のcommit等)がここでも再び一致する
+  # のは無害(二重に安全側へ倒すだけで、許可済みの判定を覆しはしない——
+  # block条件が満たされない限りexitしないため)。
+  if [[ $_GIT_PURE -eq 0 ]] && { _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "commit" || _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "push"; }; then
+    CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
+    if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+      echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2
+      exit 2
+    fi
   fi
 fi
 
