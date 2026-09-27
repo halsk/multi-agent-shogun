@@ -739,7 +739,13 @@ check "cmd903 N4: 地の文内の;|&(区切り誤認対策)" allow "cd $M && ech
 check "cmd903 N5: 二重引用符内のアポストロフィ" allow 'cd '"$M"' && echo "don'"'"'t git commit"'
 check "cmd903 N6: エスケープされた二重引用符" allow 'cd '"$M"' && echo "say \"git commit\" now"'
 check "cmd903 N7: コメント内の地の文" allow "cd $M && echo ok # git commit -m x"
-check "cmd903 N8: \$(date)のみが評価されgit pushは地の文" allow 'cd '"$M"' && echo "$(date) git push"'
+# cmd_903 §14是正(設計文書§14の明記された代償): 純データの条件に「単一
+# 引用符の外に$もバッククォートも一つも無いこと」を加えたため、$(date)の
+# ような無害なコマンド置換を含むだけでCOMMAND全体が純データでなくなり
+# 旧判定(has_git_subcmd相当)に戻る。旧判定は"git push"の直接隣接を検知
+# するため、この地の文はblockへ変わる——individualな構文を追い足さず記号の
+# 有無で型ごと塞ぐ設計上、受け入れた代償である(dateを一覧に残す意味もない)。
+check "cmd903 N8: \$(date)を含むだけで純データでなくなりblockへ(§14是正で許容した代償)" block 'cd '"$M"' && echo "$(date) git push"'
 check "cmd903 N9: printfでファイルへ書き出すだけ(実行しない)" allow "cd $M && printf '%s\\n' 'git push origin main' > /tmp/cmd903_n9.txt"
 # cmd_903 §13点2是正(設計文書§13の明記された代償): 代入(接頭・単独の文の
 # いずれも)が一つでもあればCOMMAND全体を純データでないと判じるようになった
@@ -933,6 +939,44 @@ check "cmd903 W15: 単独のPATH代入文の後のgrep(以後の外部命令が�
   "cd $M && PATH=/tmp/cmd903_bin:\$PATH; grep 'git commit' README.md"
 check "cmd903 W16: ./grep(basename一致で本物のgrepと誤認・実行位置の語は/を含まぬ素の名前に限る)" block \
   "cd $M && ./grep 'git commit' README.md"
+
+echo "--- 四度目のやり直し(subtask_cmd903_hook1_hook3_impl5)の軍師QCで判明した「純データ」定義の穴(§14・probe6・算術/変数展開の中に隠れたコマンド置換) ---"
+# 出所: queue/reports/cmd903_prototype/probe6_expansion_attack.py。是正前(本コミット
+# 直前・§13までの実装)でV4/V5/V7/V8/V9が実際にallowへ退行することを示した上で
+# (RED)、本コミットで§14(単一引用符の外に$もバッククォートも一つも無いことを
+# 純データの条件へ加える)により是正する(GREEN)。V1-V3/V6/V10は§13以前から
+# 既存網羅で既にblockだが、probe6全件をそのまま回帰対象へ加える(退行検知)。
+# ★V1-V3は相対パス"scripts/inbox_write.sh"を使う(絶対パス$PROJ_ROOT/…を
+# 使うと、先頭が「/」であることからcdhintを介さず直接CANON_INBOX_WRITEと
+# 一致してしまい、is_pure_headが純データと判じてしまう。相対パスなら
+# cd $M後のcdhintに対して解かれ$M/scripts/inbox_write.shとなりCANONと
+# 不一致になるため、意図どおり不純と判じられ旧判定でblockになる)。
+check "cmd903 V1: append to inbox_write.sh then run(改変後に純データ命令を実行・既存網羅)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' >> scripts/inbox_write.sh; bash scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 V2: tee -a inbox_write.sh then run(同上)" block \
+  "cd $M && echo 'git commit --allow-empty -m x' | tee -a scripts/inbox_write.sh; bash scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 V3: overwrite venv python then run(同上)" block \
+  "cd $M && printf '#!/bin/sh\ngit commit --allow-empty -m x\n' > .venv/bin/python3; bash scripts/inbox_write.sh karo hi x gunshi"
+check "cmd903 V4: cmdsub inside \$(( ))(算術展開の中にコマンド置換・§14是正前は退行)" block \
+  "cd $M && echo \$(( \$(git commit --allow-empty -m x; echo 1) + 1 ))"
+check "cmd903 V5: cmdsub inside \${x:-...}(パラメータ展開のデフォルト値の中にコマンド置換・§14是正前は退行)" block \
+  "cd $M && echo \"\${x:-\$(git commit --allow-empty -m x)}\""
+check "cmd903 V6: cmdsub inside \$[ ](旧式算術構文・既存網羅で既にblock)" block \
+  "cd $M && echo \$[ \$(git commit --allow-empty -m x; echo 1) ]"
+check "cmd903 V7: cmdsub in test arith(test式の中の算術展開・§14是正前は退行)" block \
+  "cd $M && [ \$(( \$(git commit --allow-empty -m x; echo 0) )) -eq 0 ] && echo ok"
+check "cmd903 V8: cmdsub in grep pattern via \${:-}(純データ命令の引数中のパラメータ展開・§14是正前は退行)" block \
+  "cd $M && grep -n \"\${p:-\$(git commit --allow-empty -m x)}\" README.md"
+check "cmd903 V9: backtick inside \$(( ))(算術展開の中にバッククォート・§14是正前は退行)" block \
+  "cd $M && echo \$(( \`git commit --allow-empty -m x; echo 1\` ))"
+check "cmd903 V10: jq --args with cmdsub(既存網羅で既にblock)" block \
+  "cd $M && jq -n --arg a \"\$(git commit --allow-empty -m x)\" '\$a'"
+check "cmd903 ok1: inbox本文の単一引用符プロース(§14是正後も引き続きallow)" allow \
+  "cd $M && bash $PROJ_ROOT/scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
+check "cmd903 ok2: 算術展開のみ(中身に\$もバッククォートも無ければ純データのまま)" allow \
+  "cd $M && echo \$(( 1 + 2 ))"
+check "cmd903 ok3: パラメータ展開のデフォルト値が地の文のみ(中身に\$もバッククォートも無ければ純データのまま)" allow \
+  "cd $M && echo \"\${x:-git commit の話}\""
 
 rm -rf "$CMD903_M" "$CMD903_F"
 

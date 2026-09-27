@@ -903,7 +903,11 @@ _lex_one_level() {
       PURE_HEAD_SET["tail"] = 1
       PURE_HEAD_SET["wc"] = 1
       PURE_HEAD_SET["tee"] = 1
-      PURE_HEAD_SET["date"] = 1
+      # cmd_903 §14是正: dateは一覧から外した。$(date)は通常のCMDSUB(算術・
+      # パラメータ展開に隠れない、素のコマンド置換)であるため既存の再帰(§3.3)
+      # がdateを独立した単純コマンドとしてこの一覧に照会する。一覧から外れた
+      # 以上、is_pure_headがdateを返さずCOMMAND全体がIMPUREになる——§14の
+      # $/バッククォート検知とは別経路(N8は旧判定に戻ることを受け入れる代償)。
       PURE_HEAD_SET["true"] = 1
       PURE_HEAD_SET["test"] = 1
       PURE_HEAD_SET["jq"] = 1
@@ -964,7 +968,16 @@ _lex_one_level() {
           if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && purevar[d] == "") {
             j2 = i + 2
             while (j2 <= n && substr(line, j2, 1) != "}") j2++
-            if (j2 <= n) { purevar[d] = substr(line, i + 2, j2 - i - 2); wstarted[d] = 1; i = j2 + 1; continue }
+            if (j2 <= n) {
+              pvbody = substr(line, i + 2, j2 - i - 2)
+              # cmd_903 §14是正: ${…}のデフォルト値等はopaqueに素の文字列として
+              # 捕らえるのみ(構文を追わない・旧来どおり)。しかし中に隠れた
+              # コマンド置換($(…)・バッククォート)がこの捕捉により一切走査
+              # されない穴があった(probe6 V5/V8)。捕らえた中身に$かバック
+              # クォートが一文字でもあればCOMMAND全体を純データでないと判じる。
+              if (pvbody ~ /[$`]/) IMPURE = 1
+              purevar[d] = pvbody; wstarted[d] = 1; i = j2 + 1; continue
+            }
           }
           if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && purevar[d] == "") {
             j2 = i + 1
@@ -990,7 +1003,12 @@ _lex_one_level() {
         if (c == "$" && substr(line, i + 1, 1) == "{" && curword[d] == "" && !wstarted[d]) {
           j2 = i + 2
           while (j2 <= n && substr(line, j2, 1) != "}") j2++
-          if (j2 <= n) { purevar[d] = substr(line, i + 2, j2 - i - 2); wstarted[d] = 1; i = j2 + 1; continue }
+          if (j2 <= n) {
+            pvbody = substr(line, i + 2, j2 - i - 2)
+            # cmd_903 §14是正: 上のD状態の同型ブロックと同じ理由(probe6 V5/V8参照)。
+            if (pvbody ~ /[$`]/) IMPURE = 1
+            purevar[d] = pvbody; wstarted[d] = 1; i = j2 + 1; continue
+          }
         }
         if (c == "$" && substr(line, i + 1, 1) ~ /[A-Za-z_]/ && curword[d] == "" && !wstarted[d]) {
           j2 = i + 1
@@ -1121,12 +1139,19 @@ _lex_one_level() {
       }
       return j3
     }
+    # cmd_903 §14是正(設計文書§14): 算術展開($((…))・((…)))の中身は構文を
+    # 追わずopaqueに読み飛ばす(旧来どおり)。しかし中に隠れたコマンド置換
+    # ($(…)・バッククォート)がこの読み飛ばしにより一切走査されない穴が
+    # あった(probe6 V4/V7/V9)。個々の構文(コマンド置換・パラメータ展開等)
+    # を追い足すのでなく、読み飛ばす区間に$かバッククォートが一文字でも
+    # あればCOMMAND全体を純データでないと判じる、という条件を一つ足す。
     function skip_arith(l, start, initdepth,    j4, depth2, c4) {
       j4 = start; depth2 = initdepth
       while (j4 <= length(l) && depth2 > 0) {
         c4 = substr(l, j4, 1)
         if (c4 == "(") depth2++
         else if (c4 == ")") depth2--
+        else if (c4 == "$" || c4 == "`") IMPURE = 1
         j4++
       }
       return j4
