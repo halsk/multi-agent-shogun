@@ -297,8 +297,9 @@ has_git_subcmd() {
   return 1
 }
 
-# cmd_903追補#1専用: 構造的な守り(安全網)だけで使う、直接隣接のみを見る
-# 厳密判定。has_git_subcmd の直接パターン(git\s+$subcmd\b)を再利用しない
+# cmd_903 §12専用(旧追補#1由来): 安全網(§12のlegacy信号)だけで使う、
+# 直接隣接のみを見る厳密判定。has_git_subcmd の直接パターン(git\s+$subcmd\b)
+# を再利用しない
 # 理由: POSIX ERE の \b は英数字/アンダースコアと非英数字の境界を指すため、
 # 「commit」の直後に「-」が続く別subcmd(commit-graph・commit-tree等)も
 # 誤って一致させる(旧来からの欠陥・cmd903 N13で実際に踏んだ)。安全網は
@@ -450,13 +451,17 @@ _lex_one_level() {
       nwords[d] = widx
       cmdword[d, widx] = w
       cmdflag[d, widx] = flags
-      # cmd_903 §11是正: MASKOUTの構築はここでは行わない(旧: 引用符の中の
-      # 語を無条件にQDATAへ伏せていたが、これは既定が誤りであった——probe3で
-      # python3 -c/perl -e等、引用符の中身を実際に実行する形の退行17件が
-      # 実証された)。既定を逆転し、実行位置の語がデータ系の許可一覧
-      # (DATA_SAFE_SET・is_data_safe)にある時だけ引用符の語をデータとして
-      # 伏せる。判定には単純コマンドの実行位置の語が要るため、end_simple_cmd
-      # 側でemit_mask_words()によりまとめて行う(設計文書§11)。
+      # cmd_903 §12是正: MASKOUT/QDATAの構築(旧§11・引数ごとのデータ判定)は
+      # ここでは行わない。§11の「引数ごとに、データ系の命令ならその引用を
+      # 緩める」も、許可一覧そのものを攻める形(probe4・less '+!…'/rg --pre/
+      # 書いて実行/出力が実行へ流れる、の14件)で漏れた——引数単位でどれだけ
+      # 精緻にしても、データの流れ(選択肢経由の実行・ファイル経由の実行・
+      # パイプ/置換経由の実行)を全て列挙し尽くすことはできない。
+      # §12は判定の単位を引数からCOMMAND全体へ改め、「COMMAND中の全ての
+      # 単純コマンドの実行位置の語が、純データの命令の狭い一覧にある時だけ」
+      # 旧判定(has_git_subcmd)の一致をCOMMAND全体について無視してよいとする。
+      # 一つでも一覧に無い実行位置の語があれば、旧判定を生のCOMMAND文字列
+      # (引用符を一切伏せない)へそのまま当てる——is_pure_head()参照。
       curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
     }
     function resolve_word(d, j,    v) {
@@ -467,13 +472,32 @@ _lex_one_level() {
       }
       return cmdword[d, j]
     }
-    # cmd_903 §11是正: 引用符の中の語をデータとして伏せてよいか(実行位置の
-    # 語がデータ系の許可一覧にある時だけ)を判定する。一覧に無い(未知を含む)
-    # 命令は既定でデータ扱いしない(=旧has_git_subcmdの走査に残す)。
-    function is_data_safe(d, idx, resolved,    j5, tok, first) {
-      if (resolved in DATA_SAFE_SET) return 1
-      if (resolved == ":" || resolved == "[") return 1
-      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh") {
+    # cmd_903 §12是正(設計文書§12・第三の訂正): この単純コマンドの実行位置の
+    # 語(resolved)が「純データの命令」か否かを判定する。§11の一覧(§12より
+    # 広い)から less・ag・git の全subcmdを外し、cd/pushd/popd(データを実行
+    # しない移動のみ)とtee(stdoutをファイルへ複写するのみ・データを実行
+    # しない)を明示的に追加した狭い一覧とする。
+    # ★実行位置の語そのものに展開($(…)・$VAR)があってはならない(設計文書
+    # §12「実行位置の語そのものに展開が無い」)——VARNAME経由(変数展開由来の
+    # 実行位置)またはcmdflagのxビット(command substitution/backtick由来)が
+    # 立っていれば、たとえ解決結果が一覧にある語と同じに見えても純データとは
+    # 扱わない(間接参照そのものを不確実性として扱う・fail-closed)。
+    # ★rgはprobe4 Z2(rg --pre)の教訓により、--pre/--pre-glob(外部コマンドを
+    # プリプロセッサとして起動する)が無い時に限り純データとする。
+    function is_pure_head(d, idx, resolved,    flags, j5, tok, first) {
+      if ((d, idx) in VARNAME) return 0
+      flags = cmdflag[d, idx]
+      if (flags ~ /x/) return 0
+      if (resolved == "cd" || resolved == "pushd" || resolved == "popd") return 1
+      if (resolved == "rg") {
+        for (j5 = idx + 1; j5 <= nwords[d]; j5++) {
+          tok = cmdword[d, j5]
+          if (tok == "--pre" || tok == "--pre-glob" || tok ~ /^--pre(-glob)?=/) return 0
+        }
+        return 1
+      }
+      if (resolved in PURE_HEAD_SET) return 1
+      if (resolved == "bash") {
         j5 = idx + 1
         while (j5 <= nwords[d]) {
           tok = cmdword[d, j5]
@@ -488,18 +512,6 @@ _lex_one_level() {
         return 0
       }
       return 0
-    }
-    # このコマンド(1..nwords[d])の全語をMASKOUTへ積む。safe=1ならquoted語
-    # (flags~/q/)をQDATAへ伏せる。safe=0なら生の値をそのまま積み、旧
-    # has_git_subcmdの走査対象に残す(既定の逆転・設計文書§11)。
-    function emit_mask_words(d, safe,    k9, w9, flags9, wsafe9) {
-      for (k9 = 1; k9 <= nwords[d]; k9++) {
-        w9 = cmdword[d, k9]
-        flags9 = cmdflag[d, k9]
-        wsafe9 = w9
-        gsub(/[\n\t]/, " ", wsafe9)
-        MASKOUT = MASKOUT ((safe && flags9 ~ /q/) ? "QDATA" : wsafe9) " "
-      }
     }
     function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid, aliasname, aliasval, eqpos2, aliasparts) {
       close_word(d)
@@ -579,8 +591,7 @@ _lex_one_level() {
       }
       if (idx > nwords[d]) {
         # 代入・キーワードのみで実行位置の語が無い(例: MSG=git-commitのみの代入)。
-        # 何も実行しないため、引用の中の語はデータとして安全に伏せてよい。
-        emit_mask_words(d, 1)
+        # 何も実行しないため、純データ判定(§12)に影響しない(IMPUREにしない)。
         nwords[d] = 0; herestring_body[d] = ""
         return
       }
@@ -592,7 +603,13 @@ _lex_one_level() {
       headraw = cmdword[d, idx]
       headvar = ((d, idx) in VARNAME) ? VARNAME[d, idx] : ""
       resolved = resolve_head(headraw, headvar)
-      if (resolved == "") { emit_mask_words(d, 0); nwords[d] = 0; herestring_body[d] = ""; return }
+      # cmd_903 §12: この単純コマンドの実行位置の語が純データの命令でなければ
+      # (git・less・ag・未解決の実行位置語・展開を含む実行位置語を含め)
+      # COMMAND全体をIMPUREとする(§3.3で再走査される文字列も、それぞれが
+      # 独立した_lex_one_level呼出として同じチェックを経る・下のIMPURE行
+      # 出力とbash側_lex_git_invocationsの伝播で全レベルに及ぶ)。
+      if (!is_pure_head(d, idx, resolved)) IMPURE = 1
+      if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
       if (resolved == "git") {
         j = idx + 1
         cddir = ""; cddir_wt = ""
@@ -699,17 +716,13 @@ _lex_one_level() {
             if (tok == "$@" || tok == "$*" || tok ~ /^\$[0-9]+$/) { ALIAS[funcname[d]] = 1; break }
           }
         }
-        # cmd_903 §11是正: git呼出の引用の中の語は、読み取り系subcmd
-        # (log/show/diff/grep/status)の時だけデータとして伏せてよい
-        # (git logのauthor引数の中に地の文でgit commitとある誤爆を避ける)。
-        # それ以外(commit/push含む)はデータ扱いしない——旧判定の走査に残す。
-        emit_mask_words(d, (subcmd == "log" || subcmd == "show" || subcmd == "diff" || subcmd == "grep" || subcmd == "status") ? 1 : 0)
+        # cmd_903 §12: gitは常に純データの一覧から外れる(is_pure_headが
+        # 既にIMPUREを立てている)。git呼出自身の引用の中の語をここで
+        # 個別に伏せることはしない——旧判定はCOMMAND全体がIMPUREでない限り
+        # 効かないため、引数単位のマスクは不要になった(設計文書§12)。
         nwords[d] = 0; herestring_body[d] = ""
         return
       }
-      # cmd_903 §11是正: git以外の実行位置の語について、データ系許可一覧
-      # (is_data_safe)にある時だけ引用の中の語をデータとして伏せる。
-      emit_mask_words(d, is_data_safe(d, idx, resolved))
       if (resolved == "cd" || resolved == "pushd") {
         if (idx + 1 <= nwords[d]) {
           tok = resolve_word(d, idx + 1)
@@ -822,27 +835,32 @@ _lex_one_level() {
       pending_funcname = ""
       toolarge = 0
       totalchars = 0
-      MASKOUT = ""
       pending_ps_id[0] = 0
       ps_id_counter = 0
-      # cmd_903 §11是正: データ系の許可一覧(既定逆転の核)。ここに無い
-      # (未知を含む)命令の引用の中の語は、旧has_git_subcmdの走査対象に残す。
-      DATA_SAFE_SET["echo"] = 1
-      DATA_SAFE_SET["printf"] = 1
-      DATA_SAFE_SET["grep"] = 1
-      DATA_SAFE_SET["egrep"] = 1
-      DATA_SAFE_SET["fgrep"] = 1
-      DATA_SAFE_SET["rg"] = 1
-      DATA_SAFE_SET["ag"] = 1
-      DATA_SAFE_SET["cat"] = 1
-      DATA_SAFE_SET["head"] = 1
-      DATA_SAFE_SET["tail"] = 1
-      DATA_SAFE_SET["wc"] = 1
-      DATA_SAFE_SET["less"] = 1
-      DATA_SAFE_SET["true"] = 1
-      DATA_SAFE_SET["test"] = 1
-      DATA_SAFE_SET["jq"] = 1
-      DATA_SAFE_SET["inbox_write.sh"] = 1
+      IMPURE = 0
+      # cmd_903 §12(第三の訂正・設計文書§12): 純データの命令の狭い一覧。
+      # §11の一覧からless・agを外し(選択肢/設定で外部コマンドを起動しうる
+      # ため・probe4 Z1/Z3)、gitは全subcmdを一覧から常に外す(is_pure_head
+      # 側でresolved=="git"が一覧照会に到達しないよう別扱い・probe4 Z4-Z6)。
+      # cd/pushd/popdとteeはis_pure_head内で個別に判定する(移動のみ・
+      # stdout複写のみでデータを実行しないため)。
+      PURE_HEAD_SET["echo"] = 1
+      PURE_HEAD_SET["printf"] = 1
+      PURE_HEAD_SET["grep"] = 1
+      PURE_HEAD_SET["egrep"] = 1
+      PURE_HEAD_SET["fgrep"] = 1
+      PURE_HEAD_SET["cat"] = 1
+      PURE_HEAD_SET["head"] = 1
+      PURE_HEAD_SET["tail"] = 1
+      PURE_HEAD_SET["wc"] = 1
+      PURE_HEAD_SET["tee"] = 1
+      PURE_HEAD_SET["date"] = 1
+      PURE_HEAD_SET["true"] = 1
+      PURE_HEAD_SET["test"] = 1
+      PURE_HEAD_SET["jq"] = 1
+      PURE_HEAD_SET["inbox_write.sh"] = 1
+      PURE_HEAD_SET[":"] = 1
+      PURE_HEAD_SET["["] = 1
     }
     {
       line = $0
@@ -1070,7 +1088,7 @@ _lex_one_level() {
       if (depth != 0) print "UNCERTAIN\tunclosed-bracket"
       if (state[depth] == "S" || state[depth] == "D" || state[depth] == "A") print "UNCERTAIN\tunterminated-quote"
       if (toolarge) print "UNCERTAIN\tinput-too-large"
-      print "MASKED\t" MASKOUT
+      if (IMPURE) print "IMPURE"
     }
   ' <<<"$text"
 }
@@ -1103,6 +1121,14 @@ _lex_git_invocations() {
       UNCERTAIN)
         echo "UNCERTAIN"
         ;;
+      IMPURE)
+        # cmd_903 §12: このレベル(トップ・パイプ・$()・バッククォート・
+        # 関数本体・再走査対象のいずれか)に純データでない単純コマンドが
+        # 1件でもあった。再帰の末端から呼出元まで素通しし、最終的に
+        # _GIT_INV_RESULT全体に含まれるかどうかで判定する(UNCERTAINと同じ
+        # 伝播の仕組み・上のコメント参照)。
+        echo "IMPURE"
+        ;;
       INV)
         a="${line#*$'\t'}"
         echo "$a"
@@ -1131,24 +1157,6 @@ _lex_git_invocations() {
         done <<<"$mk_unescaped"
         ;;
     esac
-  done <<<"$out"
-}
-
-# cmd_903追補#1(構造的な守り): トップレベル(再走査を経ない、hookが直接
-# 受け取ったコマンド文字列そのもの)だけを対象に、_lex_one_level の
-# MASKED 行(引用符の中の語を伏せ字にした平らな語の並び)を取り出す。
-# 再走査(RESCAN)先の文字列は、それぞれが独立に _lex_git_invocations で
-# 解析され、そこでgit呼出が見つかればINVとして既に出てくるため、ここでは
-# 見ない(深さ0のみでよい・設計文書§追補1)。
-_lex_get_masked() {
-  local text="$1"
-  local out line
-  out="$(_lex_one_level "$text" "UNKNOWN")"
-  while IFS= read -r line; do
-    if [[ "${line%%$'\t'*}" == "MASKED" ]]; then
-      echo "${line#*$'\t'}"
-      return
-    fi
   done <<<"$out"
 }
 
@@ -1193,6 +1201,23 @@ _GIT_INV_UNCERTAIN=0
 if grep -qx 'UNCERTAIN' <<<"$_GIT_INV_RESULT"; then
   _GIT_INV_UNCERTAIN=1
 fi
+# cmd_903 §12(設計文書§12・第三の訂正): COMMAND全体(トップ・パイプ・$()・
+# バッククォート・関数本体・再走査対象の全レベル)に純データでない単純
+# コマンドが1件でもあれば_GIT_PURE=0。IMPUREはUNCERTAINと同じ仕組みで
+# 全レベルから伝播してくる(_lex_git_invocationsのIMPUREケース参照)。
+_GIT_PURE=1
+if grep -qx 'IMPURE' <<<"$_GIT_INV_RESULT"; then
+  _GIT_PURE=0
+fi
+# ★安全網の生地(legacy信号)には has_git_subcmd をそのまま使わない。
+# has_git_subcmd の \b は「英数字/アンダースコアと非英数字の境界」を指す
+# ため、ハイフンの前でも一致してしまい `git commit-graph` を `git commit`
+# と誤って一致させる(旧来からの欠陥・N13で実測)。§12の安全網はCOMMAND
+# 全体の生文字列(引用符を伏せない)へ当てるため、この欠陥を持ち込むと
+# N13のような既存の陰性対照を壊す。_has_git_subcmd_direct_strict は
+# この境界を厳密化した既存関数であり(cmd903追補#1で導入済み)、そのまま
+# 再利用する。heredoc本文のマスクはhas_git_subcmd同様ここで明示的に行う。
+_GIT_RAW_MASKED="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
 
 if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
   # 確信が持てぬ(引用符/括弧が閉じない等)→ 旧判定へ倒す(fail-closed)。
@@ -1201,16 +1226,17 @@ if [[ $_GIT_INV_UNCERTAIN -eq 1 ]]; then
     exit 2
   fi
 else
-  # cmd_903追補#1(構造的な守り・最優先): 新判定(_GIT_INV_RESULT)が旧判定
-  # (has_git_subcmd)の block を allow に覆してよいのは、旧判定の一致が
-  # すべて「データとして扱った引用の中」にある時だけ。データの引用の語を
-  # 伏せ字にした文字列(_GIT_DATA_MASKED)へ旧has_git_subcmdをもう一度当て、
-  # まだ一致すれば(=引用の外にも一致があった)新判定の穴を疑い、旧同様に
-  # 扱う。これにより、包み・選択肢の網羅漏れ(command -p / env -u 等)が
-  # あっても、引用の外に現れたgit呼出を見逃す退行は原理的に起きない
-  # (設計文書§追補1・PR#169のQCで見つかったE7/E9/E10の退行がこれ)。
-  _GIT_DATA_MASKED="$(_lex_get_masked "$(_mask_heredoc_bodies_for_git_detection "$COMMAND")")"
-  if { echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" || _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "commit"; } \
+  # cmd_903 §12(設計文書§12・第三の訂正・旧§10「構造的な守り」を置き換え):
+  # 新判定(_GIT_INV_RESULT)が旧判定(has_git_subcmd)のblockをallowへ覆して
+  # よいのは、COMMAND全体が純データの時だけ(block = new OR (legacy AND
+  # NOT pure))。旧§10/§11は「引数ごとにデータ系と証明できた分だけ緩める」
+  # 方式であったため、許可一覧そのものを攻める形(probe4・less '+!…'/
+  # rg --pre/書いて実行/出力が実行へ流れる)で14件漏れた(引数単位では
+  # データの流れを列挙し尽くせない)。旧判定はCOMMAND全体を引用符抜きの
+  # 生文字列のまま見るため、COMMAND中のどの単純コマンドも純データの命令
+  # でなければ(=is_pure_headの狭い一覧に無ければ)、包み・選択肢の網羅
+  # 漏れの有無に関わらず旧判定がそのまま効く。
+  if { echo "$_GIT_INV_RESULT" | grep -qE "$(printf '^commit\t')" || { _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "commit" && [[ $_GIT_PURE -eq 0 ]]; }; } \
      && echo "$COMMAND" | grep -qi 'Co-Authored-By'; then
     # ★trailer(Co-Authored-By)の検索は従来どおりCOMMAND全体を対象とする
     # (trailerは-mの引数・heredoc等、正当に引用符の中に入るものであるため)。
@@ -2110,15 +2136,15 @@ else
       fi
     fi
   done <<<"$_GIT_INV_RESULT"
-  # cmd_903追補#1(構造的な守り): Hook1と同じ安全網。新判定(INVの列挙)が
-  # 包み・選択肢の網羅漏れで実行位置のgit呼出を1件でも見逃していないか、
-  # データの引用を伏せた文字列へ旧has_git_subcmdをもう一度当てて確かめる。
-  # まだ一致すれば、確認先が不明な時と同じ扱い(GIT_TARGET_DIRを見る・
-  # 保守側)でblock判定する。★上のwhileループで既に正しく確認済みの呼出
-  # (feature上のcommit等)がここでも再び一致するのは無害(二重に安全側へ
-  # 倒すだけで、許可済みの判定を覆しはしない——block条件が満たされない
-  # 限りexitしないため)。
-  if _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "commit" || _has_git_subcmd_direct_strict "$_GIT_DATA_MASKED" "push"; then
+  # cmd_903 §12(設計文書§12・Hook1と同じ安全網): 旧判定(_has_git_subcmd_
+  # direct_strict・has_git_subcmdの直接隣接パターンの境界を厳密化したもの。
+  # 理由は上の_GIT_RAW_MASKED計算のコメントを見よ)がcommit/pushを検知して
+  # いて、かつCOMMAND全体が純データでない時だけ、確認先が不明な時と同じ
+  # 扱い(GIT_TARGET_DIRを見る・保守側)でblock判定する。★上のwhileループで
+  # 既に正しく確認済みの呼出(feature上のcommit等)がここでも再び一致する
+  # のは無害(二重に安全側へ倒すだけで、許可済みの判定を覆しはしない——
+  # block条件が満たされない限りexitしないため)。
+  if [[ $_GIT_PURE -eq 0 ]] && { _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "commit" || _has_git_subcmd_direct_strict "$_GIT_RAW_MASKED" "push"; }; then
     CURRENT_BRANCH=$(git -C "$GIT_TARGET_DIR" branch --show-current 2>/dev/null || echo "")
     if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
       echo "❌ main ブランチへの直接 commit/push は禁止です。ブランチを切ってください。" >&2

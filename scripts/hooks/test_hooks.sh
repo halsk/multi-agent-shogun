@@ -865,6 +865,42 @@ check "cmd903 probe3 X20: git rebase --exec 'git commit'(--execの再走査)" bl
 check "cmd903 probe3 Y1: python3 -cのprint内の地の文(データ系許可一覧に無い命令・§11の安全側の代償でblockのままでよい)" block "cd $M && python3 -c \"print('git commit is mentioned')\""
 check "cmd903 probe3 Y2: grep -rn 'git commit'(データ系許可一覧・引き続きallow)" allow "cd $M && grep -rn 'git commit' docs/"
 
+echo "--- やり直し(subtask_cmd903_hook1_hook3_impl4・三度目のやり直し): 判定の単位をコマンド全体へ(probe4・許可一覧そのものを攻める14件) ---"
+# 出所: queue/reports/cmd903_prototype/probe4_allowlist_attack.py。是正前(本コミット直前・
+# PR#169 head 3a7b36dのコード)でZ1-Z10・Z13-Z16の14件が実際に落ちる(RED・mainでは
+# 正しくblockしPR169コードでのみallowへ退行)ことを実測済み(probe4_result_pr169_3a7b36d.txt)。
+# Z11・Z12・Z17は退行ではなく元々block(パイプ/heredoc再走査の既存網羅)。ok1-ok6は
+# 本日の誤爆(inbox本文・grep・echo・cat heredoc・echo>file)が引き続きallowであることの
+# 対照(probe4_result_pr169_3a7b36d.txtで実測済み・退行していない)。
+check "cmd903 probe4 Z1: less '+!cmd' README.md(選択肢経由の実行・純データ一覧からless除外)" block "cd $M && less '+!git commit --allow-empty -m x' README.md"
+check "cmd903 probe4 Z2: rg --pre 'sh -c cmd'(選択肢経由の実行・--pre持ちは純データから除外)" block "cd $M && rg --pre 'sh -c \"git commit --allow-empty -m x\"' x ."
+check "cmd903 probe4 Z3: ag --pager 'cmd'(選択肢経由の実行・純データ一覧からag除外)" block "cd $M && ag --pager 'git commit --allow-empty -m x' x"
+check "cmd903 probe4 Z4: git -c core.pager='sh -c cmd' log(gitは全subcmdを純データ一覧から除外)" block "cd $M && git -c core.pager='sh -c \"git commit --allow-empty -m x\"' log -1"
+check "cmd903 probe4 Z5: git grep -O'sh -c cmd'(gitは全subcmdを純データ一覧から除外)" block "cd $M && git grep -O'sh -c \"git commit --allow-empty -m x\"' x"
+check "cmd903 probe4 Z6: git -c diff.external='sh -c cmd' diff(gitは全subcmdを純データ一覧から除外)" block "cd $M && git -c diff.external='sh -c \"git commit --allow-empty -m x\"' diff"
+check "cmd903 probe4 Z7: echo > file && bash file(書いて同じコマンドで実行・bashは純データでない)" block "cd $M && echo 'git commit --allow-empty -m x' > /tmp/cmd903_z7.sh && bash /tmp/cmd903_z7.sh"
+check "cmd903 probe4 Z8: printf > file; source file" block "cd $M && printf '%s\n' 'git commit --allow-empty -m x' > /tmp/cmd903_z8.sh; source /tmp/cmd903_z8.sh"
+check "cmd903 probe4 Z9: echo >> file; . file" block "cd $M && echo 'git commit --allow-empty -m x' >> /tmp/cmd903_z9.sh; . /tmp/cmd903_z9.sh"
+check "cmd903 probe4 Z10: tee file <<< cmd; sh file(teeは純データだがshは純データでないためCOMMAND全体は不純)" block "cd $M && tee /tmp/cmd903_z10.sh <<< 'git commit --allow-empty -m x' >/dev/null; sh /tmp/cmd903_z10.sh"
+check "cmd903 probe4 Z11: cat > file <<EOF ... EOF; bash file(既存網羅・退行ではない)" block "cd $M && cat > /tmp/cmd903_z11.sh <<'EOF'
+git commit --allow-empty -m x
+EOF
+bash /tmp/cmd903_z11.sh"
+check "cmd903 probe4 Z12: echo cmd | sh(パイプ経由の実行・既存網羅・退行ではない)" block "cd $M && echo 'git commit --allow-empty -m x' | sh"
+check "cmd903 probe4 Z13: jq -rn '\"cmd\"' | bash(出力が実行へ流れる・bashは純データでない)" block "cd $M && jq -rn '\"git commit --allow-empty -m x\"' | bash"
+check "cmd903 probe4 Z14: git log --format=cmd | sh(gitは純データ一覧から除外・shは純データでない)" block "cd $M && git log -1 --format='git commit --allow-empty -m x' | sh"
+check "cmd903 probe4 Z15: \$(echo 'cmd')が実行位置の語になる(展開を含む実行位置語は純データでない)" block 'cd '"$M"' && $(echo '\''git commit --allow-empty -m x'\'')'
+check "cmd903 probe4 Z16: eval \"\$(echo 'cmd')\"" block 'cd '"$M"' && eval "$(echo '\''git commit --allow-empty -m x'\'')"'
+check "cmd903 probe4 Z17: inbox_write本文をパイプでshへ(既存網羅・退行ではない)" block "cd $M && bash scripts/inbox_write.sh karo 'git commit --allow-empty -m x' x gunshi | sh"
+check "cmd903 probe4 ok1: inbox本文の単一引用符プロース(本日の誤爆・引き続きallow)" allow "cd $M && bash scripts/inbox_write.sh karo 'git commit の話' report_received gunshi"
+check "cmd903 probe4 ok2: grep quoted(本日の誤爆・引き続きallow)" allow "cd $M && grep -n 'git commit' README.md"
+check "cmd903 probe4 ok3: echoの地の文(本日の誤爆・引き続きallow)" allow "cd $M && echo \"git commit は禁止\""
+check "cmd903 probe4 ok4: git log --grep(既存・引き続きallow)" allow "cd $M && git log --grep='commit' -1"
+check "cmd903 probe4 ok5: cat heredocの地の文(本日の誤爆・引き続きallow)" allow "cd $M && cat > /tmp/cmd903_ok5.md <<'EOF'
+git commit の地の文
+EOF"
+check "cmd903 probe4 ok6: echo > file(実行しない・本日の誤爆・引き続きallow)" allow "cd $M && echo 'git commit の手順' > /tmp/cmd903_ok6.txt"
+
 rm -rf "$CMD903_M" "$CMD903_F"
 
 echo ""
