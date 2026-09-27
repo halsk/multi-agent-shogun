@@ -453,6 +453,53 @@ seed_inbox() {
   [[ "$output" == *"gunshi|cmd_738|"* ]]
 }
 
+# ── cmd_900③: report の task_id と現task YAMLのtask_idの食い違い → 検知しない
+# (軍師root cause特定・cmd900_report_corruption.md §五(a)。報告は前のtask
+# についてのものであり、今は別taskで作業中と判断する。実測repro:
+# ashigaru2の報告task_id=subtask_cmd898_issue218_fix2・task YAMLの現
+# task_id=subtask_cmd898_issue218_cr_fixesの食い違いで閾値0でも偽警報が
+# 再現した。) ──
+
+@test "T-3WM-012: does not flag when report's task_id differs from the task YAML's current task_id (cmd_900 ashigaru2 repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru2_report.yaml" $'worker_id: ashigaru2\ntask_id: subtask_cmd898_issue218_fix2\nparent_cmd: cmd_898\ntimestamp: "2026-09-27T17:38:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru2.yaml" $'task:\n  task_id: subtask_cmd898_issue218_cr_fixes\n  status: assigned\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru2|"* ]]
+}
+
+# ── cmd_900③: task=idle は正常な待機状態であり検知しない(軍師§五(b))。
+# idleを異常とみなす偽警報は2026-09-20・09-25の履歴で実際に発生した。 ──
+
+@test "T-3WM-013: does not flag when the task YAML status is idle (normal waiting state)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru8_report.yaml" $'worker_id: ashigaru8\ntask_id: subtask_cmd900_idle_repro\nparent_cmd: cmd_900\ntimestamp: "2026-09-27T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru8.yaml" $'task:\n  task_id: subtask_cmd900_idle_repro\n  status: idle\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru8|"* ]]
+}
+
+# ── cmd_900③: `_lmd_task_field` が行末のインラインコメント(`status: done  #
+# 軍師QC=PASS…`)を落とさず値に含めてしまう問題(軍師§五(c)・2026-09-19の
+# 履歴で実際に発生)。コメントが混入したままだと "done" と一致せず偽警報になる。 ──
+
+@test "T-3WM-014: does not flag when task status has a trailing inline comment matching done (cmd_900 §五(c) repro)" {
+  source "$LIB_FILE"
+
+  seed_report "ashigaru9_report.yaml" $'worker_id: ashigaru9\ntask_id: subtask_cmd900_comment_repro\nparent_cmd: cmd_900\ntimestamp: "2026-09-19T10:00:00"\nstatus: done\n' 7
+  seed_task "$TMP_DIR/tasks" "ashigaru9.yaml" $'task:\n  task_id: subtask_cmd900_comment_repro\n  status: done  # 軍師QC=PASS(2026-09-19)\n'
+
+  run detect_three_way_mismatch "$TMP_DIR/reports" "$TMP_DIR/tasks" "$TMP_DIR/inbox_karo.yaml" 21600
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"ashigaru9|"* ]]
+}
+
 # ══════════════════════════════════════════════════════════════════════════
 # cmd_778 相乗り: RACE-001(同一ファイルへの複数task並行割当)の機械検知
 # detect_file_collisions / detect_undeclared_touches_files

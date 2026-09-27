@@ -150,6 +150,7 @@ _lmd_task_field() {
     local file="$1" field="$2"
     { grep -E "^  ${field}:" "$file" 2>/dev/null || true; } | head -1 \
         | sed -E "s/^  ${field}:[[:space:]]*//" \
+        | sed -E 's/[[:space:]]+#.*$//' \
         | tr -d '"' | tr -d "'" \
         | sed -E 's/[[:space:]]+$//'
 }
@@ -325,8 +326,8 @@ detect_three_way_mismatch() {
     local now
     now=$(date '+%s')
 
-    local f agent parent_cmd report_status report_ts mtime age task_status
-    local task_ok inbox_ok
+    local f agent parent_cmd report_status report_ts report_task_id mtime age
+    local task_status task_id_now task_ok inbox_ok
     for f in "$reports_dir"/*_report.yaml; do
         [[ -f "$f" ]] || continue
 
@@ -338,13 +339,22 @@ detect_three_way_mismatch() {
 
         parent_cmd=$(_lmd_report_field "$f" "parent_cmd")
         report_ts=$(_lmd_report_field "$f" "timestamp")
+        report_task_id=$(_lmd_report_field "$f" "task_id")
 
         mtime=$(_lmd_file_mtime_epoch "$f")
         [[ -z "$mtime" ]] && continue
         age=$(( now - mtime ))
         [[ "$age" -lt "$threshold_sec" ]] && continue
 
+        # ★cmd_900③(a): 報告のtask_idと現taskのtask_idが違えば、報告は
+        # 前のtaskについてのものであり、今は別taskで作業中と判断して鳴らさない。
+        task_id_now=$(_lmd_task_field "$tasks_dir/${agent}.yaml" "task_id")
+        [[ -n "$report_task_id" && -n "$task_id_now" && "$report_task_id" != "$task_id_now" ]] && continue
+
         task_status=$(_lmd_task_field "$tasks_dir/${agent}.yaml" "status")
+        # ★cmd_900③(b): idleは正常な待機状態であり鳴らさない。
+        [[ "$task_status" == "idle" ]] && continue
+
         task_ok=0
         [[ "$task_status" == "done" || "$task_status" == "cancelled" ]] && task_ok=1
 
