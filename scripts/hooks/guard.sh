@@ -450,15 +450,13 @@ _lex_one_level() {
       nwords[d] = widx
       cmdword[d, widx] = w
       cmdflag[d, widx] = flags
-      # cmd_903追補#1(構造的な守り): 引用符の中の文字を含んだ語(データ)を
-      # 伏せ字("QDATA")へ置き換えた、平らな語の並びを併せて作る。旧
-      # has_git_subcmd をこの伏せ字済み文字列へもう一度当て、まだ一致
-      # すれば新判定がallowでもblockを維持する(設計文書§追補1)。深さ・
-      # 入れ子を問わず全ての語を出現順にここへ積む——has_git_subcmdは
-      # 隣接語の正規表現に過ぎず、区切り記号の有無は見ないため、これで足りる。
-      wsafe = w
-      gsub(/[\n\t]/, " ", wsafe)
-      MASKOUT = MASKOUT (flags ~ /q/ ? "QDATA" : wsafe) " "
+      # cmd_903 §11是正: MASKOUTの構築はここでは行わない(旧: 引用符の中の
+      # 語を無条件にQDATAへ伏せていたが、これは既定が誤りであった——probe3で
+      # python3 -c/perl -e等、引用符の中身を実際に実行する形の退行17件が
+      # 実証された)。既定を逆転し、実行位置の語がデータ系の許可一覧
+      # (DATA_SAFE_SET・is_data_safe)にある時だけ引用符の語をデータとして
+      # 伏せる。判定には単純コマンドの実行位置の語が要るため、end_simple_cmd
+      # 側でemit_mask_words()によりまとめて行う(設計文書§11)。
       curword[d] = ""; wstarted[d] = 0; wq[d] = ""; wu[d] = ""; purevar[d] = ""
     }
     function resolve_word(d, j,    v) {
@@ -469,7 +467,41 @@ _lex_one_level() {
       }
       return cmdword[d, j]
     }
-    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid) {
+    # cmd_903 §11是正: 引用符の中の語をデータとして伏せてよいか(実行位置の
+    # 語がデータ系の許可一覧にある時だけ)を判定する。一覧に無い(未知を含む)
+    # 命令は既定でデータ扱いしない(=旧has_git_subcmdの走査に残す)。
+    function is_data_safe(d, idx, resolved,    j5, tok, first) {
+      if (resolved in DATA_SAFE_SET) return 1
+      if (resolved == ":" || resolved == "[") return 1
+      if (resolved == "bash" || resolved == "sh" || resolved == "zsh" || resolved == "dash" || resolved == "ksh") {
+        j5 = idx + 1
+        while (j5 <= nwords[d]) {
+          tok = cmdword[d, j5]
+          if (tok ~ /^-[A-Za-z]*c[A-Za-z]*$/) return 0
+          if (tok ~ /^-/) { j5++; continue }
+          break
+        }
+        if (j5 <= nwords[d]) {
+          first = resolve_word(d, j5)
+          if (basename_of(first) == "inbox_write.sh") return 1
+        }
+        return 0
+      }
+      return 0
+    }
+    # このコマンド(1..nwords[d])の全語をMASKOUTへ積む。safe=1ならquoted語
+    # (flags~/q/)をQDATAへ伏せる。safe=0なら生の値をそのまま積み、旧
+    # has_git_subcmdの走査対象に残す(既定の逆転・設計文書§11)。
+    function emit_mask_words(d, safe,    k9, w9, flags9, wsafe9) {
+      for (k9 = 1; k9 <= nwords[d]; k9++) {
+        w9 = cmdword[d, k9]
+        flags9 = cmdflag[d, k9]
+        wsafe9 = w9
+        gsub(/[\n\t]/, " ", wsafe9)
+        MASKOUT = MASKOUT ((safe && flags9 ~ /q/) ? "QDATA" : wsafe9) " "
+      }
+    }
+    function end_simple_cmd(d,    idx, tok, tok2, t2, eqpos, headraw, headvar, resolved, subcmd, cddir, cddir_wt, j, body, k, cflag, foundexec, fname_tmp, psid, aliasname, aliasval, eqpos2, aliasparts) {
       close_word(d)
       if (nwords[d] == 0) { herestring_body[d] = ""; return }
       idx = 1
@@ -546,6 +578,9 @@ _lex_one_level() {
         break
       }
       if (idx > nwords[d]) {
+        # 代入・キーワードのみで実行位置の語が無い(例: MSG=git-commitのみの代入)。
+        # 何も実行しないため、引用の中の語はデータとして安全に伏せてよい。
+        emit_mask_words(d, 1)
         nwords[d] = 0; herestring_body[d] = ""
         return
       }
@@ -557,7 +592,7 @@ _lex_one_level() {
       headraw = cmdword[d, idx]
       headvar = ((d, idx) in VARNAME) ? VARNAME[d, idx] : ""
       resolved = resolve_head(headraw, headvar)
-      if (resolved == "") { nwords[d] = 0; herestring_body[d] = ""; return }
+      if (resolved == "") { emit_mask_words(d, 0); nwords[d] = 0; herestring_body[d] = ""; return }
       if (resolved == "git") {
         j = idx + 1
         cddir = ""; cddir_wt = ""
@@ -592,7 +627,24 @@ _lex_one_level() {
             if (tok2 != "" && tok2 !~ /^\//) tok2 = (cdhint[d] != "" && cdhint[d] != "UNKNOWN") ? (cdhint[d] "/" tok2) : "UNKNOWN"
             cddir_wt = tok2; j++; continue
           }
-          if (tok == "-c" || tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
+          # cmd_903 §11是正(X19): `-c alias.NAME=VALUE` はgitのaliasオプション。
+          # subcmdの位置にNAMEが来た時、VALUEの先頭語をsubcmdとして解く束縛を
+          # 記録する(git -c alias.c=commit…をcのsubcmdへ解く例)。
+          if (tok == "-c") {
+            tok2 = resolve_word(d, j + 1)
+            if (tok2 ~ /^alias\./) {
+              eqpos2 = index(tok2, "=")
+              if (eqpos2 > 6) {
+                aliasname = substr(tok2, 7, eqpos2 - 7)
+                aliasval = substr(tok2, eqpos2 + 1)
+                sub(/^[ \t]+/, "", aliasval)
+                split(aliasval, aliasparts, /[ \t]+/)
+                if (aliasname != "" && aliasparts[1] != "") GIT_CALIAS[aliasname] = aliasparts[1]
+              }
+            }
+            j += 2; continue
+          }
+          if (tok == "--namespace" || tok == "--exec-path") { j += 2; continue }
           if (tok ~ /^--(namespace|exec-path)=/) { j++; continue }
           if (tok == "-p" || tok == "-P" || tok == "--paginate" || tok == "--no-pager" || tok == "--bare" || \
               tok == "--no-replace-objects" || tok == "--literal-pathspecs" || tok == "--glob-pathspecs" || \
@@ -602,6 +654,9 @@ _lex_one_level() {
         }
         if (j <= nwords[d]) {
           subcmd = resolve_word(d, j)
+          # cmd_903 §11是正(X19): -c alias.NAME=VALUE で記録した束縛があれば
+          # subcmdをVALUEの実体(NAMEでなく)へ解き直す。
+          if (subcmd in GIT_CALIAS) subcmd = GIT_CALIAS[subcmd]
           if (subcmd != "") {
             # cmd_903追補#3(E34): GIT_DIR=… の代入接頭(このコマンドの
             # プレフィクスとしてBINDへ既に記録済み)を、-C/--git-dirが
@@ -622,6 +677,20 @@ _lex_one_level() {
             } else {
               printf "INV\t%s\t%s\n", subcmd, cddir
             }
+            # cmd_903 §11是正(X20): `git rebase --exec CMD`/`-x CMD` は
+            # CMDを各コミットへ実際に実行する。引用符の中でもコードとして
+            # 再走査する(設計文書§3.3と同じ発想の追加)。
+            if (subcmd == "rebase") {
+              for (k = j + 1; k <= nwords[d]; k++) {
+                tok = cmdword[d, k]
+                if (tok == "--exec" || tok == "-x") {
+                  if (k + 1 <= nwords[d]) printf "RESCAN\t%s\t%s\n", cmdword[d, k + 1], cdhint[d]
+                  k++
+                } else if (tok ~ /^--exec=/) {
+                  printf "RESCAN\t%s\t%s\n", substr(tok, 8), cdhint[d]
+                }
+              }
+            }
           }
         }
         if (frametype[d] == "GROUP" && funcname[d] != "") {
@@ -630,9 +699,17 @@ _lex_one_level() {
             if (tok == "$@" || tok == "$*" || tok ~ /^\$[0-9]+$/) { ALIAS[funcname[d]] = 1; break }
           }
         }
+        # cmd_903 §11是正: git呼出の引用の中の語は、読み取り系subcmd
+        # (log/show/diff/grep/status)の時だけデータとして伏せてよい
+        # (git logのauthor引数の中に地の文でgit commitとある誤爆を避ける)。
+        # それ以外(commit/push含む)はデータ扱いしない——旧判定の走査に残す。
+        emit_mask_words(d, (subcmd == "log" || subcmd == "show" || subcmd == "diff" || subcmd == "grep" || subcmd == "status") ? 1 : 0)
         nwords[d] = 0; herestring_body[d] = ""
         return
       }
+      # cmd_903 §11是正: git以外の実行位置の語について、データ系許可一覧
+      # (is_data_safe)にある時だけ引用の中の語をデータとして伏せる。
+      emit_mask_words(d, is_data_safe(d, idx, resolved))
       if (resolved == "cd" || resolved == "pushd") {
         if (idx + 1 <= nwords[d]) {
           tok = resolve_word(d, idx + 1)
@@ -710,6 +787,26 @@ _lex_one_level() {
           body = body (body == "" ? "" : " ") tok
         }
       }
+      # cmd_903 §11是正(probe3 X6): `ssh HOST …` はHOSTの後の全引数を
+      # リモートで実行する(設計文書§3.3・遠隔だが保守的に再走査する)。
+      if (resolved == "ssh") {
+        j = idx + 1
+        while (j <= nwords[d] && cmdword[d, j] ~ /^-/) j++
+        if (j <= nwords[d]) j++
+        body = ""
+        for (k = j; k <= nwords[d]; k++) body = body (body == "" ? "" : " ") cmdword[d, k]
+        if (body != "") printf "RESCAN\t%s\t%s\n", body, cdhint[d]
+      }
+      # cmd_903 §11是正(probe3 X18): パイプ下流が`make -f -`の時も、
+      # stdinのMakefileレシピ行が実行されるため上流を再走査する。printfの
+      # \n/\t等のエスケープはmakeが読む前にprintf自身が実体化するため、
+      # 単純な語単位のRESCANでは剥がせない(bash側でprintf '%b' 相当の
+      # 実体化+改行分割を行う専用のRESCANMAKEへ渡す・§3.3の追加)。
+      if (resolved == "make" && pipe_pending[d] != "") {
+        body = ""
+        for (k = 1; k <= pipe_pending_n[d]; k++) body = body (body == "" ? "" : " ") pipe_pending_w[d, k]
+        if (body != "") printf "RESCANMAKE\t%s\t%s\n", body, cdhint[d]
+      }
       nwords[d] = 0; herestring_body[d] = ""
     }
     BEGIN {
@@ -728,6 +825,24 @@ _lex_one_level() {
       MASKOUT = ""
       pending_ps_id[0] = 0
       ps_id_counter = 0
+      # cmd_903 §11是正: データ系の許可一覧(既定逆転の核)。ここに無い
+      # (未知を含む)命令の引用の中の語は、旧has_git_subcmdの走査対象に残す。
+      DATA_SAFE_SET["echo"] = 1
+      DATA_SAFE_SET["printf"] = 1
+      DATA_SAFE_SET["grep"] = 1
+      DATA_SAFE_SET["egrep"] = 1
+      DATA_SAFE_SET["fgrep"] = 1
+      DATA_SAFE_SET["rg"] = 1
+      DATA_SAFE_SET["ag"] = 1
+      DATA_SAFE_SET["cat"] = 1
+      DATA_SAFE_SET["head"] = 1
+      DATA_SAFE_SET["tail"] = 1
+      DATA_SAFE_SET["wc"] = 1
+      DATA_SAFE_SET["less"] = 1
+      DATA_SAFE_SET["true"] = 1
+      DATA_SAFE_SET["test"] = 1
+      DATA_SAFE_SET["jq"] = 1
+      DATA_SAFE_SET["inbox_write.sh"] = 1
     }
     {
       line = $0
@@ -980,7 +1095,7 @@ _lex_git_invocations() {
   local out
   out="$(_lex_one_level "$text" "$cdhint")"
   [[ -z "$out" ]] && return
-  local line kind a b hint
+  local line kind a b hint mk_unescaped mk_line
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     kind="${line%%$'\t'*}"
@@ -997,6 +1112,23 @@ _lex_git_invocations() {
         b="${a%%$'\t'*}"
         hint="${a#*$'\t'}"
         _lex_git_invocations "$b" "$hint" "$((rdepth + 1))"
+        ;;
+      RESCANMAKE)
+        # cmd_903 §11是正(probe3 X18): printf等の出力がmakeへパイプされる時、
+        # printfの\n/\t等のエスケープは実行時にmake自身が読む前に実体化される。
+        # 生のバックスラッシュ列のまま再走査すると単なる1語に化けて見逃す
+        # ため、printf '%b' で同じエスケープ規則を模して実バイト化してから
+        # 実際の改行で分割し、Makefileレシピの慣習(先頭のTAB)を1つだけ
+        # 剥がして、各行を独立した単純コマンドとして再走査する。
+        a="${line#*$'\t'}"
+        b="${a%%$'\t'*}"
+        hint="${a#*$'\t'}"
+        mk_unescaped="$(printf '%b' "$b" 2>/dev/null || true)"
+        while IFS= read -r mk_line; do
+          [[ -z "$mk_line" ]] && continue
+          mk_line="${mk_line#$'\t'}"
+          _lex_git_invocations "$mk_line" "$hint" "$((rdepth + 1))"
+        done <<<"$mk_unescaped"
         ;;
     esac
   done <<<"$out"

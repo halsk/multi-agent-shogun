@@ -833,6 +833,38 @@ check_cwd "cmd903 E34: GIT_DIR=接頭がmainを指す(cwdはfeature・残FN)" bl
 check_cwd "cmd903 E35: cdの引数が変数(束縛表で解く・残FN)" block "D=$M; cd \$D && git commit --allow-empty -m x" "$F"
 check "cmd903 E37: function f { git \"\$@\"; }; f commit(functionキーワード形・残FN)" block "cd $M && function f { git \"\$@\"; }; f commit --allow-empty -m x"
 
+echo "--- やり直し(subtask_cmd903_hook1_hook3_impl3・二度目のやり直し): 設計文書§11既定逆転(probe3・引用の中身を実際に実行する形20件) ---"
+# 出所: queue/reports/cmd903_prototype/probe3_quoted_executors.py。是正前(本コミット直前・
+# PR#169 head 670fb98のコード)でX1-X10・X13・X15-X20の17件が実際に落ちる(RED・main
+# では正しくblockしPR169コードでのみallowへ退行)ことを実測済み。X11・X12・X14は退行
+# ではなく元々block(§11の既定逆転が無くとも通っていた既存の網羅)。Y1は設計文書§11の
+# 末尾が明記するとおり、データ系許可一覧に無い命令(python3)の引用の中の地の文が
+# 安全側の代償でblockのままでよい対照(probe3スクリプト自身のwant=allowはこの設計上の
+# 受容前の期待値であり、設計文書§11の記述を正とする)。Y2はデータ系許可一覧(grep)に
+# 該当する陰性対照。
+check "cmd903 probe3 X1: python3 -c os.system('git commit')(既定逆転前は退行)" block "cd $M && python3 -c \"import os; os.system('git commit --allow-empty -m x')\""
+check "cmd903 probe3 X2: node -e execSync('git commit')" block "cd $M && node -e \"require('child_process').execSync('git commit --allow-empty -m x')\""
+check "cmd903 probe3 X3: perl -e system(\"git commit\")" block "cd $M && perl -e 'system(\"git commit --allow-empty -m x\")'"
+check "cmd903 probe3 X4: ruby -e system(\"git commit\")" block "cd $M && ruby -e 'system(\"git commit --allow-empty -m x\")'"
+check "cmd903 probe3 X5: awk BEGIN{system(\"git commit\")}" block "cd $M && awk 'BEGIN{system(\"git commit --allow-empty -m x\")}'"
+check "cmd903 probe3 X6: ssh HOST 'git -C dir commit'(-Cで直接隣接を壊す・ssh再走査)" block "cd $M && ssh localhost 'git -C $M commit --allow-empty -m x'"
+check "cmd903 probe3 X7: tmux send-keys 'git commit' Enter" block "cd $M && tmux send-keys -t x 'git commit --allow-empty -m x' Enter"
+check "cmd903 probe3 X8: script -c 'git commit'" block "cd $M && script -q /dev/null -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X9: watch 'git commit'" block "cd $M && watch -n1 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X10: find -exec sh -c 'git commit' \\;" block "cd $M && find . -maxdepth 0 -exec sh -c 'git commit --allow-empty -m x' \\;"
+check "cmd903 probe3 X11: env bash -c 'git commit'(既に既存網羅・退行ではない)" block "cd $M && env bash -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X12: timeout 5 bash -c 'git commit'(既に既存網羅・退行ではない)" block "cd $M && timeout 5 bash -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X13: \"\$SHELL\" -c 'git commit'(SHELL未束縛→リテラル残置で捕捉)" block "cd $M && \"\$SHELL\" -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X14: dash -c 'git commit'(既に既存網羅・退行ではない)" block "cd $M && dash -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X15: xargs sh -c 'git commit'" block "cd $M && echo x | xargs sh -c 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X16: parallel ::: 'git commit'" block "cd $M && parallel ::: 'git commit --allow-empty -m x'"
+check "cmd903 probe3 X17: osascript -e do shell script \"git commit\"" block "cd $M && osascript -e 'do shell script \"git commit --allow-empty -m x\"'"
+check "cmd903 probe3 X18: printf 'Makefileレシピ' | make -f -(printfのエスケープをmake前に実体化)" block "cd $M && printf 'a:\\n\\tgit commit --allow-empty -m x\\n' | make -f -"
+check "cmd903 probe3 X19: git -c alias.c=commit… c(aliasのsubcmd解決)" block "cd $M && git -c alias.c='commit --allow-empty -m x' c"
+check "cmd903 probe3 X20: git rebase --exec 'git commit'(--execの再走査)" block "cd $M && git rebase --exec 'git commit --allow-empty -m x' HEAD"
+check "cmd903 probe3 Y1: python3 -cのprint内の地の文(データ系許可一覧に無い命令・§11の安全側の代償でblockのままでよい)" block "cd $M && python3 -c \"print('git commit is mentioned')\""
+check "cmd903 probe3 Y2: grep -rn 'git commit'(データ系許可一覧・引き続きallow)" allow "cd $M && grep -rn 'git commit' docs/"
+
 rm -rf "$CMD903_M" "$CMD903_F"
 
 echo ""
