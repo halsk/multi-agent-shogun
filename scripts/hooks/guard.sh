@@ -36,13 +36,25 @@ _arg_after() {
   echo "$1" | grep -oE "$2[[:space:]]+(\"[^\"]+\"|[^[:space:]&;|]+)" | sed -E "s/^$2[[:space:]]+//" | tail -1 | tr -d '"'
 }
 
+# cmd_903 §15点1: 最初のcdの手掛かりは、resolve_git_dirがCOMMAND中に
+# cd/-Cを一切見つけられなかった時(相対パスのinbox_write.sh呼出のように、
+# project rootからcdを挟まず直接呼ぶ形——CLAUDE.mdの例そのもの)、
+# ★hookの実際のcwd(pwd -P)とする。旧来の"."は、後段でそのまま文字列連結
+# される箇所(is_pure_headのbash分岐でcdhint[d] "/" first)で絶対パスとして
+# 扱えず(cdhint ~ /^\// を満たさない)、相対パスのinbox_write.shが常に
+# CANONと一致しない(fail-closedで純データと判じられずblockのまま)欠陥の
+# 原因だった(設計文書§15点1・probe7で実証)。pwd -Pで揃えるのは、/tmp と
+# /private/tmp のようなsymlinkの食い違いでCANONと不一致になるのを避ける
+# ため(CANON側も同じくpwd -Pにする・下記)。
+_GUARD_HOOK_CWD="$(pwd -P)"
+
 resolve_git_dir() {
   local cmd="$1" target
   # Prefer `git -C <dir>` (git operates there regardless of cwd), else last `cd <dir>`.
   target=$(_arg_after "$cmd" 'git[[:space:]]+-C')
   if [[ -n "$target" && -d "$target" ]]; then echo "$target"; return; fi
   target=$(_arg_after "$cmd" 'cd')
-  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; else echo "."; fi
+  if [[ -n "$target" && -d "$target" ]]; then echo "$target"; else echo "$_GUARD_HOOK_CWD"; fi
 }
 
 GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
@@ -52,8 +64,10 @@ GIT_TARGET_DIR=$(resolve_git_dir "$COMMAND")
 # 一致する時だけ(末尾一致・basename一致は不可・W3是正)。自己参照で導けば、
 # worktreeで実行してもそのworktree自身のinbox_write.shを指し、他機の
 # ハードコードパスに依存しない。
-_GUARD_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
-_GUARD_CANON_INBOX_WRITE="$(cd "$_GUARD_SELF_DIR/../.." >/dev/null 2>&1 && pwd)/scripts/inbox_write.sh"
+# cmd_903 §15点1: ここもpwd -Pで揃える(上のGIT_TARGET_DIR/cdhintと同じ
+# symlink食い違い対策)。
+_GUARD_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
+_GUARD_CANON_INBOX_WRITE="$(cd "$_GUARD_SELF_DIR/../.." >/dev/null 2>&1 && pwd -P)/scripts/inbox_write.sh"
 
 # ============================================================
 # Helper: heredoc本文をgit検出用にマスクする (FP-H3是正・cmd_new_backtick_safety)
@@ -504,7 +518,7 @@ _lex_one_level() {
     # `rg --hostname-bin '…'`のように--pre以外にも外部コマンドを起動しうる
     # 選択肢があり、--pre/--pre-globだけを個別に禁止列挙する方式は閉じない
     # 穴を残す。grepで足りるため、rgそのものを一覧から除く)。
-    function is_pure_head(d, idx, resolved, full,    flags, j5, tok, first, iwpath) {
+    function is_pure_head(d, idx, resolved, full,    flags, j5, tok, first, iwpath, teetgt) {
       if ((d, idx) in VARNAME) return 0
       flags = cmdflag[d, idx]
       if (flags ~ /x/) return 0
@@ -545,6 +559,29 @@ _lex_one_level() {
           }
         }
         return 0
+      }
+      # cmd_903 §15点2: teeは無条件の純データ一覧(PURE_HEAD_SET)から外した
+      # (下のBEGINブロック参照)。teeが実際に書き込むファイルを一つでも
+      # 引数に持てば純データではない——ただし/dev/nullへの書き込みは実害が
+      # 無いため例外とする(redirectの/dev/null例外と対称に揃える。P25/Z10の
+      # 既存試験が"tee /dev/null"を安全な慣用句として扱っている前提とも
+      # 整合させるため)。フラグの引数(-a/--append/-i/--ignore-interrupts/
+      # -p/--output-error[=…])は読み飛ばし、残りの語(束縛が解けぬ変数も
+      # 含め・fail-closedで/dev/null扱いしない)が一つでも/dev/null以外なら
+      # 純データでないと判じる。
+      if (resolved == "tee") {
+        j5 = idx + 1
+        while (j5 <= nwords[d]) {
+          tok = cmdword[d, j5]
+          if (tok == "-a" || tok == "--append" || tok == "-i" || tok == "--ignore-interrupts" || \
+              tok == "-p" || tok == "--output-error") { j5++; continue }
+          if (tok ~ /^--output-error=/) { j5++; continue }
+          if (tok == "--") { j5++; continue }
+          teetgt = resolve_word(d, j5)
+          if (teetgt != "/dev/null") return 0
+          j5++
+        }
+        return 1
       }
       return 0
     }
@@ -893,6 +930,10 @@ _lex_one_level() {
       # 側でresolved=="git"が一覧照会に到達しないよう別扱い・probe4 Z4-Z6)。
       # cd/pushd/popdとteeはis_pure_head内で個別に判定する(移動のみ・
       # stdout複写のみでデータを実行しないため)。
+      # cmd_903 §15点2: teeは(移動のみのcd/pushd/popdと違い)引数の書き込み
+      # 先ファイルによって純データか否かが変わるため、無条件の本一覧からは
+      # 外し、is_pure_head内で個別に判定する(/dev/null以外への書き込み先が
+      # 一つでもあれば純データでない・probe7 A2是正)。
       PURE_HEAD_SET["echo"] = 1
       PURE_HEAD_SET["printf"] = 1
       PURE_HEAD_SET["grep"] = 1
@@ -902,7 +943,6 @@ _lex_one_level() {
       PURE_HEAD_SET["head"] = 1
       PURE_HEAD_SET["tail"] = 1
       PURE_HEAD_SET["wc"] = 1
-      PURE_HEAD_SET["tee"] = 1
       # cmd_903 §14是正: dateは一覧から外した。$(date)は通常のCMDSUB(算術・
       # パラメータ展開に隠れない、素のコマンド置換)であるため既存の再帰(§3.3)
       # がdateを独立した単純コマンドとしてこの一覧に照会する。一覧から外れた
@@ -1085,11 +1125,30 @@ _lex_one_level() {
         }
         if (c == ">" || c == "<") {
           j2 = i + 1
-          if (substr(line, j2, 1) == c) j2++
-          if (substr(line, j2, 1) == "&") j2++
+          redir_isdup = 0
+          if (substr(line, j2, 1) == c) { j2++ }
+          else if (c == ">" && substr(line, j2, 1) == "|") { j2++ }
+          if (substr(line, j2, 1) == "&") { j2++; redir_isdup = 1 }
           i = j2
           while (substr(line, i, 1) == " " || substr(line, i, 1) == "\t") i++
+          redir_tgt_start = i
           i = skip_one_word(line, i, n)
+          # cmd_903 §15点2: 出力方向(>/>>/>|、fd複製の>&Nは対象外)の書き込み
+          # 先が/dev/null以外なら、COMMAND全体を純データでないと判じる
+          # (probe7 A1是正: inbox_write.shへ危険な地の文を書き込んでから同じ
+          # COMMANDで実行する形は、これでCOMMAND全体が旧判定の安全網
+          # 「legacy AND NOT pure」に掛かる・§12参照)。ここはskip_one_word
+          # で得た生の文字列を素朴に引用符除去するのみで、状態機械の語
+          # 構築(curword)は経由しない(この対象語はコマンドの引数ではなく
+          # リダイレクト先であるため、従来どおり単純コマンドの語には含めない)。
+          if (c == ">" && !redir_isdup) {
+            redir_tgt = substr(line, redir_tgt_start, i - redir_tgt_start)
+            if (length(redir_tgt) >= 2 && (substr(redir_tgt, 1, 1) == "\"" || substr(redir_tgt, 1, 1) == "\047") \
+                && substr(redir_tgt, length(redir_tgt), 1) == substr(redir_tgt, 1, 1)) {
+              redir_tgt = substr(redir_tgt, 2, length(redir_tgt) - 2)
+            }
+            if (redir_tgt != "" && redir_tgt != "/dev/null") IMPURE = 1
+          }
           continue
         }
         if (c == ";") {

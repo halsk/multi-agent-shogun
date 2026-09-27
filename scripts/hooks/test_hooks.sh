@@ -95,6 +95,39 @@ check_cwd() {
   fi
 }
 
+# cmd_903 §15(probe7是正): checkとcheck_cwdはどちらも「このworktree自身の
+# scripts/hooks/guard.sh」(=$GUARD)を固定で起動する。しかし相対パスの
+# inbox_write.sh呼出(CLAUDE.mdの例そのもの)がallowされるかは、featureの
+# branch上でのallowでは証明にならない——Hook3はfeatureブランチなら判定に
+# 関わらずallowするため、purityが壊れていても見分けが付かない(前回軍師
+# 自身がこの誤りを犯し自己是正した・設計文書§15)。判定を分離するには、
+# guard.sh自身とinbox_write.shを★mainブランチの使い捨てリポへ実際に配置
+# し(guard.shの_GUARD_SELF_DIRはBASH_SOURCE基準でファイルの実際の位置から
+# 導かれるため、コピーして初めてCANON_INBOX_WRITEがそのリポ自身の
+# inbox_write.shを指す)、そのリポ自身のguard.shをそのリポのcwdから起動する。
+check_installed() {
+  local desc="$1"
+  local expected="$2"
+  local cmd="$3"
+  local reporoot="$4"
+  # shellcheck disable=SC2155
+  local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":$(printf '%s' "$cmd" | jq -Rs .)}}"
+
+  echo "$json" | (cd "$reporoot" && bash "$reporoot/scripts/hooks/guard.sh") >/dev/null 2>&1
+  local exit_code=$?
+
+  if [[ "$expected" == "block" && $exit_code -eq 2 ]]; then
+    echo "  ✅ BLOCK: $desc"
+    ((PASS++)) || true
+  elif [[ "$expected" == "allow" && $exit_code -eq 0 ]]; then
+    echo "  ✅ ALLOW: $desc"
+    ((PASS++)) || true
+  else
+    echo "  ❌ FAIL: $desc (expected=$expected, got exit_code=$exit_code)"
+    ((FAIL++)) || true
+  fi
+}
+
 echo "=== Hook 1: Co-Authored-By 禁止 ==="
 # shellcheck disable=SC2016
 check "git commit with Co-Authored-By" block 'git commit -m "$(cat <<EOF
@@ -746,7 +779,13 @@ check "cmd903 N7: コメント内の地の文" allow "cd $M && echo ok # git com
 # するため、この地の文はblockへ変わる——individualな構文を追い足さず記号の
 # 有無で型ごと塞ぐ設計上、受け入れた代償である(dateを一覧に残す意味もない)。
 check "cmd903 N8: \$(date)を含むだけで純データでなくなりblockへ(§14是正で許容した代償)" block 'cd '"$M"' && echo "$(date) git push"'
-check "cmd903 N9: printfでファイルへ書き出すだけ(実行しない)" allow "cd $M && printf '%s\\n' 'git push origin main' > /tmp/cmd903_n9.txt"
+# cmd_903 §15点2是正(設計文書§15の明記された代償): COMMANDに/dev/null以外
+# への>/>>/>|(またはfileを引数に取るtee)が一つでもあれば純データでないと
+# 判じるようになったため、実行しない書き出しであっても旧判定(has_git_subcmd
+# 相当)に戻りblockになる。書込先が後で実行される形(probe7 A1〜A3)かどうかを
+# 個別に列挙・相関判定する方式は採らず、COMMAND全体を一括で純データでないと
+# 判じる設計(§12と同じ「全体一括」の思想)上、受け入れた代償である。
+check "cmd903 N9: printfでファイルへ書き出すだけ(§15点2是正で書込み自体が純データでなくなりblockへ・実行しないことは免罪符にならない)" block "cd $M && printf '%s\\n' 'git push origin main' > /tmp/cmd903_n9.txt"
 # cmd_903 §13点2是正(設計文書§13の明記された代償): 代入(接頭・単独の文の
 # いずれも)が一つでもあればCOMMAND全体を純データでないと判じるようになった
 # ため、代入の後に続く命令が何であれ(echoでもbash inbox_write.shでも)旧
@@ -762,7 +801,11 @@ EOF
 echo 'wrote /tmp/cmd903_n14.md'"
 check "cmd903 N15: featureブランチでのcommit(既存・過剰ブロック防止)" allow "cd $F && git commit --allow-empty -m x"
 check "cmd903 N16: git -C featureでのcommit(既存)" allow "git -C $F commit --allow-empty -m x"
-check "cmd903 N17: パイプ下流がtee(データ系)" allow "cd $M && echo \"git push\" | tee /tmp/cmd903_n17.txt"
+# cmd_903 §15点2是正(N9と同じ代償): teeは無条件の純データ命令から外れ、
+# /dev/null以外への書き込み先を一つでも持てば純データでなくなった
+# (probe7 A2是正)。/tmp/cmd903_n17.txtという実ファイルへの書き込みが
+# あるため、パイプの下流がteeであることは以前ほど安全側の免除にならない。
+check "cmd903 N17: パイプ下流がteeでも実ファイルへ書き込む以上は純データでない(§15点2是正・block)" block "cd $M && echo \"git push\" | tee /tmp/cmd903_n17.txt"
 
 echo "--- P1-P34(陽性対照・block) ---"
 check "cmd903 P1: 直接形" block "cd $M && git commit --allow-empty -m x"
@@ -884,9 +927,13 @@ echo "--- やり直し(subtask_cmd903_hook1_hook3_impl4・三度目のやり直�
 # 出所: queue/reports/cmd903_prototype/probe4_allowlist_attack.py。是正前(本コミット直前・
 # PR#169 head 3a7b36dのコード)でZ1-Z10・Z13-Z16の14件が実際に落ちる(RED・mainでは
 # 正しくblockしPR169コードでのみallowへ退行)ことを実測済み(probe4_result_pr169_3a7b36d.txt)。
-# Z11・Z12・Z17は退行ではなく元々block(パイプ/heredoc再走査の既存網羅)。ok1-ok6は
-# 本日の誤爆(inbox本文・grep・echo・cat heredoc・echo>file)が引き続きallowであることの
-# 対照(probe4_result_pr169_3a7b36d.txtで実測済み・退行していない)。
+# Z11・Z12・Z17は退行ではなく元々block(パイプ/heredoc再走査の既存網羅)。ok1-ok5は
+# 本日の誤爆(inbox本文・grep・echo・cat heredoc)が引き続きallowであることの対照
+# (probe4_result_pr169_3a7b36d.txtで実測済み・退行していない)。
+# ★ok6(echo > file)は§15点2是正で事情が変わった: 当時(このやり直しの時点)は
+# 「実行しないファイル書き込みは免除」だったが、§15点2是正でこの免除自体が
+# なくなった(probe7 A1〜A3を塞ぐための必要な代償・下のok6本体のコメント参照)。
+# ここでは各回のQCで実際に実測された時点の分類として"ok1-ok5"に修正した。
 check "cmd903 probe4 Z1: less '+!cmd' README.md(選択肢経由の実行・純データ一覧からless除外)" block "cd $M && less '+!git commit --allow-empty -m x' README.md"
 check "cmd903 probe4 Z2: rg --pre 'sh -c cmd'(選択肢経由の実行・--pre持ちは純データから除外)" block "cd $M && rg --pre 'sh -c \"git commit --allow-empty -m x\"' x ."
 check "cmd903 probe4 Z3: ag --pager 'cmd'(選択肢経由の実行・純データ一覧からag除外)" block "cd $M && ag --pager 'git commit --allow-empty -m x' x"
@@ -896,7 +943,11 @@ check "cmd903 probe4 Z6: git -c diff.external='sh -c cmd' diff(gitは全subcmd�
 check "cmd903 probe4 Z7: echo > file && bash file(書いて同じコマンドで実行・bashは純データでない)" block "cd $M && echo 'git commit --allow-empty -m x' > /tmp/cmd903_z7.sh && bash /tmp/cmd903_z7.sh"
 check "cmd903 probe4 Z8: printf > file; source file" block "cd $M && printf '%s\n' 'git commit --allow-empty -m x' > /tmp/cmd903_z8.sh; source /tmp/cmd903_z8.sh"
 check "cmd903 probe4 Z9: echo >> file; . file" block "cd $M && echo 'git commit --allow-empty -m x' >> /tmp/cmd903_z9.sh; . /tmp/cmd903_z9.sh"
-check "cmd903 probe4 Z10: tee file <<< cmd; sh file(teeは純データだがshは純データでないためCOMMAND全体は不純)" block "cd $M && tee /tmp/cmd903_z10.sh <<< 'git commit --allow-empty -m x' >/dev/null; sh /tmp/cmd903_z10.sh"
+# cmd_903 §15点2是正で理由が二重になった(結果のblockは変わらず): 元は
+# 「teeは純データだがshが純データでないためCOMMAND全体は不純」だったが、
+# §15点2是正後はtee自身も書き込み先(/tmp/cmd903_z10.sh、/dev/null以外)を
+# 持つため単独で既に純データでない。shが不純である点は従来どおり。
+check "cmd903 probe4 Z10: tee file <<< cmd; sh file(teeもshも純データでないためCOMMAND全体は不純)" block "cd $M && tee /tmp/cmd903_z10.sh <<< 'git commit --allow-empty -m x' >/dev/null; sh /tmp/cmd903_z10.sh"
 check "cmd903 probe4 Z11: cat > file <<EOF ... EOF; bash file(既存網羅・退行ではない)" block "cd $M && cat > /tmp/cmd903_z11.sh <<'EOF'
 git commit --allow-empty -m x
 EOF
@@ -917,7 +968,14 @@ check "cmd903 probe4 ok4: git log --grep(既存・引き続きallow)" allow "cd 
 check "cmd903 probe4 ok5: cat heredocの地の文(本日の誤爆・引き続きallow)" allow "cd $M && cat > /tmp/cmd903_ok5.md <<'EOF'
 git commit の地の文
 EOF"
-check "cmd903 probe4 ok6: echo > file(実行しない・本日の誤爆・引き続きallow)" allow "cd $M && echo 'git commit の手順' > /tmp/cmd903_ok6.txt"
+# cmd_903 §15点2是正(N9・N17と同じ代償): このやり直し(impl4)時点では
+# 「実行しない書き込みは免除」でallowだったが、probe7で見つかったA1〜A3
+# (inbox_write.shへ地の文を書き込んでから同じCOMMANDで実行し、旧判定の
+# 安全網をすり抜ける退行)を型ごと塞ぐため、§15点2是正は「実行するか否か」
+# を問わずCOMMAND中のあらゆる実ファイル書き込みを純データでないと判じる
+# ようにした。COMMAND全体一括判定(§12)の思想上、区別できない・受け入れた
+# 代償である。
+check "cmd903 probe4 ok6: echo > file(§15点2是正で「実行しない」ことは免罪符でなくなりblockへ)" block "cd $M && echo 'git commit の手順' > /tmp/cmd903_ok6.txt"
 
 echo "--- 三度目のやり直し(subtask_cmd903_hook1_hook3_impl4)の軍師QCで判明した「純データ」定義の甘さ7件(§13・probe5+追加3件) ---"
 # 出所: queue/reports/cmd903_prototype/probe5_puredata_attack.py(W1-W4)+
@@ -979,6 +1037,59 @@ check "cmd903 ok3: パラメータ展開のデフォルト値が地の文のみ(
   "cd $M && echo \"\${x:-git commit の話}\""
 
 rm -rf "$CMD903_M" "$CMD903_F"
+
+echo ""
+echo "--- 五度目のやり直し(subtask_cmd903_hook1_hook3_impl6)の軍師QCで判明した2つの穴(§15・probe7) ---"
+# 出所: queue/reports/cmd903_hook1_hook3_design.md §15。軍師の使い捨てスクリプト
+# (queue/reports/cmd903_prototype/probe7_install_on_main.py・gitignore対象で
+# 本リポには含まれない)と同じ手法——guard.sh自身とinbox_write.shを★mainの
+# 使い捨てリポへ実際にコピーして据える。理由: guard.shの_GUARD_SELF_DIRは
+# BASH_SOURCE基準でファイルの実際の位置から導かれるため、コピーして初めて
+# CANON_INBOX_WRITEがそのリポ自身のinbox_write.shを指す。また相対パスの
+# inbox_write.sh呼出がallowされるかを判別するには、hookのcwdがmainブランチの
+# リポでなければならない(featureブランチ上ではHook3が判定に関わらずallowする
+# ため、purityが壊れていても見分けが付かない・前回軍師自身がこの誤りを犯し
+# 自己是正した)。
+#
+# ★★是正前(PR#169 head 8d85ee4=このやり直しの直前のコード)での実測
+# (queue/reports/cmd903_prototype/にある軍師のスクリプトと同じ組み立てを
+# このリポのgit履歴からgit show HEAD:scripts/hooks/guard.sh等で復元し、
+# 別の使い捨てリポへ設置して確認・本worktreeの現在のコードには手を触れず):
+#   N (relative inbox prose, no cd)      → block (★バグ: 本来allowされるべき・
+#                                            本cmdの本来の主目的が未達だった)
+#   A1 (append abs then run abs)         → allow (★退行)
+#   A2 (tee -a abs then run abs)         → allow (★退行)
+#   A3 (overwrite abs venv python)       → allow (★退行)
+#   A5 (plain commit, control)           → block (無関係・変化なし)
+# 是正後(下のcheck_installedで検証)は N→allow、A1〜A3→block、A5→blockのまま
+# (RED→GREEN、通常の向きと逆であることに注意——本来allowされるべき形が
+# block始まりで、後段の是正でallowへ転じる)。
+CMD903_INSTMAIN=$(mktemp -d)
+mkdir -p "$CMD903_INSTMAIN/scripts/hooks" "$CMD903_INSTMAIN/.venv/bin"
+cp "$PROJ_ROOT/scripts/hooks/guard.sh" "$CMD903_INSTMAIN/scripts/hooks/guard.sh"
+cp "$PROJ_ROOT/scripts/inbox_write.sh" "$CMD903_INSTMAIN/scripts/inbox_write.sh"
+chmod +x "$CMD903_INSTMAIN/scripts/hooks/guard.sh" "$CMD903_INSTMAIN/scripts/inbox_write.sh"
+git -C "$CMD903_INSTMAIN" init -q -b main
+git -C "$CMD903_INSTMAIN" -c commit.gpgsign=false -c user.name=t -c user.email=t@t add -A
+git -C "$CMD903_INSTMAIN" -c commit.gpgsign=false -c user.name=t -c user.email=t@t commit -q -m init
+
+check_installed "cmd903 probe7 N: 相対パスのinbox_write.sh呼出(CLAUDE.mdの例そのもの・cdなし・mainの使い捨てリポで検証・本cmdの本来の主目的)" allow \
+  "bash scripts/inbox_write.sh karo 'git commit の話' report_received gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe7 A1: 絶対パスでinbox_write.shへ追記してから同じ絶対パスで実行(§15是正前は退行・allowだった)" block \
+  "echo 'git commit --allow-empty -m x' >> $CMD903_INSTMAIN/scripts/inbox_write.sh; bash $CMD903_INSTMAIN/scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe7 A2: tee -aで絶対パスのinbox_write.shへ追記してから実行(§15是正前は退行・allowだった)" block \
+  "echo 'git commit --allow-empty -m x' | tee -a $CMD903_INSTMAIN/scripts/inbox_write.sh; bash $CMD903_INSTMAIN/scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe7 A3: 絶対パスの.venv/bin/python3を上書きしてから実行(inbox_write.shが内部で呼ぶ・§15是正前は退行・allowだった)" block \
+  "printf '#!/bin/sh\ngit commit --allow-empty -m x\n' > $CMD903_INSTMAIN/.venv/bin/python3; bash $CMD903_INSTMAIN/scripts/inbox_write.sh karo hi x gunshi" \
+  "$CMD903_INSTMAIN"
+check_installed "cmd903 probe7 A5: 素のgit commit(対照・mainなので従来どおりblock)" block \
+  "git commit --allow-empty -m x" \
+  "$CMD903_INSTMAIN"
+
+rm -rf "$CMD903_INSTMAIN"
 
 echo ""
 echo "=== Hook 7: 上流 repo への gh pr create ブロック ==="
