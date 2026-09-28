@@ -160,6 +160,25 @@ jobs:
             exit 1
           fi
 
+      - name: Run Python tests (cr_retrigger, cmd_908 T1)
+        run: |
+          # scripts/test_cr_retrigger.py — CodeRabbit rate-limited PR自動再引き金
+          # の純関数群の回帰試験。claude_usage_reportと同じくorphan test化を防ぐため
+          # ここでCIへ接続する(SKIP=FAILポリシー・FR-054)。
+          set +e
+          OUTPUT=$(.venv/bin/python3 -m unittest scripts.test_cr_retrigger -v 2>&1)
+          STATUS=$?
+          set -e
+          echo "$OUTPUT"
+          if [ "$STATUS" -ne 0 ]; then
+            echo "::error::cr_retrigger Python tests failed"
+            exit 1
+          fi
+          if echo "$OUTPUT" | grep -qE '\bskipped=[1-9][0-9]*'; then
+            echo "::error::cr_retrigger Python tests reported unexpected skips. SKIP = FAIL policy (FR-054)."
+            exit 1
+          fi
+
       - name: Verify zero unexpected SKIPs (SKIP=FAIL policy)
         run: |
           SKIP_COUNT=0

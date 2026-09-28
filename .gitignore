@@ -175,6 +175,18 @@
 !scripts/lib/coderabbit_gate.sh
 !scripts/com.swarm.branch-drift-check.plist
 !scripts/com.swarm.pre-deploy-verify.plist
+!scripts/cr_retrigger.py
+!scripts/test_cr_retrigger.py
+!scripts/cr-retrigger-launcher.sh
+!scripts/com.swarm.cr-retrigger.plist
+!scripts/README.md
+
+# cmd_908 T1: config/cr_retrigger.yaml(secretsを含まない設定の正典)
+!config/cr_retrigger.yaml
+
+# cmd_908 T1 state dir (only .gitignore committed — *.json is runtime state)
+!state/
+!state/.gitignore
 
 # Stall Watchdog state dir (only .gitignore committed — *.yaml are runtime state)
 !queue/stall_watchdog/
