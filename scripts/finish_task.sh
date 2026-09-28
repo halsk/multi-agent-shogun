@@ -2,10 +2,16 @@
 # scripts/finish_task.sh — 足軽taskの「終える」操作を一つにまとめる(cmd_914 T1)
 #
 # 軍師設計(queue/reports/cmd914_status_update_gap.md §3.1「終える操作」)を
-# 実装する。以下の6段を順に行い、一つでも欠ければ非0で止まり何も書き換えない:
-#   ①agent_id読取 ②task_id読取 ③report検め(scripts/finish_task_validate.py)
-#   ④task YAMLのstatus行書換(flock・mtime確認・一時ファイル+rename)
-#   ⑤report_toへinbox_write(type=report_received) ⑥ログ出力
+# 実装する。以下の段を順に行い、一つでも欠ければ非0で止まり何も書き換えない:
+#   ①agent_id読取 ②task_id読取・report_to欄の存在確認(cmd_914 T1続き
+#   軍師QC medium F2是正) ③report検め(scripts/finish_task_validate.py)
+#   ④report_toへinbox_write(type=report_received) ⑤task YAMLのstatus行
+#   書換(flock・mtime確認・一時ファイル+rename) ⑥ログ出力
+#
+# ★段④⑤の順序(cmd_914 T1続き・軍師QC high F1是正): status書換より
+# ★先に★inbox_writeを試み、実際に送れた(exit 0)ことを確認できた場合に
+# 限り次のstatus書換へ進む(設計b案採用)。旧実装はstatus書換を先に行い
+# inbox_writeの失敗を検知していなかった(「失敗が失敗として現れぬ」欠陥)。
 #
 # Usage: bash scripts/finish_task.sh [--status done|blocked|failed] [--message "..."]
 #
@@ -79,6 +85,10 @@ if [ -z "$TASK_ID" ]; then
 fi
 
 REPORT_TO="$(grep -E '^[[:space:]]*report_to:[[:space:]]*' "$TASK_FILE" | head -1 | sed 's/.*report_to:[[:space:]]*//' | tr -d '"' | tr -d "'")"
+if [ -z "$REPORT_TO" ]; then
+  echo "[finish_task] ERROR: task YAMLにreport_to欄が無い(通知先が確定できないため中止した): $TASK_FILE" >&2
+  exit 1
+fi
 
 TASK_MTIME="$(stat -c %Y "$TASK_FILE" 2>/dev/null || stat -f %m "$TASK_FILE" 2>/dev/null)"
 if [ -z "$TASK_MTIME" ]; then
@@ -94,7 +104,37 @@ if [ "$VALIDATION_RC" -ne 0 ]; then
   exit 1
 fi
 
-# ④task YAMLのstatus行書換(flock・mtime確認・一時ファイル+rename)
+# ④report_toへinbox_write(既読化はinbox skill Step 1で足軽自身が行う・従来通り)
+#
+# ★是正(cmd_914 T1続き・軍師QC high F1): 旧実装はstatus書換(旧④)を
+# 先に行い、その後にinbox_write(旧⑤)を無条件に呼んでいたため、
+# inbox_writeが失敗しても(set -eも掛けていなかったため)検知されず
+# exit 0で正常終了していた——task YAMLはdoneに書き換わったのに
+# 軍師への報せが実際には届かない「失敗が失敗として現れぬ」欠陥。
+# ★対策として順序を入れ替える(設計b案採用): status書換より★先に★
+# inbox_writeを試み、実際に送れた(exit 0)ことを確認できた場合に限り
+# 次のstatus書換へ進む。inbox_writeが失敗した場合はここで非0で終了し、
+# task YAMLには一切触れない——status書換前なら再実行はそのまま
+# 冪等に安全(何も変わっていないので同じコマンドを再度呼べばよい)。
+if [ -z "$MESSAGE" ]; then
+  case "$STATUS" in
+    done)
+      MESSAGE="${AGENT_ID}号、${TASK_ID}の任務完了でござる。品質チェックを仰ぎたし。"
+      ;;
+    blocked)
+      MESSAGE="${AGENT_ID}号、${TASK_ID}は手番待ちによりblockedでござる。ご確認願いたし。"
+      ;;
+    failed)
+      MESSAGE="${AGENT_ID}号、${TASK_ID}は失敗に終わったでござる。ご確認願いたし。"
+      ;;
+  esac
+fi
+if ! bash "$INBOX_WRITE_SCRIPT" "$REPORT_TO" "$MESSAGE" report_received "$AGENT_ID"; then
+  echo "[finish_task] ERROR: inbox_write.shが失敗した(report_to=$REPORT_TO)。task YAMLのstatusは書き換えていない" >&2
+  exit 1
+fi
+
+# ⑤task YAMLのstatus行書換(flock・mtime確認・一時ファイル+rename)
 TYL_LOCKFILE="${TASK_FILE}.lock"
 if ! tyl_acquire_lock "$LOCK_WAIT_SEC"; then
   echo "[finish_task] ERROR: ロック取得失敗(${LOCK_WAIT_SEC}秒待機): $TYL_LOCKFILE" >&2
@@ -138,24 +178,6 @@ if ! mv "$tmp_file" "$TASK_FILE"; then
   exit 1
 fi
 tyl_release_lock
-
-# ⑤report_toへinbox_write(既読化はinbox skill Step 1で足軽自身が行う・従来通り)
-if [ -n "$REPORT_TO" ]; then
-  if [ -z "$MESSAGE" ]; then
-    case "$STATUS" in
-      done)
-        MESSAGE="${AGENT_ID}号、${TASK_ID}の任務完了でござる。品質チェックを仰ぎたし。"
-        ;;
-      blocked)
-        MESSAGE="${AGENT_ID}号、${TASK_ID}は手番待ちによりblockedでござる。ご確認願いたし。"
-        ;;
-      failed)
-        MESSAGE="${AGENT_ID}号、${TASK_ID}は失敗に終わったでござる。ご確認願いたし。"
-        ;;
-    esac
-  fi
-  bash "$INBOX_WRITE_SCRIPT" "$REPORT_TO" "$MESSAGE" report_received "$AGENT_ID"
-fi
 
 # ⑥ログ出力
 mkdir -p "$(dirname "$LOG_FILE")"

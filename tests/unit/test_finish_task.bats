@@ -269,7 +269,13 @@ YAML
   [ "$status" -ne 0 ]
   run grep -c "status: assigned" "$TMP_DIR/tasks/ashigaru9.yaml"
   [ "$output" -eq 1 ]
-  [ ! -s "$INBOX_CALLS_LOG" ]
+  # ★cmd_914 T1続き(軍師QC high F1是正): inbox_writeをstatus書換より
+  # 先に行う設計に変えたため、task file自体のlockは(inbox_writeの後の)
+  # status書換段でのみ働く。ゆえにこのシナリオ(task fileのlockのみが
+  # 競合)ではinbox_writeは既に成功しており呼ばれている——status書換の
+  # 失敗が起きても、通知が届いた事実自体は変わらない、という新設計の
+  # trade-offをそのまま記録する(隠さない)。
+  [ -s "$INBOX_CALLS_LOG" ]
 
   if command -v flock &>/dev/null; then
     flock -u 9
@@ -277,6 +283,69 @@ YAML
   else
     rmdir "${lockfile}.d"
   fi
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_914 T1続き(軍師QC是正): high F1・medium F2
+# ══════════════════════════════════════════════════════════════════════════
+#
+# ★RED実証(is正前の挙動・自動テストでなく手動で一度確認・報告/PR本文に
+# 実行出力を記載): commit 381f87b時点の(is正前)finish_task.shを
+# 一時worktreeへ取り出し、同じ失敗シナリオへ実行した。
+#   F1: inbox_write.shが非0で失敗しても、旧実装はexit_code=0で正常終了し
+#       task YAMLのstatusはdoneへ書き換わっていた(通知は実際には届いて
+#       いないのに「終わった」と嘘をつく状態)。
+#   F2: task YAMLにreport_to欄が無くても、旧実装はexit_code=0で正常終了し
+#       (report_to=<none>とログに出るのみ)、task YAMLのstatusはdoneへ
+#       書き換わっていた(誰にも通知されないまま黙って完了扱いになる)。
+# 是正後(本ファイルのT-FT-011・T-FT-012)は両者とも非0で終了し、
+# task YAMLのstatusは書き換わらない(下記テストがGREENの実証)。
+
+# ── T-FT-011【high F1是正】inbox_write失敗時はfinish_task.sh自体が
+#   非0で終わり、task YAMLのstatusを書き換えない ──
+@test "T-FT-011: inbox_write失敗時はfinish_task.sh自体が非0で終わりstatusを書き換えない" {
+  _write_task assigned
+  touch -t 202609281950.00 "$TMP_DIR/tasks/ashigaru9.yaml"
+  _write_report "$(_compliant_report done)"
+  touch -t 202609282000.00 "$TMP_DIR/reports/ashigaru9_report.yaml"
+
+  local failing_stub="$TMP_DIR/inbox_write_failing_stub.sh"
+  cat > "$failing_stub" <<'STUB'
+#!/usr/bin/env bash
+echo "INBOX_WRITE_FAILING_STUB_CALLED: $*" >&2
+exit 1
+STUB
+  chmod +x "$failing_stub"
+  export FINISH_TASK_INBOX_WRITE_SCRIPT="$failing_stub"
+
+  run bash "$SCRIPT" --status done
+  [ "$status" -ne 0 ]
+  run grep -c "status: assigned" "$TMP_DIR/tasks/ashigaru9.yaml"
+  [ "$output" -eq 1 ]
+  # ステップ⑥(ログ出力)まで到達していない=inbox_write失敗の時点で
+  # 中断していることの証拠
+  [ ! -f "$FINISH_TASK_LOG_FILE" ]
+}
+
+# ── T-FT-012【medium F2是正】task YAMLにreport_to欄が無ければ
+#   非0で終わり理由を出力する。バリデーションにも進まない(inbox_write
+#   呼出も発生しない) ──
+@test "T-FT-012: report_to欄が無ければ非0で終わり理由を出力する" {
+  cat > "$TMP_DIR/tasks/ashigaru9.yaml" <<YAML
+task:
+  task_id: subtask_test_001
+  status: assigned
+YAML
+  touch -t 202609281950.00 "$TMP_DIR/tasks/ashigaru9.yaml"
+  _write_report "$(_compliant_report done)"
+  touch -t 202609282000.00 "$TMP_DIR/reports/ashigaru9_report.yaml"
+
+  run bash "$SCRIPT" --status done
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"report_to"* ]]
+  run grep -c "status: assigned" "$TMP_DIR/tasks/ashigaru9.yaml"
+  [ "$output" -eq 1 ]
+  [ ! -s "$INBOX_CALLS_LOG" ]
 }
 
 # ══════════════════════════════════════════════════════════════════════════
