@@ -1092,9 +1092,56 @@ class Test30P1BlockedScopeReflectsActualState(unittest.TestCase):
             blocked = cr._count_blocked_drafts("geolonia/geonicdb-console", 1)
         self.assertIsNone(blocked)
 
-    def test_main_ci_status_reads_state_field(self):
-        with mock.patch.object(cr, "_gh_json", return_value={"state": "failure"}):
-            self.assertEqual(cr._fetch_main_ci_status("geolonia/geonicdb-console"), "failure")
+    def test_main_ci_status_green_when_status_zero_and_checkruns_all_success(self):
+        """RED→GREEN(cmd_913 Q1是正): 当家のrepoはcommit statusを一件も
+        使わずGitHub Actions check-runsのみでCIを回す。旧実装は
+        commits/main/statusを読み、total_count=0の時にstate=pendingを
+        返すAPIの仕様のせいで、mainが実際は緑でも常に「実行中main」と
+        誤って報せていた(軍師実測: halsk/multi-agent-shogun・
+        geolonia/geonicdb-consoleいずれもstatus0件・check-runs全緑)。
+        是正後はcheck-runsのconclusionを見て「緑」と正しく判定することを
+        確かめる(是正前のこの試験はcommits/main/statusのstate=pendingを
+        検めており、緑のmainを誤って実行中と読んでいた)。"""
+        checkruns_resp = {
+            "total_count": 6,
+            "check_runs": [
+                {"status": "completed", "conclusion": "success"} for _ in range(5)
+            ] + [{"status": "completed", "conclusion": "skipped"}],
+        }
+        with mock.patch.object(cr, "_gh_json", return_value=checkruns_resp) as gh_mock:
+            result = cr._fetch_main_ci_status("geolonia/geonicdb-console")
+        self.assertEqual(result, "success")
+        args = gh_mock.call_args.args[0]
+        self.assertIn("commits/main/check-runs", args[1])
+
+    def test_main_ci_status_pending_when_any_run_not_completed(self):
+        checkruns_resp = {
+            "total_count": 2,
+            "check_runs": [
+                {"status": "completed", "conclusion": "success"},
+                {"status": "in_progress", "conclusion": None},
+            ],
+        }
+        with mock.patch.object(cr, "_gh_json", return_value=checkruns_resp):
+            result = cr._fetch_main_ci_status("geolonia/geonicdb-console")
+        self.assertEqual(result, "pending")
+
+    def test_main_ci_status_failure_when_any_run_failed(self):
+        checkruns_resp = {
+            "total_count": 2,
+            "check_runs": [
+                {"status": "completed", "conclusion": "success"},
+                {"status": "completed", "conclusion": "failure"},
+            ],
+        }
+        with mock.patch.object(cr, "_gh_json", return_value=checkruns_resp):
+            result = cr._fetch_main_ci_status("geolonia/geonicdb-console")
+        self.assertEqual(result, "failure")
+
+    def test_main_ci_status_none_when_no_checkruns(self):
+        with mock.patch.object(cr, "_gh_json", return_value={"total_count": 0, "check_runs": []}):
+            result = cr._fetch_main_ci_status("geolonia/geonicdb-console")
+        self.assertIsNone(result)
 
     def test_describe_blocked_scope_reflects_blocked_drafts_and_red_main(self):
         with mock.patch.object(cr, "_count_blocked_drafts", return_value=[2, 3]), \
@@ -1237,19 +1284,19 @@ class Test32P3LabelsAndReplyFormatForMultiplePrs(unittest.TestCase):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         body = ntfy_mock.call_args.args[0]
-        self.assertIn("[P1]", body)
-        self.assertIn("[P2]", body)
-        self.assertIn("はい P1", body)
+        self.assertIn("[N1-P1]", body)
+        self.assertIn("[N1-P2]", body)
+        self.assertIn("はい N1-P1", body)
         self.assertIn("いいえ", body)
 
         sent_lines = [e for e in log_lines if e.get("event") == "pay_ntfy_sent"]
         self.assertEqual(len(sent_lines), 1)
-        self.assertEqual(sent_lines[0]["labels"]["P1"],
+        self.assertEqual(sent_lines[0]["labels"]["N1-P1"],
                           {"repo": "geolonia/geonicdb-console", "pr": 1, "head_sha": "sha1"})
-        self.assertEqual(sent_lines[0]["labels"]["P2"],
+        self.assertEqual(sent_lines[0]["labels"]["N1-P2"],
                           {"repo": "geolonia/geonicdb-console", "pr": 2, "head_sha": "sha2"})
-        self.assertEqual(state["pay_ntfy_labels"]["P1"]["pr"], 1)
-        self.assertEqual(state["pay_ntfy_labels"]["P2"]["pr"], 2)
+        self.assertEqual(state["pay_ntfy_labels"]["N1-P1"]["pr"], 1)
+        self.assertEqual(state["pay_ntfy_labels"]["N1-P2"]["pr"], 2)
 
     def test_single_pr_still_gets_label_and_reply_format(self):
         cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
@@ -1271,8 +1318,77 @@ class Test32P3LabelsAndReplyFormatForMultiplePrs(unittest.TestCase):
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         body = ntfy_mock.call_args.args[0]
-        self.assertIn("[P1]", body)
+        self.assertIn("[N1-P1]", body)
         self.assertIn("全て払うなら「はい」", body)
+
+
+class Test33Q2LabelsDoNotCollideAcrossNotifications(unittest.TestCase):
+    """RED→GREEN(cmd_913 Q2是正・軍師QC): 印は通知ごとにP1から振り直す
+    仕様のままだと、台帳pay_ntfy_labelsはupdateで上書きされるため、
+    一通めのP1(#1)の返答を待つ間に別PRの二通めが出ると、その印P1が
+    一通めの台帳を踏み潰す(殿が一通めのつもりで「はいP1」と答えても、
+    将軍側は二通めのPRを払うと読み違える——課金の誤りに直結)。
+    是正後は通知ごとの通し番号(N{seq})を印へ含め、二通目のP1相当が
+    別の文字列(N2-P1)になるため、一通めの記録(N1-P1)が保持されたまま
+    残ることを確かめる。"""
+
+    def test_second_notification_does_not_overwrite_first_labels(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        # 一通め: PR#1がpay判定。
+        def fake_open_prs_1(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions1 = {1: _pay_decision()}
+        patches1 = _patch_cr_decide_wiring(decisions1)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs_1), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches1[0], patches1[1], patches1[2], patches1[3]:
+            state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+        ntfy_mock1.assert_called_once()
+        sent1 = [e for e in log_lines1 if e.get("event") == "pay_ntfy_sent"][0]
+        self.assertEqual(list(sent1["labels"].keys()), ["N1-P1"])
+        self.assertEqual(state["pay_ntfy_labels"]["N1-P1"],
+                          {"repo": "geolonia/geonicdb-console", "pr": 1, "head_sha": "sha1"})
+
+        # 二通め(殿がまだ一通めへ答えていない間に、別PR#2がpay判定になる)。
+        now2 = NOW + timedelta(minutes=5)
+
+        def fake_open_prs_2(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        decisions2 = {1: _pay_decision(), 2: _pay_decision()}
+        patches2 = _patch_cr_decide_wiring(decisions2)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs_2), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches2[0], patches2[1], patches2[2], patches2[3]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        # PR#1は「返答待ち」で再送されないので、二通めはPR#2のみを含む。
+        ntfy_mock2.assert_called_once()
+        sent2 = [e for e in log_lines2 if e.get("event") == "pay_ntfy_sent"][0]
+        self.assertEqual(list(sent2["labels"].keys()), ["N2-P1"])
+
+        # ★是正の核心: 二通めのN2-P1は一通めのN1-P1を上書きしない。
+        # 是正前は両方とも"P1"という同じキーだったため、ここでPR#1の記録が
+        # PR#2で踏み潰され、self.assertEqual(...pr...1)が失敗していた。
+        self.assertEqual(state["pay_ntfy_labels"]["N1-P1"]["pr"], 1)
+        self.assertEqual(state["pay_ntfy_labels"]["N2-P1"]["pr"], 2)
+        self.assertEqual(state["pay_ntfy_seq"], 2)
 
 
 if __name__ == "__main__":
