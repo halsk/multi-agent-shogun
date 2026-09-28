@@ -3,11 +3,14 @@
 ## cr_retrigger — CodeRabbit rate-limited PR 自動再引き金 (cmd_908)
 
 設計: `queue/reports/cmd908_ratelimit_retrigger_design.md`(§1〜§11)。
+cmd_913: 「決める」部分をgeolonia/skillsのcr-decideへ寄せた統合
+(`queue/reports/cmd913_crdecide_integration.md` §5)。
 
 構成ファイル:
-- `scripts/cr_retrigger.py` — 判定規則の純関数群 + 薄い `main()`
+- `scripts/cr_retrigger.py` — 「見つける・呼ぶ・守る(台帳)・投じる・記録する」
+  の純関数群 + 薄い `main()`。「決める」はcr-decide(node子プロセス)へ寄せた。
 - `scripts/test_cr_retrigger.py` — 回帰試験(`python3 -m unittest scripts.test_cr_retrigger -v`)
-- `config/cr_retrigger.yaml` — allowlist・予算・fallback_mode/query_policy
+- `config/cr_retrigger.yaml` — allowlist・予算・cr_decide(tool_repo・clones_dir等)
 - `scripts/cr-retrigger-launcher.sh` — launchd ラッパー(Keychain から HC ping URL を注入)
 - `scripts/com.swarm.cr-retrigger.plist` — launchd 登録の雛形
 
