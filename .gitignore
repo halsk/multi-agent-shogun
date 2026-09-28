@@ -177,6 +177,7 @@
 !scripts/com.swarm.pre-deploy-verify.plist
 !scripts/cr_retrigger.py
 !scripts/test_cr_retrigger.py
+!scripts/cr_decide_maxbuffer.cjs
 !scripts/cr-retrigger-launcher.sh
 !scripts/com.swarm.cr-retrigger.plist
 !scripts/README.md

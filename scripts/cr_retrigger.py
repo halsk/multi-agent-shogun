@@ -270,15 +270,23 @@ def _ensure_cr_decide_tool(cr_decide_cfg, clones_dir, gh_bin="gh", git_bin="git"
     return script_path, policy_path
 
 
+# cr-decide.mjs の gh 呼出の出力の上限を上げる preload(cmd_913至急・ENOBUFS)。
+CR_DECIDE_PRELOAD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cr_decide_maxbuffer.cjs")
+
+
 def call_cr_decide(repo, pr_number, clone_dir, script_path, policy_path=None,
                     node_bin="node", timeout=30):
     """cr-decide.mjsを子プロセスとして呼び、次の一手のJSONを返す(cmd_913§5)。
 
     呼出・パース双方の失敗はfail closedで{"action": "error", "reason": str}を
-    返す(投じない側へ倒す)。大きいPRのENOBUFS(Daniel殿の直しを待つ間の暫定)
-    もこの経路でerrorとして受け止める。
+    返す(投じない側へ倒す)。
+
+    ★cmd_913至急(ENOBUFSの根治): node に CR_DECIDE_PRELOAD を --require で
+    読ませ、cr-decide.mjs の execFileSync の既定の上限(1 MiB)を上げる。
+    pin した cr-decide.mjs は書き換えない(scripts/cr_decide_maxbuffer.cjs 参照)。
+    preload が無ければ node が起動に失敗し、stdout が空になって error へ倒れる。
     """
-    cmd = [node_bin, script_path, str(pr_number), "--repo", repo]
+    cmd = [node_bin, "--require", CR_DECIDE_PRELOAD, script_path, str(pr_number), "--repo", repo]
     if policy_path:
         cmd += ["--policy", policy_path]
     env = _clean_git_env()
