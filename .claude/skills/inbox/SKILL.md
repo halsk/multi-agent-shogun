@@ -44,7 +44,18 @@ cat queue/tasks/{自分のid}.yaml
   直前の編集で件数が不自然に減っている(=リスト項目が誤って統合された疑いがある)場合は、その場で作業を止め家老へエスカレーションする。
 - ★前提の検証: タスクの前提(project / target_path / context 等)が YAML の実際の記述や現在のリポジトリ状態と矛盾していないか確認する。矛盾があれば実行せず停止し、エスカレーションする(推測で埋め合わせない)。
 
-### Step 3: worktree 作成
+### Step 3: task YAML の status を in_progress へ(cmd_914)
+
+```bash
+bash scripts/start_task.sh
+```
+
+自分の task YAML(`queue/tasks/{自分のid}.yaml`)の status が `assigned` の時だけ
+`in_progress` へ書き換える(flock・mtime 確認込み・既に in_progress 等なら無害に
+no-op)。★これを飛ばすな——真因調査(cmd_914)で足軽7人全員が今日この書換を
+一度も行っていなかったことが判明している(旧手順にはこの段自体が無かった)。
+
+### Step 3.5: worktree 作成
 
 対象 repo が git 管理下なら、必ず専用 worktree を切ってから作業する。
 
@@ -120,11 +131,25 @@ UI に関わる変更は、実ブラウザで意図した画面が現れるま�
 
 必須フィールド(`instructions/ashigaru.md`「Report Format」参照): `worker_id, task_id, parent_cmd, status, timestamp, result, skill_candidate`。
 
-### Step 11: inbox_write + 既読化
+### Step 11: task 完了(finish_task.sh)+ 既読化(cmd_914)
 
 ```bash
-bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質チェックを仰ぎたし。" report_received ashigaru{N}
+bash scripts/finish_task.sh --status done
+# blocked/failed で終える場合は --status blocked / --status failed
+# 既定文言でなく戦国口調で明示したい場合は --message "..." を添える
 ```
+
+`finish_task.sh` が一度に行う(一つでも欠ければ非0で止まり何も書き換えない):
+report YAML の検め(単一文書・task_id 一致・重複キー無し・必須欄そろう・
+status 一致・report の mtime が task より新しい)→ task YAML の status 書換
+(flock・mtime 確認込み)→ report_to(通常 gunshi)へ `inbox_write.sh`
+(type=report_received)→ ログ出力。★従来の手書き `inbox_write.sh` 直呼びは
+これに置き換わった——真因調査(cmd_914)で明らかになった「done へ戻す段が
+無い」問題を、report YAML 作成(Step 10)の直後にこの一つの呼出で解消する。
+
+非0で終了した場合は report YAML の内容(task_id・status・timestamp 等)を
+見直し、原因(task_id 不一致・report が古い・必須欄欠落等)を解消してから
+再実行する。
 
 続けて、Step 1 で洗い出した `read: false` エントリを全て `read: true` に更新する(Edit ツール)。既読化を飛ばして待機に入らない(CLAUDE.md「MANDATORY Post-Task Inbox Check」)。
 

@@ -1,0 +1,75 @@
+task:
+  task_id: subtask_cmd911_e1_e2_vault_write
+  parent_cmd: cmd_911
+  redo_of: subtask_cmd911_recording_file_label_audit
+  bloom_level: L3
+  risk_flag: true
+  assigned_to: ashigaru1
+  status: assigned
+  priority: high
+
+  project: automation
+  target_repo: /Users/hal/workspace/automation
+  target_path: /Users/hal/workspace/automation-wt-ashigaru1-cmd911
+
+  touches_files:
+    - /Users/hal/workspace/obsidian
+
+  staging_tenant: null
+
+  口調: 戦国武士風 (〜でござる / 〜つかまつる / 〜いたす)
+
+  title: "cmd_911続き: 見事な棚卸しであった——E1・E2の2件、vaultへ実書込みを実行せよ(裁可済み)"
+
+  context: |
+    ★軍師QC=PASS。34件中13件を機械抽出・全件本文確認の末、誤り2件を
+    発見(語の目安で浮かばぬ本文空のノート5件も含め全確認・見事)。
+    ★★家老裁可:
+
+    1. E1(プリザンター関連ノート): 取締役会の文字起こしが誤って
+       流用されており、同日候補に正しいtranscriptが無いと確認済み。
+       → (iii)本当に無い、としてrecording_fileを空にし、
+       `<!-- autolink-notfound: ... -->` マーカーを追記せよ。
+       誤ったai:summaryブロックの中身を削除せよ。
+    2. E2(ワカモレ関連ノート): recording_fileを0902から1000の
+       transcriptへ張り替えよ(軍師も確認済み: 1000にWAKAMORI・
+       ゼロトラの言及あり、0902には無し)。誤ったai:summaryブロックの
+       中身を削除せよ(次回sweepで1000の内容から作り直される)。
+
+    ★★E1については軍師より「殿に一目確認いただくのが確か」との
+    助言あり。★書込み自体は裁可するが、書込み後にdashboard 🚨へ
+    記載し殿の確認を仰ぐこと(書込みを止めるものではない・事後確認)。
+
+    ★★Polimilのmeeting_time自体の誤りとCCBTの重複ノートは別件
+    (このtaskの範囲外・別途判断)。
+
+  what_to_do: |
+    1. tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}' で自己識別せよ。
+    2. 前task(cmd_911)のworktree・vaultで続けて作業せよ。
+    3. E1のrecording_fileを空にし、notfoundマーカーを追記し、誤った
+       ai:summaryブロックの中身を削除せよ。
+    4. E2のrecording_fileを1000のtranscriptへ張り替え、誤った
+       ai:summaryブロックの中身を削除せよ。
+    5. ★git commit・git pushは一切行うな(ファイル書込みのみ・gitops
+       の定期同期に委ねる)。作業後 `git -C ~/workspace/obsidian status
+       --short` で変更内容を確認し報告に添えよ。
+    6. 結果を報告せよ(E1については「殿の確認要」である旨も明記)。
+
+  acceptance_criteria:
+    - "E1: recording_file空・notfoundマーカー追記・誤ったai:summary削除が完了している"
+    - "E2: recording_fileが1000のtranscriptへ張り替えられ、誤ったai:summaryが削除されている"
+    - "git commit・pushを一切行っていない(ファイル書込みのみ)"
+    - "git statusの差分内容が報告に添えられている"
+
+  forbidden:
+    - "git commit・git push禁止(gitopsに委ねる)"
+    - "E1・E2以外のノートへの書込み禁止"
+    - "Polimil・CCBTの件に手を付けること禁止(別件・範囲外)"
+
+  report_to: gunshi
+  timestamp: "2026-09-28T16:53:00"
+
+  report_command: |
+    bash /Users/hal/tools/multi-agent-shogun/scripts/inbox_write.sh gunshi \
+      "cmd_911: E1・E2のvault書込み、完了。品質チェックを仰ぎたし。" \
+      report_received ashigaru1

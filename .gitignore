@@ -181,6 +181,12 @@
 !scripts/com.swarm.cr-retrigger.plist
 !scripts/README.md
 
+# cmd_914 T1: start_task.sh / finish_task.sh(task YAML statusの始める/終える操作)
+!scripts/start_task.sh
+!scripts/finish_task.sh
+!scripts/finish_task_validate.py
+!scripts/lib/task_yaml_lock.sh
+
 # cmd_908 T1: config/cr_retrigger.yaml(secretsを含まない設定の正典)
 !config/cr_retrigger.yaml
 
@@ -296,6 +302,10 @@ tests/specs/osato_lms_*
 !tests/test_claude_usage_report.py
 !tests/fixtures/
 !tests/fixtures/*.yaml
+# cmd_914 T1: 実物のashigaru1食い違いfixture(RED→GREEN実証)
+!tests/fixtures/cmd914/
+!tests/fixtures/cmd914/*.yaml
+!tests/fixtures/cmd914/*.md
 !tests/unit/
 !tests/unit/*.bats
 !tests/watcher/
