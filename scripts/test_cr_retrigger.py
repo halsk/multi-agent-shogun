@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""cr_retrigger.py のテスト(cmd_908 T1)。実行: python3 -m unittest scripts.test_cr_retrigger -v
+"""cr_retrigger.py のテスト(cmd_908 T1 + cmd_913)。
+実行: python3 -m unittest scripts.test_cr_retrigger -v
 
 設計文書§7の8項目 + 確定版の2項目、計10項目を固定する(SKIP 0)。
 ★cmd_908 T1やり直し(軍師QC PR#170・head d84d825 = FAIL是正): F1〜F6の
 回帰試験をTest11以降に追加する。
+★cmd_913: 「決める」部分をcr-decideへ寄せた統合の試験をTest18以降に追加する
+(queue/reports/cmd913_crdecide_integration.md §5の5項目・RED→GREEN)。
+parse_wait/next_attempt_at/_fetch_latest_wait_notice/_fetch_recent_review_starts
+はcr_retrigger.pyから削除したため、これらを直接叩いていた旧試験は削除・
+cr-decide経由の等価な試験へ置き換えた。
 """
 import json
 import os
-import stat
 import sys
 import tempfile
 import unittest
@@ -20,34 +25,6 @@ import cr_retrigger as cr
 NOW = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
 
 
-def _write_fake_gh(script_body):
-    """偽のgh実行ファイルを一時ファイルに書き出し、パスを返す(呼び出し側がcleanupする)。"""
-    fd, path = tempfile.mkstemp(prefix="fake_gh_", suffix=".sh")
-    with os.fdopen(fd, "w") as f:
-        f.write(script_body)
-    st = os.stat(path)
-    os.chmod(path, st.st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    return path
-
-
-# F1: 実際のgh api挙動を模す偽gh。-fに--method GETを伴わずissueコメントの
-# エンドポイントへ来た場合、実物同様「bodyフィールドが無い」422で落ちる
-# (gunshiの実測: CalledProcessErrorでrun()ごと落ちた、と同型の再現)。
-FAKE_GH_F1 = """#!/usr/bin/env bash
-args="$*"
-if [[ "$args" == *"issues/"*"/comments"* ]]; then
-  if [[ "$args" == *"--method GET"* ]]; then
-    echo "[]"
-    exit 0
-  fi
-  echo "gh: HTTP 422: Validation Failed (body is missing)" >&2
-  exit 1
-fi
-echo "[]"
-exit 0
-"""
-
-
 def make_pr(repo="geolonia/geonicdb-console", pr=1, head_sha="sha1",
             description="Review rate limited", draft=False, allowed=True,
             next_attempt_at=None):
@@ -56,6 +33,16 @@ def make_pr(repo="geolonia/geonicdb-console", pr=1, head_sha="sha1",
     if next_attempt_at is not None:
         d["next_attempt_at"] = next_attempt_at
     return d
+
+
+def _cr_decide_cfg(allowlist, query_enabled=False, cr_decide_enabled=True):
+    return {
+        "allowlist": allowlist,
+        "budget": {"trigger_per_hour": 10, "trigger_per_day": 10,
+                    "query_min_interval_min": 30, "query_per_day": 6},
+        "query": {"enabled": query_enabled},
+        "cr_decide": {"enabled": cr_decide_enabled},
+    }
 
 
 class Test1ReviewedHeadNotSelected(unittest.TestCase):
@@ -134,38 +121,6 @@ class Test5KillSwitchBlocksAll(unittest.TestCase):
         self.assertEqual(targets, [])
 
 
-class Test6UnreadableWaitFallsBackToSixtyMinutes(unittest.TestCase):
-    """§7-6: 待ち時間の読めぬ通知で60分の退きに倒れる。"""
-
-    def test_no_wait_no_recent_reviews_falls_back_to_now_plus_60(self):
-        result = cr.next_attempt_at({}, NOW, mode="window")
-        self.assertEqual(result, NOW + timedelta(minutes=60))
-
-    def test_unparsable_notice_body_yields_none_then_fallback(self):
-        parsed = cr.parse_wait("CodeRabbit will let you know when it's ready.")
-        self.assertIsNone(parsed)
-        result = cr.next_attempt_at(
-            {"notice_updated_at": NOW, "notice_wait_minutes": parsed}, NOW, mode="window")
-        self.assertEqual(result, NOW + timedelta(minutes=60))
-
-    def test_window_fallback_uses_oldest_recent_review(self):
-        oldest = NOW - timedelta(minutes=40)
-        result = cr.next_attempt_at(
-            {"recent_review_starts": [oldest, NOW - timedelta(minutes=10)]}, NOW, mode="window")
-        self.assertEqual(result, oldest + timedelta(minutes=62))
-
-    def test_readable_wait_is_used_directly(self):
-        parsed = cr.parse_wait("Or wait 4 minutes for your next included review.")
-        self.assertAlmostEqual(parsed, 4.0)
-        result = cr.next_attempt_at(
-            {"notice_updated_at": NOW, "notice_wait_minutes": parsed}, NOW, mode="window")
-        self.assertEqual(result, NOW + timedelta(minutes=6))
-
-    def test_readable_wait_with_seconds(self):
-        parsed = cr.parse_wait("wait **44 minutes and 12 seconds**")
-        self.assertAlmostEqual(parsed, 44 + 12 / 60)
-
-
 class Test7UnknownDescriptionNotSelected(unittest.TestCase):
     """§7-7: 未知のdescriptionで投げぬ。"""
 
@@ -221,14 +176,12 @@ class Test9PostCommentRejectsUnknownBody(unittest.TestCase):
         def fake_run(*a, **k):
             called.append(a)
 
-        import unittest.mock as mock
         with mock.patch("subprocess.run", side_effect=fake_run):
             with self.assertRaises(ValueError):
                 cr.post_comment("geolonia/geonicdb-console", 1, "こちらで直してください")
         self.assertEqual(called, [])
 
     def test_post_comment_accepts_trigger_body(self):
-        import unittest.mock as mock
         with mock.patch("subprocess.run") as run:
             cr.post_comment("geolonia/geonicdb-console", 1, cr.TRIGGER_BODY)
             run.assert_called_once()
@@ -266,52 +219,12 @@ class Test10QueryRespectsRateLimits(unittest.TestCase):
         self.assertFalse(cr.may_query("incident-new", state, NOW, cfg))
 
 
-class Test11F1MethodGetFixed(unittest.TestCase):
-    """cmd_908やり直しF1(critical): gh api呼び出し(post_comment以外)は
-    全て--method GETであることを固定する。RED対照: queue/reports/
-    gunshi_report_cmd908_t1.yamlのhead(d84d825)のコードは、本テストと同じ
-    偽ghに対しCalledProcessErrorで落ちることを別途確認済み(是正前後の
-    比較はワークツリー外の一時コピーで実施・詳細は作業ログ)。"""
-
-    def setUp(self):
-        self.fake_gh = _write_fake_gh(FAKE_GH_F1)
-
-    def tearDown(self):
-        os.remove(self.fake_gh)
-
-    def test_fetch_latest_wait_notice_survives_real_gh_post_semantics(self):
-        # 偽ghは--method GET無しの-f呼び出しを実物同様422相当で落とす。
-        # 是正後は例外を投げず(None, None)を返す。
-        result = cr._fetch_latest_wait_notice(
-            "geolonia/geonicdb-console", 1, gh_bin=self.fake_gh)
-        self.assertEqual(result, (None, None))
-
-    def test_comments_endpoint_always_called_with_method_get(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            result = mock.Mock()
-            result.stdout = "[]"
-            return result
-
-        with mock.patch("subprocess.run", side_effect=fake_run):
-            cr._fetch_latest_wait_notice("geolonia/geonicdb-console", 1)
-
-        comment_calls = [c for c in calls if "comments" in " ".join(str(x) for x in c)]
-        self.assertTrue(comment_calls, "commentsエンドポイントへの呼び出しが無い")
-        for call in comment_calls:
-            self.assertIn("--method", call)
-            idx = call.index("--method")
-            self.assertEqual(call[idx + 1], "GET")
-
-
 class Test12F1PerPrFailureIsolation(unittest.TestCase):
     """cmd_908やり直しF1: PRごとの取得失敗はcatchしてlogに記し、
     次のPRへ進む(run()全体を落とさない)。"""
 
     def test_one_pr_status_fetch_failure_does_not_abort_other_prs(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}, "fallback_mode": "window"}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
@@ -328,8 +241,7 @@ class Test12F1PerPrFailureIsolation(unittest.TestCase):
             return "Review completed", NOW
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+             mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         errors = [e for e in log_lines if e.get("event") == "status_fetch_error"]
@@ -377,55 +289,12 @@ class Test13F2ReselectRequiresFreshRateLimit(unittest.TestCase):
         self.assertEqual(len(targets), 1)
 
 
-class Test14F2StaleNoticeFiltered(unittest.TestCase):
-    """cmd_908やり直しF2: 通知のコメントはstatusのupdated_at以後のものだけ使う
-    (古い別件の通知を拾わない)。"""
-
-    def test_notice_older_than_min_updated_at_is_ignored(self):
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            result = mock.Mock()
-            old_comment = {
-                "user": {"login": "coderabbitai[bot]"},
-                "body": "Or wait 4 minutes for your next included review.",
-                "updated_at": (NOW - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            result.stdout = json.dumps([old_comment])
-            return result
-
-        min_updated_at = NOW - timedelta(minutes=30)
-        with mock.patch("subprocess.run", side_effect=fake_run):
-            result = cr._fetch_latest_wait_notice(
-                "geolonia/geonicdb-console", 1, min_updated_at=min_updated_at)
-        self.assertEqual(result, (None, None))
-
-    def test_notice_after_min_updated_at_is_used(self):
-        def fake_run(cmd, **kwargs):
-            result = mock.Mock()
-            fresh_comment = {
-                "user": {"login": "coderabbitai[bot]"},
-                "body": "Or wait 4 minutes for your next included review.",
-                "updated_at": NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            }
-            result.stdout = json.dumps([fresh_comment])
-            return result
-
-        min_updated_at = NOW - timedelta(minutes=30)
-        with mock.patch("subprocess.run", side_effect=fake_run):
-            dt, wait = cr._fetch_latest_wait_notice(
-                "geolonia/geonicdb-console", 1, min_updated_at=min_updated_at)
-        self.assertAlmostEqual(wait, 4.0)
-        self.assertEqual(dt, NOW)
-
-
 class Test15F3LoggingAndStatusSummary(unittest.TestCase):
     """cmd_908やり直しF3: 周回ごと・PRごとのlog行とqueue/reports/
     cr_retrigger_status.yamlの出力(T2完了条件・cmd_861の朝に分かること)。"""
 
     def test_cycle_line_carries_runner_run_id_and_pr_count(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}, "fallback_mode": "window"}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
@@ -433,8 +302,7 @@ class Test15F3LoggingAndStatusSummary(unittest.TestCase):
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review completed", NOW)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+                                return_value=("Review completed", NOW)):
             state, log_lines = cr.run(
                 cfg, state, NOW, "/nonexistent/.stop", dry_run=True,
                 run_id="20260928T120000Z-123", runner="launchd")
@@ -446,7 +314,7 @@ class Test15F3LoggingAndStatusSummary(unittest.TestCase):
         self.assertEqual(cycle_lines[0]["prs_seen"], 1)
 
     def test_per_pr_decision_line_present(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}, "fallback_mode": "window"}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
@@ -454,8 +322,7 @@ class Test15F3LoggingAndStatusSummary(unittest.TestCase):
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review completed", NOW)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+                                return_value=("Review completed", NOW)):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         pr_lines = [e for e in log_lines if e.get("pr") == 1 and "decision" in e]
@@ -507,81 +374,6 @@ class Test15F3LoggingAndStatusSummary(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
-class Test16F4QueryAndRecentReviewStartsWired(unittest.TestCase):
-    """cmd_908やり直しF4(medium・家老裁可=実装せよ): query.enabled/
-    query_policy/may_query/recent_review_startsが実際にrun()から呼ばれ機能する。"""
-
-    def test_query_posted_when_enabled_and_notice_unreadable(self):
-        cfg = {
-            "allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window",
-            "budget": {"query_min_interval_min": 30, "query_per_day": 6},
-            "query": {"enabled": True}, "query_policy": "before_computed",
-        }
-        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
-
-        def fake_open_prs(repo, gh_bin="gh", timeout=30):
-            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review rate limited", NOW)), \
-             mock.patch.object(cr, "_fetch_latest_wait_notice", return_value=(None, None)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]), \
-             mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None), \
-             mock.patch.object(cr, "post_comment") as post_mock:
-            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
-
-        post_mock.assert_called_once_with(
-            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
-        self.assertEqual(len(state["query_incidents"]), 1)
-        query_events = [e for e in log_lines if e.get("event") == "query_posted"]
-        self.assertEqual(len(query_events), 1)
-
-    def test_query_not_posted_when_disabled(self):
-        cfg = {
-            "allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window",
-            "budget": {"query_min_interval_min": 30, "query_per_day": 6},
-            "query": {"enabled": False}, "query_policy": "before_computed",
-        }
-        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
-
-        def fake_open_prs(repo, gh_bin="gh", timeout=30):
-            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review rate limited", NOW)), \
-             mock.patch.object(cr, "_fetch_latest_wait_notice", return_value=(None, None)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]), \
-             mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None), \
-             mock.patch.object(cr, "post_comment") as post_mock:
-            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
-
-        post_mock.assert_not_called()
-        self.assertEqual(state.get("query_incidents", {}), {})
-
-    def test_recent_review_starts_fetched_and_passed_to_fallback(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window", "budget": {}}
-        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
-
-        def fake_open_prs(repo, gh_bin="gh", timeout=30):
-            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-        recent = [NOW - timedelta(minutes=65)]  # oldest+62分 <= now → 候補になる
-        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review rate limited", None)), \
-             mock.patch.object(cr, "_fetch_latest_wait_notice", return_value=(None, None)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts",
-                                return_value=recent) as recent_mock, \
-             mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None):
-            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
-
-        recent_mock.assert_called_once()
-        pr_line = [e for e in log_lines if e.get("pr") == 1 and "decision" in e][0]
-        self.assertEqual(pr_line["decision"], "candidate")
-
-
 class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
     """cmd_908やり直しF6(low): §3.3のheadが変わったPRは待つ・未知description・
     2時間status無しの警告。"""
@@ -604,7 +396,7 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
         self.assertEqual(len(targets), 1)
 
     def test_unknown_description_logged_as_warning(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window", "budget": {}}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
@@ -612,8 +404,7 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review failed", NOW)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+                                return_value=("Review failed", NOW)):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         warn_lines = [e for e in log_lines if e.get("level") == "warn" and e.get("pr") == 1]
@@ -621,7 +412,7 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
         self.assertEqual(warn_lines[0]["category"], "unknown")
 
     def test_no_status_over_2h_logged_as_warning(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window", "budget": {}}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
         created_at = (NOW - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -629,8 +420,7 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
             return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": created_at}]
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status", return_value=(None, None)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+             mock.patch.object(cr, "_fetch_coderabbit_status", return_value=(None, None)):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         warn_lines = [e for e in log_lines if e.get("level") == "warn" and e.get("pr") == 1]
@@ -638,7 +428,7 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
         self.assertEqual(warn_lines[0]["reason"], "no_status_over_2h")
 
     def test_no_status_under_2h_not_warned(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "fallback_mode": "window", "budget": {}}
+        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
         created_at = (NOW - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -646,12 +436,425 @@ class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
             return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": created_at}]
 
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status", return_value=(None, None)), \
-             mock.patch.object(cr, "_fetch_recent_review_starts", return_value=[]):
+             mock.patch.object(cr, "_fetch_coderabbit_status", return_value=(None, None)):
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         warn_lines = [e for e in log_lines if e.get("level") == "warn"]
         self.assertEqual(warn_lines, [])
+
+
+# ── cmd_913: cr-decide統合(queue/reports/cmd913_crdecide_integration.md §5) ──
+
+def _patch_cr_decide_wiring(decision_by_pr):
+    """_ensure_cr_decide_tool/_ensure_clone/call_cr_decideを、実clone・実node
+    無しで試験する共通の下ごしらえ。decision_by_prはpr番号→cr-decideの
+    戻り値dictの写像。"""
+    def fake_call_cr_decide(repo, pr_number, clone_dir, script_path,
+                             policy_path=None, node_bin="node", timeout=30):
+        return decision_by_pr[pr_number]
+
+    return (
+        mock.patch.object(cr, "_ensure_cr_decide_tool",
+                           return_value=("/fake/cr-decide.mjs", "/fake/policy.json")),
+        mock.patch.object(cr, "_ensure_clone", return_value="/fake/clone"),
+        mock.patch.object(cr, "call_cr_decide", side_effect=fake_call_cr_decide),
+        mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None),
+    )
+
+
+class Test18CrDecideCallWiring(unittest.TestCase):
+    """call_cr_decide(): 子プロセスの呼出・fail closedの形を固定する。"""
+
+    def test_valid_json_stdout_is_parsed(self):
+        with mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(
+                stdout=json.dumps({"action": "review", "command": "@coderabbitai review"}))
+            result = cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, "/fake/clone", "/fake/cr-decide.mjs")
+        self.assertEqual(result["action"], "review")
+        self.assertEqual(result["command"], "@coderabbitai review")
+
+    def test_timeout_is_fail_closed_error(self):
+        import subprocess as sp
+        with mock.patch("subprocess.run", side_effect=sp.TimeoutExpired(cmd="node", timeout=30)):
+            result = cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, "/fake/clone", "/fake/cr-decide.mjs")
+        self.assertEqual(result["action"], "error")
+
+    def test_malformed_stdout_is_fail_closed_error(self):
+        with mock.patch("subprocess.run") as run:
+            run.return_value = mock.Mock(stdout="not json")
+            result = cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, "/fake/clone", "/fake/cr-decide.mjs")
+        self.assertEqual(result["action"], "error")
+
+    def test_git_env_vars_are_stripped_before_invoking_node(self):
+        # cmd_901/903/906と同型の事故を防ぐ: 呼び出し元にGIT_*が有っても
+        # 子プロセスへ渡す環境からは外れていること。
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock.Mock(stdout=json.dumps({"action": "check",
+                                                 "command": "@coderabbitai rate limit"}))
+
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/some/other/repo/.git"}), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, "/fake/clone", "/fake/cr-decide.mjs")
+
+        self.assertIsNotNone(captured["env"])
+        self.assertFalse(any(k.startswith("GIT_") for k in captured["env"]))
+
+
+class Test19CrDecideReviewCommandPostsWithAiPrefix(unittest.TestCase):
+    """RED→GREEN③: cr-decideのcommandが`@coderabbitai review`の時、
+    投稿する本文には`[AI] `が付く(TRIGGER_BODY定数と一致)。"""
+
+    def test_review_action_posts_trigger_body_with_ai_prefix(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "review", "reason": "1 review available",
+                          "command": "@coderabbitai review"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, "[AI] @coderabbitai review", gh_bin="gh")
+        self.assertTrue(post_mock.call_args.args[2].startswith("[AI] "))
+        self.assertEqual(post_mock.call_args.args[2], cr.TRIGGER_BODY)
+
+
+class Test20CrDecideErrorNeverPosted(unittest.TestCase):
+    """RED→GREEN②: cr-decideがerrorを返したら投じず、警告として記録する。"""
+
+    def test_error_action_does_not_post_and_logs_warning(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "error", "reason": "spawnSync gh ENOBUFS"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review paused", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        error_lines = [e for e in log_lines if e.get("event") == "cr_decide_error"]
+        self.assertEqual(len(error_lines), 1)
+        self.assertEqual(error_lines[0]["level"], "warn")
+        self.assertEqual(error_lines[0]["reason"], "spawnSync gh ENOBUFS")
+
+
+class Test21CrDecideApproveAndPayObservedNotPosted(unittest.TestCase):
+    """RED→GREEN④: 許していない文面(approve・pay)は投じず、記録だけする
+    (cmd_913一段め・観察のため)。"""
+
+    def test_approve_command_is_recorded_not_posted(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "approve", "reason": "rebase only",
+                          "command": "@coderabbitai approve"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        observed = [e for e in log_lines if e.get("event") == "cr_decide_observed_not_posted"]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]["command"], "@coderabbitai approve")
+        self.assertEqual(observed[0]["action"], "approve")
+
+    def test_pay_command_is_recorded_not_posted(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "pay", "reason": "wait too long",
+                          "command": "@coderabbitai review --use-credits"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        observed = [e for e in log_lines if e.get("event") == "cr_decide_observed_not_posted"]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(observed[0]["command"], "@coderabbitai review --use-credits")
+
+
+class Test22CrDecideCheckThrottledByLedger(unittest.TestCase):
+    """RED→GREEN①: cr-decideの答えがcheckでも、台帳(may_query・30分に1回)が
+    抑える(cr-decide自身は走りごとの記憶を持たないため)。"""
+
+    def test_second_check_within_30min_is_not_posted(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        def fake_status(repo, sha, gh_bin="gh", timeout=30):
+            return "Review rate limited", NOW
+
+        decisions = {
+            1: {"action": "check", "reason": "budget unknown",
+                "command": "@coderabbitai rate limit"},
+            2: {"action": "check", "reason": "budget unknown",
+                "command": "@coderabbitai rate limit"},
+        }
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 台帳の30分に1回の下限により、2件目は投じられない(1件目のみ)。
+        self.assertEqual(post_mock.call_count, 1)
+        post_mock.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
+        self.assertEqual(len(not_posted), 1)
+        self.assertEqual(not_posted[0]["pr"], 2)
+
+    def test_check_not_posted_when_query_disabled(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=False)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        self.assertEqual(state.get("query_incidents", {}), {})
+
+
+class Test23CrDecidePausedVsSkippedRouting(unittest.TestCase):
+    """RED→GREEN⑤: 「見つける」でcr-decideへ渡すのはrate_limited・pausedのみ。
+    skipped(意図したskip)は渡さない(既存動作を変えない)。"""
+
+    def test_paused_calls_cr_decide(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review paused", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1] as ensure_clone_mock, patches[2] as call_mock, patches[3]:
+            cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
+
+        call_mock.assert_called_once()
+        ensure_clone_mock.assert_called()
+
+    def test_skipped_never_calls_cr_decide(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        patches = _patch_cr_decide_wiring({})
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review skipped: draft", NOW)), \
+             patches[0] as tool_mock, patches[1] as ensure_clone_mock, \
+             patches[2] as call_mock, patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
+
+        call_mock.assert_not_called()
+        ensure_clone_mock.assert_not_called()
+        tool_mock.assert_not_called()
+        pr_lines = [e for e in log_lines if e.get("pr") == 1 and "decision" in e]
+        self.assertEqual(pr_lines[0]["category"], "skip")
+
+
+class Test24CrDecideDisabledFallsBackSafely(unittest.TestCase):
+    """cr_decide.enabled=falseの時は、決めるすべが無いため安全側(投じない)へ倒す。"""
+
+    def test_cr_decide_disabled_does_not_post_review(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], cr_decide_enabled=False)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None), \
+             mock.patch.object(cr, "post_comment") as post_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        disabled_lines = [e for e in log_lines if e.get("event") == "cr_decide_disabled"]
+        self.assertEqual(len(disabled_lines), 1)
+
+
+# ── cmd_913続き(PR#173 QC是正): X1 query.enabled有効化・X2 pin検証 ──
+
+class Test25QueryEnabledEndToEndFlow(unittest.TestCase):
+    """X1是正: query.enabled=trueで、check→問い合わせ→(答えが付いた後の
+    次周回の)review投稿、まで実際に流れることをend-to-endで固定する。
+    RED対照(是正前・query.enabled=false)はTest22.
+    test_check_not_posted_when_query_disabledが固定済み
+    (checkがdisabledとして記録され続け、投稿もreviewへも進まない)。"""
+
+    def test_check_then_query_then_review_across_two_cycles(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        # 1周回め: 待ち時間が読めず、cr-decideはcheckを返す。
+        decisions_cycle1 = {1: {"action": "check", "reason": "budget unknown",
+                                  "command": "@coderabbitai rate limit"}}
+        patches1 = _patch_cr_decide_wiring(decisions_cycle1)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock1, \
+             patches1[0], patches1[1], patches1[2], patches1[3]:
+            state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock1.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+        self.assertIn("geolonia/geonicdb-console#1#sha1#check", state["query_incidents"])
+
+        # 2周回め(10分後): 問い合わせの答えをcr-decide自身が読んだ想定
+        # (答えの読み取り自体はcr-decideの役目・cmd913_crdecide_integration.md
+        # §1)。答えが付いたのでcr-decideはreviewを返す。
+        now2 = NOW + timedelta(minutes=10)
+        decisions_cycle2 = {1: {"action": "review", "reason": "1 review available now",
+                                  "command": "@coderabbitai review"}}
+        patches2 = _patch_cr_decide_wiring(decisions_cycle2)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment") as post_mock2, \
+             patches2[0], patches2[1], patches2[2], patches2[3]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        post_mock2.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+
+    def test_second_incident_query_within_30min_stays_throttled_by_ledger(self):
+        # X1の下限(design §9.2)がquery.enabled=true下でも守られることの回帰
+        # (Test22と同型だが、query_enabled=trueが既定になった後の固定として
+        # ここにも残す)。
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [NOW - timedelta(minutes=5)],
+                  "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
+        self.assertEqual(len(not_posted), 1)
+
+
+class Test26CrDecideToolPinnedShaNotAutoTracked(unittest.TestCase):
+    """X2是正: geolonia/skillsの取り込みが検めた特定SHAへdetached checkoutで
+    固定され、origin/mainへのreset --hard(自動追随)になっていないことを
+    固定する。"""
+
+    def test_checks_out_pinned_sha_via_detached_head(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured.setdefault("calls", []).append(cmd)
+            return mock.Mock(returncode=0)
+
+        cfg = {"tool_repo": "geolonia/skills",
+                "tool_ref": "d42738355cd994382f5fadf4febdf2089842ce83",
+                "script_relpath": "skills/coderabbit-pr-flow/scripts/cr-decide.mjs",
+                "policy_relpath": "skills/coderabbit-pr-flow/policy.json"}
+        with mock.patch.object(cr, "_ensure_clone", return_value="/fake/skills-clone"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            script_path, policy_path = cr._ensure_cr_decide_tool(cfg, "/fake/clones")
+
+        checkout_calls = [c for c in captured["calls"] if "checkout" in c]
+        self.assertEqual(len(checkout_calls), 1)
+        self.assertIn("d42738355cd994382f5fadf4febdf2089842ce83", checkout_calls[0])
+        self.assertIn("--detach", checkout_calls[0])
+        # origin/mainへの自動追随(reset --hard等)が残っていないこと。
+        self.assertFalse(any("reset" in c for c in captured["calls"]))
+        self.assertFalse(any("origin/main" in c for c in captured["calls"]))
+        self.assertTrue(script_path.endswith("cr-decide.mjs"))
+        self.assertTrue(policy_path.endswith("policy.json"))
+
+    def test_missing_tool_ref_raises_without_touching_git(self):
+        captured = {"called": False}
+
+        def fake_run(cmd, **kwargs):
+            captured["called"] = True
+            return mock.Mock(returncode=0)
+
+        cfg = {"tool_repo": "geolonia/skills"}  # tool_ref無し
+        with mock.patch.object(cr, "_ensure_clone", return_value="/fake/skills-clone"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            with self.assertRaises(ValueError):
+                cr._ensure_cr_decide_tool(cfg, "/fake/clones")
+
+        self.assertFalse(captured["called"])
 
 
 if __name__ == "__main__":

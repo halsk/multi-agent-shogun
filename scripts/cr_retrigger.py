@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""cmd_908 T1: CodeRabbit rate-limited PR 自動再引き金 — 実装。
+"""cmd_908 T1 + cmd_913: CodeRabbit rate-limited PR 自動再引き金 — 実装。
 
 設計: queue/reports/cmd908_ratelimit_retrigger_design.md
   (§1〜§7が基本設計、末尾「確定版(cmd_909【D】)」§8〜§11が最終版。
    食い違う所は確定版を優先する。)
+  cmd_913: queue/reports/cmd913_crdecide_integration.md §5 —
+  「決める」部分をgeolonia/skillsのcr-decide.mjsへ寄せる(一段め)。
 
-★このモジュールは決定論的な純関数群(classify/parse_wait/next_attempt_at/
-may_query/select_targets/assert_allowed_body)と、それらを束ねる薄い
-main()のみで構成する。LLMを実行経路に一切含めない。
+★このモジュールは決定論的な純関数群(classify/may_query/select_targets/
+assert_allowed_body)と、それらを束ねる薄いrun()/main()のみで構成する。
+LLMを実行経路に一切含めない。「決める」はcr-decide(node子プロセス)に
+寄せ、本モジュールは「見つける・呼ぶ・守る(台帳)・投じる・記録する」を持つ。
 
 本T1の範囲外(T2・家老の担当): launchd登録・Keychain設定・
 本番HCのcheck作成。本モジュールはファイルを置くのみで、それらには触れない。
+cr-decideのapprove(@coderabbitai approve)を実際に投じることも範囲外
+(cmd_913一段め・殿/将軍のご判断待ち)——記録のみ行う。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -30,16 +34,18 @@ TRIGGER_BODY = "[AI] @coderabbitai review"
 QUERY_BODY = "[AI] @coderabbitai rate limit"
 ALLOWED_BODIES = frozenset({TRIGGER_BODY, QUERY_BODY})
 
+# cmd_913 §5: cr-decideのcommandのうち、投じてよいのはこの2つの写像のみ。
+# approve(@coderabbitai approve)・pay(@coderabbitai review --use-credits)は
+# ここに無いため、cr-decideが返しても投じず記録だけする(一段め・観察用)。
+CR_DECIDE_POSTABLE_COMMANDS = {
+    "@coderabbitai review": TRIGGER_BODY,
+    "@coderabbitai rate limit": QUERY_BODY,
+}
+
 _REVIEWED_EXACT = {"Review completed", "Review approved"}
 _WAITING_EXACT = {"Review in progress", "Review queued"}
 
 CANDIDATE_CATEGORIES = frozenset({"rate_limited", "paused"})
-
-# §2: 待ち時間の正規表現(「wait 4 minutes」「wait **44 minutes and 12 seconds**」の両形)
-_WAIT_RE = re.compile(
-    r"wait\s+\**\s*(?:(\d+)\s*minutes?)?\s*(?:and\s*)?(?:(\d+)\s*seconds?)?",
-    re.IGNORECASE,
-)
 
 
 def classify(desc):
@@ -69,52 +75,6 @@ def is_allowed_repo(repo, allowlist):
     if repo.startswith(UPSTREAM_DENYLIST_PREFIXES):
         return False
     return repo in allowlist
-
-
-def parse_wait(notice_body):
-    """通知本文から待ち時間(分・float)を読む。読めなければNone(§2)。"""
-    if not notice_body:
-        return None
-    m = _WAIT_RE.search(notice_body)
-    if not m:
-        return None
-    minutes, seconds = m.group(1), m.group(2)
-    if minutes is None and seconds is None:
-        return None
-    return float(minutes or 0) + float(seconds or 0) / 60.0
-
-
-def next_attempt_at(sources, now, mode="window"):
-    """次に試してよい刻限を求める(確定版§9.2)。上の手段で分かれば下は使わない。
-
-    sources (dict, いずれも省略可):
-      notice_updated_at:    通知の更新時刻(datetime)
-      notice_wait_minutes:  parse_wait()の結果(float | None)
-      query_answered_at:    問い合わせの答えを得た時刻(datetime)
-      query_answer_minutes: 答えの待ち時間(float)
-      recent_review_starts: 直前60分に実際に走ったレビューの開始時刻のlist[datetime]
-    mode: "window"(既定・移動窓の知見) | "hourly"(正時のリセット)
-    """
-    notice_updated_at = sources.get("notice_updated_at")
-    notice_wait_minutes = sources.get("notice_wait_minutes")
-    if notice_updated_at is not None and notice_wait_minutes is not None:
-        return notice_updated_at + timedelta(minutes=notice_wait_minutes + 2)
-
-    query_answered_at = sources.get("query_answered_at")
-    query_answer_minutes = sources.get("query_answer_minutes")
-    if query_answered_at is not None and query_answer_minutes is not None:
-        return query_answered_at + timedelta(minutes=query_answer_minutes)
-
-    if mode == "hourly":
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        return next_hour + timedelta(minutes=2)
-
-    # mode == "window"(既定): 待ち時間の読めぬ通知は60分の退きに倒れる。
-    recent = sources.get("recent_review_starts") or []
-    if recent:
-        oldest = min(recent)
-        return oldest + timedelta(minutes=62)
-    return now + timedelta(minutes=60)
 
 
 def assert_allowed_body(body):
@@ -167,8 +127,10 @@ def _decision_reason(pr, state, now):
     実際の選定ロジックが食い違わないようにする。
 
     戻り値: "draft" | "not_allowed" | classify()の結果(reviewed/waiting/skip/
-            no_status/unknown) | "head_recent_push"(§3.3) | "max_attempts" |
-            "stale_no_fresh_rate_limit"(確定版F2) | "not_due" | "candidate"
+            no_status/unknown) | "head_recent_push"(§3.3) |
+            "cr_decide_not_review"(cmd_913§5・cr-decideがreview以外を返した) |
+            "max_attempts" | "stale_no_fresh_rate_limit"(確定版F2) |
+            "not_due" | "candidate"
     """
     if pr.get("draft"):
         return "draft"
@@ -182,6 +144,12 @@ def _decision_reason(pr, state, now):
     pushed_at = pr.get("head_pushed_at")
     if pushed_at is not None and now - pushed_at < timedelta(minutes=10):
         return "head_recent_push"
+
+    # cmd_913 §5: cr-decideを呼んだPRは、その答えが"review"の時だけ候補になる。
+    # このキーが無いpr(cr-decideを呼ばない/呼んでいない古い呼び出し形)は
+    # 従来どおり素通りする(既定True・既存の純関数テストへの非回帰)。
+    if not pr.get("cr_decide_recommends_review", True):
+        return "cr_decide_not_review"
 
     key = f"{pr['repo']}#{pr['pr']}#{pr['head_sha']}"
     head_state = state.get("heads", {}).get(key, {})
@@ -198,6 +166,9 @@ def _decision_reason(pr, state, now):
         if status_updated_at is None or status_updated_at <= last_trigger_at:
             return "stale_no_fresh_rate_limit"
 
+    # cmd_913: next_attempt_atはもはや自前の移動窓計算では埋めない。
+    # cr-decideがretryAtを返した時だけ埋まる(run()参照)。無ければnowのまま
+    # (=cr-decideが"review"を返した以上、待つ理由が無い)。
     next_at = pr.get("next_attempt_at", now)
     if next_at > now:
         return "not_due"
@@ -230,6 +201,106 @@ def select_targets(state, prs, budget, now, killed=False):
     remaining = max(0, min(hour_remaining, day_remaining))
 
     return candidates[:remaining]
+
+
+# ── cmd_913 §5: cr-decideへの「呼ぶ」統合 ────────────────────────────
+
+def _clean_git_env():
+    """GIT_*を全て外した環境を返す(cmd_901/903/906と同型の事故を防ぐ)。
+    呼び出し元プロセスのGIT_DIR等が子プロセス(node/git)へ漏れて、
+    意図しないリポジトリを触る事故を防ぐための隔離。"""
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+def _ensure_clone(repo, clones_dir, gh_bin="gh", git_bin="git", timeout=60):
+    """repoの読み取り専用cloneを用意する(cr-decideのrebase判定に手元gitが要るため)。
+    既に有ればfetchのみ・無ければ`gh repo clone`する。戻り値: cloneのpath。
+    """
+    clone_dir = os.path.join(clones_dir, repo.replace("/", "__"))
+    env = _clean_git_env()
+    if not os.path.isdir(os.path.join(clone_dir, ".git")):
+        os.makedirs(clones_dir, exist_ok=True)
+        subprocess.run(
+            [gh_bin, "repo", "clone", repo, clone_dir],
+            check=True, timeout=timeout, env=env,
+        )
+    else:
+        subprocess.run(
+            [git_bin, "-C", clone_dir, "fetch", "--quiet", "origin"],
+            check=True, timeout=timeout, env=env,
+        )
+    return clone_dir
+
+
+def _ensure_cr_decide_tool(cr_decide_cfg, clones_dir, gh_bin="gh", git_bin="git", timeout=60):
+    """cr-decide.mjs・policy.jsonの実物を用意する(geolonia/skillsのclone、
+    検めた特定commitへpinする — cmd_913 X2是正)。
+
+    ★origin/mainやbranch名への自動追随(reset --hard origin/main等)は
+    禁止する。org側で誰かがgeolonia/skillsのmainへmergeした内容が、
+    当家の検めなしに殿のgh権限で自動実行される穴になるため
+    (cr-decide.mjsを子プロセスとして呼ぶ以上、そのコードが実行される)。
+    cr_decide_cfg["tool_ref"](検めたcommit SHA)を必須とし、
+    そのSHAをdetached HEADでcheckoutする。更新は家老が差分を検めた
+    上でtool_refの値を明示的に書き換える運用とする。
+
+    戻り値: (script_path, policy_path)。
+    """
+    tool_repo = cr_decide_cfg.get("tool_repo", "geolonia/skills")
+    tool_ref = cr_decide_cfg.get("tool_ref")
+    if not tool_ref:
+        raise ValueError(
+            "cr_decide.tool_ref is required (pinned, vetted commit SHA). "
+            "origin/main auto-tracking is forbidden (cmd_913 X2)."
+        )
+    clone_dir = _ensure_clone(tool_repo, clones_dir, gh_bin=gh_bin, git_bin=git_bin, timeout=timeout)
+    env = _clean_git_env()
+    subprocess.run(
+        [git_bin, "-C", clone_dir, "checkout", "--quiet", "--detach", tool_ref],
+        check=True, timeout=timeout, env=env,
+    )
+    script_path = os.path.join(
+        clone_dir,
+        cr_decide_cfg.get("script_relpath", "skills/coderabbit-pr-flow/scripts/cr-decide.mjs"),
+    )
+    policy_path = os.path.join(
+        clone_dir,
+        cr_decide_cfg.get("policy_relpath", "skills/coderabbit-pr-flow/policy.json"),
+    )
+    return script_path, policy_path
+
+
+def call_cr_decide(repo, pr_number, clone_dir, script_path, policy_path=None,
+                    node_bin="node", timeout=30):
+    """cr-decide.mjsを子プロセスとして呼び、次の一手のJSONを返す(cmd_913§5)。
+
+    呼出・パース双方の失敗はfail closedで{"action": "error", "reason": str}を
+    返す(投じない側へ倒す)。大きいPRのENOBUFS(Daniel殿の直しを待つ間の暫定)
+    もこの経路でerrorとして受け止める。
+    """
+    cmd = [node_bin, script_path, str(pr_number), "--repo", repo]
+    if policy_path:
+        cmd += ["--policy", policy_path]
+    env = _clean_git_env()
+    try:
+        result = subprocess.run(
+            cmd, cwd=clone_dir, capture_output=True, text=True, timeout=timeout, env=env,
+        )
+        data = json.loads(result.stdout)
+    except (subprocess.TimeoutExpired, json.JSONDecodeError, OSError, ValueError) as exc:
+        return {"action": "error", "reason": str(exc)}
+    if not isinstance(data, dict) or "action" not in data:
+        return {"action": "error", "reason": "malformed cr-decide output"}
+    return data
+
+
+def _parse_retry_at(retry_at_str):
+    if not retry_at_str:
+        return None
+    try:
+        return datetime.fromisoformat(retry_at_str.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 # ── main(): T1の範囲では実配線のみ。本番のgh呼び出しはCI/ローカルでは
@@ -327,124 +398,42 @@ def _fetch_commit_pushed_at(repo, sha, gh_bin="gh", timeout=30):
     return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
 
 
-def _fetch_recent_review_starts(allowlist, gh_bin="gh", timeout=30, now=None, window_minutes=60):
-    """直前window_minutes分に実際に走ったhalskのレビュー開始時刻(確定版§9.2手段3の元データ)。
-
-    取得に失敗しても空listを返す(呼び出し側のnext_attempt_at()はnow+60分の
-    一律退きへ倒れる。壊れない設計・確定版§9.3)。
-
-    ★既知の限界: 割当は開発者ごと(cmd_870)で、設計はgeolonia org全体を数える
-    ことを求める(§9.2)が、org全体のPR検索はレート・権限の負担が大きいため、
-    本実装はallowlist配下のrepoに絞って近似する。allowlist外repoでのレビュー
-    消費は見えない——効くように見せて実は効かないままにしないため、この限界は
-    正直にコードコメントへ残す(cmd_908 F4)。
-    """
-    if now is None:
-        now = datetime.now(timezone.utc)
-    since = now - timedelta(minutes=window_minutes)
-    starts = []
-    for repo in allowlist:
-        try:
-            prs = _fetch_open_prs(repo, gh_bin=gh_bin, timeout=timeout)
-        except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError):
-            continue
-        for pr in prs:
-            sha = pr.get("headRefOid")
-            if not sha:
-                continue
-            try:
-                data = _gh_json(
-                    ["api", f"repos/{repo}/commits/{sha}/status", "--method", "GET"],
-                    gh_bin=gh_bin, timeout=timeout) or {}
-            except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError):
-                continue
-            for status in data.get("statuses", []):
-                if "coderabbit" not in (status.get("context") or "").lower():
-                    continue
-                if classify(status.get("description") or "") != "reviewed":
-                    continue
-                created_at = status.get("created_at")
-                if not created_at:
-                    continue
-                dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                if dt >= since:
-                    starts.append(dt)
-    return starts
-
-
-def _fetch_latest_wait_notice(repo, pr_number, gh_bin="gh", timeout=30, since_hours=6,
-                               min_updated_at=None):
-    """CodeRabbitの要約コメントから待ち時間の通知を読む(§2)。
-    見つからなければ(None, None)。
-
-    ★`since`で直近`since_hours`時間(または`min_updated_at`指定時はそれ以後)に絞る
-    (古いPRの全コメント履歴を毎周回無制限に取得しないため。10分毎に回る本ジョブでは
-    直近の通知で足りる)。
-
-    ★F1是正: `-f`付きのgh api呼び出しはghが既定でPOSTにする(gh api --help)。
-    `-f since=...`だけを渡すと、issueへのコメント作成のPOSTになってしまい
-    assert_allowed_bodyを通らぬ書き込み経路が生じていた。`--method GET`を
-    明示し、読み取り専用であることをコードで固定する。
-
-    ★F2是正: `min_updated_at`(通常はcommit statusのupdated_at)を渡せば、
-    それより古いコメントの通知は使わない(古い別件の通知を拾わない)。
-    """
-    since_dt = min_updated_at if min_updated_at is not None else (
-        datetime.now(timezone.utc) - timedelta(hours=since_hours))
-    since = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    comments = _gh_json(
-        ["api", f"repos/{repo}/issues/{pr_number}/comments",
-         "--method", "GET", "-f", f"since={since}", "--paginate"],
-        gh_bin=gh_bin, timeout=timeout,
-    ) or []
-    for comment in reversed(comments):
-        login = ((comment.get("user") or {}).get("login") or "")
-        if "coderabbit" not in login.lower():
-            continue
-        body = comment.get("body") or ""
-        wait = parse_wait(body)
-        if wait is None:
-            continue
-        updated_at = comment.get("updated_at") or comment.get("created_at")
-        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if updated_at else None
-        if min_updated_at is not None and dt is not None and dt < min_updated_at:
-            continue  # F2: statusのupdated_at以前の通知(古い別件)は使わない
-        return dt, wait
-    return None, None
-
-
 def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
         run_id=None, runner=None):
-    """1周回ぶんの判定・投げ直しを行う(§1〜§3・確定版§8〜§9)。
+    """1周回ぶんの判定・投げ直しを行う(§1〜§3・確定版§8〜§9・cmd_913§5)。
 
-    ★F1是正: PRごとの取得(status/通知)は個別にtry/exceptで囲み、1件の失敗で
+    ★F1是正: PRごとの取得(status)は個別にtry/exceptで囲み、1件の失敗で
     run()全体を落とさず次のPRへ進む。
     ★F3是正: 周回ごとに1行(runner・run_id・見たPR数)、PRごとに判定と理由の行を
     log_linesへ積む(呼び出し側がlog_pathへ書く)。
-    ★F4是正: query.enabled/query_policy/may_query/recent_review_startsを
-    実際にここから呼ぶ。
     ★F6是正: §3.3(直近10分にheadが変わったPRは待つ)・未知description・
     2時間status無しの警告をここで判定する。
+    ★cmd_913: rate_limited/pausedのPRごとにcr-decideを呼び、「決める」を
+    寄せる。台帳(同一head1回・毎時毎日の予算・checkの下限・最大3回・
+    停止スイッチ)は引き続きここで守る。cr-decideのcommandが投じてよい
+    2文言の外(approve・pay)なら、投じずに記録だけする(観察用)。
 
     戻り値: (更新後のstate, 実行ログの行のlist)
     """
     killed = is_killed(stop_path)
     allowlist = cfg.get("allowlist", [])
-    fallback_mode = cfg.get("fallback_mode", "window")
     budget = cfg.get("budget", {})
     query_cfg = cfg.get("query", {})
     query_enabled = bool(query_cfg.get("enabled", False))
-    query_policy = cfg.get("query_policy", "before_computed")
+    cr_decide_cfg = cfg.get("cr_decide", {})
+    cr_decide_enabled = bool(cr_decide_cfg.get("enabled", True))
+    clones_dir_raw = cr_decide_cfg.get("clones_dir") or os.path.join(
+        os.path.dirname(__file__), "..", "state", "cr_decide_clones")
+    # 相対path(config既定値の"state/cr_decide_clones"等)はproject rootから解く
+    # (launchd等、cwdがproject rootでない起動元でも壊れないため)。
+    clones_dir = clones_dir_raw if os.path.isabs(clones_dir_raw) else os.path.join(
+        os.path.dirname(__file__), "..", clones_dir_raw)
+    node_bin = cr_decide_cfg.get("node_bin", "node")
+    cr_decide_timeout = cr_decide_cfg.get("timeout", 30)
     log_lines = []
 
-    recent_review_starts = []
-    if fallback_mode == "window":
-        try:
-            recent_review_starts = _fetch_recent_review_starts(
-                allowlist, gh_bin=gh_bin, now=now)
-        except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError) as exc:
-            log_lines.append({"ts": now.isoformat(), "event": "recent_review_starts_error",
-                               "error": str(exc)})
+    tool_paths = None  # (script_path, policy_path) — 最初のcandidateで初期化する
+    repo_clone_dirs = {}
 
     prs = []
     pr_count = 0
@@ -485,58 +474,28 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
 
             category = classify(desc)
 
-            sources = {}
-            if updated_at is not None:
-                sources["notice_updated_at"] = updated_at
-                sources["notice_wait_minutes"] = parse_wait(desc)
-            if sources.get("notice_wait_minutes") is None and category in CANDIDATE_CATEGORIES:
-                try:
-                    notice_at, wait_minutes = _fetch_latest_wait_notice(
-                        repo, pr_number, gh_bin=gh_bin, min_updated_at=updated_at)
-                except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError) as exc:
-                    log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
-                                       "event": "notice_fetch_error", "error": str(exc)})
-                    notice_at, wait_minutes = None, None
-                if notice_at is not None:
-                    sources["notice_updated_at"] = notice_at
-                    sources["notice_wait_minutes"] = wait_minutes
-
-            # F4: 通知の待ち時間が読めぬ時、予備の問い合わせ(may_query)を条件つきで使う。
-            if category in CANDIDATE_CATEGORIES and sources.get("notice_wait_minutes") is None:
-                incident_key = (
-                    f"{repo}#{pr_number}#{sha}#"
-                    f"{updated_at.isoformat() if updated_at else 'na'}"
-                )
-                should_query = query_policy != "after_computed_miss"
-                if query_policy == "after_computed_miss":
-                    computed = next_attempt_at(
-                        {"recent_review_starts": recent_review_starts}, now, mode=fallback_mode)
-                    should_query = computed <= now  # 手段3の刻限を過ぎてなお読めぬ=外れ
-                if query_enabled and should_query and may_query(incident_key, state, now, budget):
-                    if not dry_run:
-                        try:
-                            post_comment(repo, pr_number, QUERY_BODY, gh_bin=gh_bin)
-                            state.setdefault("query_incidents", {})[incident_key] = now
-                            state.setdefault("query_log", []).append(now)
-                            log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
-                                               "event": "query_posted",
-                                               "incident_key": incident_key})
-                        except (subprocess.SubprocessError, subprocess.TimeoutExpired,
-                                ValueError) as exc:
-                            log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
-                                               "event": "query_post_failed", "error": str(exc)})
-                sources["recent_review_starts"] = recent_review_starts
-
-            next_at = next_attempt_at(sources, now, mode=fallback_mode)
             pr_entry = {
                 "repo": repo, "pr": pr_number, "head_sha": sha,
                 "description": desc, "draft": bool(raw.get("isDraft")),
                 "allowed": is_allowed_repo(repo, allowlist),
-                "next_attempt_at": next_at,
+                "next_attempt_at": now,
                 "status_updated_at": updated_at,
             }
-            if category in CANDIDATE_CATEGORIES:
-                # §3.3: 直近10分にheadが変わったPRは待つ。
+
+            # cmd_913 §5: 「見つける」で渡すのはrate_limited・paused状態の
+            # (draftでない・allowlist内の)PRのみ。skippedは渡さない(既存動作)。
+            is_cr_decide_target = (
+                category in CANDIDATE_CATEGORIES
+                and not pr_entry["draft"]
+                and pr_entry["allowed"]
+            )
+
+            if is_cr_decide_target:
+                # 既定は「cr-decideを呼べていない」= reviewを投じる候補にしない
+                # (安全側。呼べて初めてTrueへ倒す)。
+                pr_entry["cr_decide_recommends_review"] = False
+
+                # §3.3: 直近10分にheadが変わったPRは待つ(cr-decideを呼ぶ前の安価な足切り)。
                 try:
                     pr_entry["head_pushed_at"] = _fetch_commit_pushed_at(
                         repo, sha, gh_bin=gh_bin)
@@ -545,11 +504,98 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                     log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
                                        "event": "commit_fetch_error", "error": str(exc)})
                     pr_entry["head_pushed_at"] = None
+
+                recent_push = (
+                    pr_entry["head_pushed_at"] is not None
+                    and now - pr_entry["head_pushed_at"] < timedelta(minutes=10)
+                )
+
+                if not cr_decide_enabled:
+                    log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                       "event": "cr_decide_disabled"})
+                elif not recent_push:
+                    try:
+                        if tool_paths is None:
+                            tool_paths = _ensure_cr_decide_tool(
+                                cr_decide_cfg, clones_dir, gh_bin=gh_bin, timeout=cr_decide_timeout)
+                        script_path, policy_path = tool_paths
+                        if repo not in repo_clone_dirs:
+                            repo_clone_dirs[repo] = _ensure_clone(
+                                repo, clones_dir, gh_bin=gh_bin, timeout=cr_decide_timeout)
+                        clone_dir = repo_clone_dirs[repo]
+                    except (subprocess.SubprocessError, subprocess.TimeoutExpired,
+                            OSError) as exc:
+                        log_lines.append({"ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                           "event": "cr_decide_clone_error", "level": "warn",
+                                           "error": str(exc)})
+                        clone_dir = None
+
+                    if clone_dir is not None:
+                        decision = call_cr_decide(
+                            repo, pr_number, clone_dir, script_path, policy_path=policy_path,
+                            node_bin=node_bin, timeout=cr_decide_timeout)
+                        action = decision.get("action")
+                        command = decision.get("command")
+                        pr_entry["cr_decide_action"] = action
+
+                        if action == "error":
+                            log_lines.append({
+                                "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                "event": "cr_decide_error", "level": "warn",
+                                "reason": decision.get("reason"),
+                            })
+                        elif command and command not in CR_DECIDE_POSTABLE_COMMANDS:
+                            # approve・pay(--use-credits): 一段めは投じず記録のみ。
+                            log_lines.append({
+                                "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                "event": "cr_decide_observed_not_posted",
+                                "action": action, "command": command,
+                                "reason": decision.get("reason"),
+                            })
+                        elif command == "@coderabbitai rate limit":
+                            incident_key = f"{repo}#{pr_number}#{sha}#{action}"
+                            if (query_enabled and not killed
+                                    and may_query(incident_key, state, now, budget)):
+                                if not dry_run:
+                                    try:
+                                        post_comment(repo, pr_number, QUERY_BODY, gh_bin=gh_bin)
+                                        state.setdefault("query_incidents", {})[incident_key] = now
+                                        state.setdefault("query_log", []).append(now)
+                                        log_lines.append({
+                                            "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                            "event": "query_posted", "incident_key": incident_key,
+                                        })
+                                    except (subprocess.SubprocessError,
+                                            subprocess.TimeoutExpired, ValueError) as exc:
+                                        log_lines.append({
+                                            "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                            "event": "query_post_failed", "error": str(exc),
+                                        })
+                            else:
+                                log_lines.append({
+                                    "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                                    "event": "query_not_posted",
+                                    "reason": ("disabled" if not query_enabled
+                                               else "killed" if killed else "rate_limited"),
+                                })
+                        elif command == "@coderabbitai review":
+                            # 通常のTRIGGER_BODYルートへ乗せる(台帳はselect_targetsが守る)。
+                            pr_entry["cr_decide_recommends_review"] = True
+                        else:
+                            # wait / queue / in-progress / done / skip / wait-ready:
+                            # 投じるcommandは無い。retryAtがあれば次回のcr-decide呼び出しを
+                            # 間引くためnext_attempt_atへ反映する。
+                            retry_at = _parse_retry_at(decision.get("retryAt"))
+                            if retry_at is not None:
+                                pr_entry["next_attempt_at"] = retry_at
+
             prs.append(pr_entry)
 
             reason = _decision_reason(pr_entry, state, now)
             entry = {"ts": now.isoformat(), "repo": repo, "pr": pr_number,
                       "head_sha": sha, "category": category, "decision": reason}
+            if pr_entry.get("cr_decide_action"):
+                entry["cr_decide_action"] = pr_entry["cr_decide_action"]
             if category == "unknown":
                 entry["level"] = "warn"
             if reason == "stale_no_fresh_rate_limit":
@@ -598,6 +644,8 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
 def _write_status_summary(status_path, log_path, now, window_hours=24):
     """queue/reports/cr_retrigger_status.yaml: 直近window_hours時間の要約(確定版§4)。
     cmd_861の『朝に分かること』のため、家老が巡回でdashboardへ写せる形にする。
+    ★cmd_913: cr-decideのerror・observed_not_posted(approve/pay)の件数も加える
+    (観察のため・pay/approveの枝がいつ・何度出たかを見える形にする)。
     """
     import yaml  # PyYAML
 
@@ -626,11 +674,12 @@ def _write_status_summary(status_path, log_path, now, window_hours=24):
 
     triggered = [e for e in entries if e.get("event") == "triggered"]
     failed = [e for e in entries if e.get("event") in (
-        "post_failed", "status_fetch_error", "notice_fetch_error",
-        "pr_list_error", "query_post_failed", "commit_fetch_error",
-        "recent_review_starts_error")]
+        "post_failed", "status_fetch_error", "pr_list_error", "query_post_failed",
+        "commit_fetch_error", "cr_decide_clone_error")]
     warnings = [e for e in entries if e.get("level") == "warn"]
     cycles = [e for e in entries if e.get("event") == "cycle"]
+    cr_decide_errors = [e for e in entries if e.get("event") == "cr_decide_error"]
+    observed_not_posted = [e for e in entries if e.get("event") == "cr_decide_observed_not_posted"]
 
     summary = {
         "generated_at": now.isoformat(),
@@ -649,6 +698,13 @@ def _write_status_summary(status_path, log_path, now, window_hours=24):
         "warnings": [
             {"repo": e.get("repo"), "pr": e.get("pr"), "reason": e.get("reason"), "ts": e.get("ts")}
             for e in warnings
+        ],
+        "cr_decide_error_count": len(cr_decide_errors),
+        "cr_decide_observed_not_posted_count": len(observed_not_posted),
+        "cr_decide_observed_not_posted": [
+            {"repo": e.get("repo"), "pr": e.get("pr"), "action": e.get("action"),
+             "command": e.get("command"), "ts": e.get("ts")}
+            for e in observed_not_posted
         ],
     }
     os.makedirs(os.path.dirname(status_path), exist_ok=True)
