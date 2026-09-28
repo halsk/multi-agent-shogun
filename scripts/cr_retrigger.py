@@ -326,9 +326,100 @@ _PAY_WAIT_RE = re.compile(r"Wait ~(\d+) min")
 PAY_COST_FALLBACK_FILES = 4
 
 
-def _pay_incident_key(repo, pr_number, head_sha):
-    """このPR・このhead・このpay判定を一意に指す鍵(重複ntfy防止の台帳キー)。"""
-    return f"{repo}#{pr_number}#{head_sha}"
+def _pay_incident_key(repo, pr_number):
+    """このPRを一意に指す鍵(重複ntfy防止の台帳キー)。
+
+    ★cmd_913 P2是正: 旧版はrepo#pr#head(headごと)だったため、殿の返答を
+    待つ間にpushがあると同じPRへまた通知が飛んでいた。下命は『同じPRに
+    ついて何度も送るな(一度送ったら殿のご返答まで黙る)』のため、鍵から
+    headを外しrepo#prのみにする。headの変化はpay_ntfy_headsへ記録だけする
+    (返答時にどのheadへの裁可かを確かめられるように)。
+    """
+    return f"{repo}#{pr_number}"
+
+
+def _fetch_open_prs_with_files(repo, gh_bin="gh", timeout=30):
+    """repoのhalsk名義で開いているPR全件をfiles付きで返す(§P1: draftとの
+    ファイル重なり判定に使う)。"""
+    return _gh_json(
+        ["pr", "list", "--repo", repo, "--author", "halsk", "--state", "open",
+         "--json", "number,isDraft,files"],
+        gh_bin=gh_bin, timeout=timeout,
+    ) or []
+
+
+def _count_blocked_drafts(repo, pr_number, gh_bin="gh", timeout=30):
+    """このPRと同じファイルを触る、halskの開いているdraft PR番号のlistを返す。
+
+    ★cmd_913 P1是正: 『払わぬ間はこの1本のPRのマージが遅れるのみ』という
+    決め打ちの文言を廃し、実際に同じファイルを触るdraftが後続に控えていれば
+    それも待つ、という実況を書くため。gh呼出に失敗、またはこのPR自身が
+    一覧に見つからなければNoneを返す(呼び出し側が『確かめられず』へ倒す)。
+    """
+    try:
+        prs = _fetch_open_prs_with_files(repo, gh_bin=gh_bin, timeout=timeout)
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError):
+        return None
+    own_files = None
+    others = []
+    for raw in prs:
+        if raw.get("number") == pr_number:
+            own_files = {f["path"] for f in raw.get("files", [])}
+        elif raw.get("isDraft"):
+            others.append(raw)
+    if own_files is None:
+        return None
+    blocked = []
+    for raw in others:
+        other_files = {f["path"] for f in raw.get("files", [])}
+        if own_files & other_files:
+            blocked.append(raw["number"])
+    return sorted(blocked)
+
+
+def _fetch_main_ci_status(repo, gh_bin="gh", timeout=30):
+    """mainブランチ最新commitのCI状態を返す('success'|'failure'|'pending'|None)。
+
+    ★cmd_913 P1是正: 『mainは赤くならぬ』という決め打ちの文言を廃し、
+    実際のmainのCI結果を読んで書くため。gh呼出に失敗すればNoneを返す
+    (呼び出し側が『確かめられず』へ倒す)。
+    """
+    try:
+        data = _gh_json(
+            ["api", f"repos/{repo}/commits/main/status", "--method", "GET"],
+            gh_bin=gh_bin, timeout=timeout,
+        ) or {}
+    except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return data.get("state")
+
+
+def _describe_blocked_scope(repo, pr_number, gh_bin="gh", timeout=30):
+    """『止まる範囲』の文言を組み立てる(§P1是正)。
+
+    殿の下命は『実際のPRの状況を見て具体的に書け』。同じファイルを触る
+    draftの実本数と、mainの最新CI結果を実際に読んで書く(決め打ち禁止)。
+    """
+    blocked = _count_blocked_drafts(repo, pr_number, gh_bin=gh_bin, timeout=timeout)
+    if blocked is None:
+        drafts_desc = "これを待つdraftの本数は確かめられず(gh呼出失敗)"
+    elif blocked:
+        nums = "・".join(f"#{n}" for n in blocked)
+        drafts_desc = f"これを待つdraftが{len(blocked)}本({nums})"
+    else:
+        drafts_desc = "この1本だけが遅れる"
+
+    main_state = _fetch_main_ci_status(repo, gh_bin=gh_bin, timeout=timeout)
+    if main_state == "success":
+        main_desc = "mainの最新CIは緑"
+    elif main_state in ("failure", "error"):
+        main_desc = "mainの最新CIは赤(このPRとは別要因の可能性あり・要確認)"
+    elif main_state == "pending":
+        main_desc = "mainの最新CIは実行中"
+    else:
+        main_desc = "mainの最新CI状態は確かめられず(gh呼出失敗)"
+
+    return f"{drafts_desc}。{main_desc}。"
 
 
 def _estimate_pay_cost(decision):
@@ -348,33 +439,44 @@ def _estimate_pay_cost(decision):
     return file_count, round(file_count * 0.25, 2), wait_minutes, True
 
 
-def _build_pay_ntfy_body(pending_pays, now):
+def _build_pay_ntfy_body(pending_pays, now, gh_bin="gh", timeout=30):
     """複数PRのpay判定を1通のntfy本文へまとめる(鳴らしすぎ防止)。
 
-    PRごとにURL・見込み費え(推定なら明記)・払わぬ場合の待ち見込み・
-    その間止まる範囲(このPR1本の遅延のみ・mainは赤くならない)を書く。
+    PRごとに印(P1・P2…)・URL・見込み費え(推定なら明記)・払わぬ場合の
+    待ち見込み・止まる範囲(実際のdraft本数・mainの最新CI結果を読んで
+    決め打ちにせず書く・cmd_913 P1是正)を書く。末尾に返答書式を明記する
+    (cmd_913 P3是正)。
+
+    戻り値: (body: str, labels: dict[str, dict])。labelsは"P1"などの印→
+    {repo, pr, head_sha}の対応(呼び出し側が台帳へ残し、殿の返答が
+    どのPRを指すか将軍側で引けるようにする)。
     """
     lines = []
-    for p in pending_pays:
+    labels = {}
+    for i, p in enumerate(pending_pays, start=1):
+        label = f"P{i}"
+        labels[label] = {"repo": p["repo"], "pr": p["pr"], "head_sha": p["head_sha"]}
         file_count, cost_usd, wait_minutes, is_estimate = _estimate_pay_cost(p["decision"])
         est_mark = "(推定)" if is_estimate else ""
         wait_desc = f"約{wait_minutes}分" if wait_minutes is not None else "不明(cr-decideの答えから読み取れず)"
         url = f"https://github.com/{p['repo']}/pull/{p['pr']}"
+        scope_desc = _describe_blocked_scope(p["repo"], p["pr"], gh_bin=gh_bin, timeout=timeout)
         lines.append(
-            f"{url} : 見込みの費え 約${cost_usd:.2f}{est_mark}"
-            f"({file_count}ファイル×$0.25)。払わねば{wait_desc}待ち。"
-            f"払わぬ間はこの1本のPRのマージが遅れるのみ(mainは赤くならぬ——"
-            f"当家のマージ門はCodeRabbitレビュー完了を要すため、未マージの"
-            f"PRがmainへ影響することは無い)。"
+            f"[{label}] {url} : 見込みの費え 約${cost_usd:.2f}{est_mark}"
+            f"({file_count}ファイル×$0.25)。払わねば{wait_desc}待ち。{scope_desc}"
         )
     if len(lines) == 1:
-        header = "cr-decideがpay(課金レビュー)を勧めておる。実行はせず止まっておる。ご裁可(「はい」)を賜りたし。"
+        header = "cr-decideがpay(課金レビュー)を勧めておる。実行はせず止まっておる。ご裁可を賜りたし。"
     else:
         header = (
             f"cr-decideが{len(lines)}件のPRでpay(課金レビュー)を勧めておる。"
-            "実行はせず止まっておる。ご裁可(「はい」)を賜りたし(鳴らしすぎぬよう一通にまとめた)。"
+            "実行はせず止まっておる。ご裁可を賜りたし(鳴らしすぎぬよう一通にまとめた)。"
         )
-    return header + "\n" + "\n".join(lines)
+    footer = (
+        "全て払うなら「はい」、一部なら「はい P1」のように印で指定、"
+        "払わぬなら「いいえ」、とご返答賜りたし。"
+    )
+    return header + "\n" + "\n".join(lines) + "\n" + footer, labels
 
 
 def _post_pay_ntfy(body, ntfy_bin=None, cmd_id="cmd_913", timeout=30):
@@ -402,7 +504,7 @@ def _load_config(path):
 def _load_state(path):
     if not os.path.exists(path):
         return {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
-                 "pay_ntfy_sent": {}}
+                 "pay_ntfy_sent": {}, "pay_ntfy_heads": {}, "pay_ntfy_labels": {}}
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     raw["sent_log"] = [datetime.fromisoformat(t) for t in raw.get("sent_log", [])]
@@ -733,18 +835,25 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
         log_lines.append(entry)
 
     if pending_pays:
-        # cmd_913至急: pay判定は実行せず、殿へntfyして止まる。
-        # 同一PR・同一head(=同一判定)は殿の返答があるまで再送しない
-        # (台帳=state["pay_ntfy_sent"])。同一周回内の複数PRは一通にまとめる。
+        # cmd_913至急+P2是正: pay判定は実行せず、殿へntfyして止まる。
+        # 同一PR(=repo#pr。headの変化では再送しない)は殿の返答があるまで
+        # 再送しない(台帳=state["pay_ntfy_sent"])。headの変化は記録だけ
+        # state["pay_ntfy_heads"]へ残す。同一周回内の複数PRは一通にまとめる。
         pay_ntfy_sent = state.setdefault("pay_ntfy_sent", {})
+        pay_ntfy_heads = state.setdefault("pay_ntfy_heads", {})
         to_notify = []
         for p in pending_pays:
-            key = _pay_incident_key(p["repo"], p["pr"], p["head_sha"])
+            key = _pay_incident_key(p["repo"], p["pr"])
             if key in pay_ntfy_sent:
+                prev_head = pay_ntfy_heads.get(key)
+                head_changed = prev_head is not None and prev_head != p["head_sha"]
+                pay_ntfy_heads[key] = p["head_sha"]  # P2: 台帳に記録だけ(再送はしない)
                 log_lines.append({
                     "ts": now.isoformat(), "repo": p["repo"], "pr": p["pr"],
                     "event": "pay_ntfy_not_resent",
                     "reason": "already_notified_waiting_for_lord",
+                    "head_sha": p["head_sha"],
+                    "head_changed_since_notify": head_changed,
                 })
             else:
                 to_notify.append(p)
@@ -756,7 +865,8 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                     "prs": [f"{p['repo']}#{p['pr']}" for p in to_notify],
                 })
             else:
-                body = _build_pay_ntfy_body(to_notify, now)
+                body, labels = _build_pay_ntfy_body(
+                    to_notify, now, gh_bin=gh_bin, timeout=cr_decide_timeout)
                 try:
                     _post_pay_ntfy(body, ntfy_bin=ntfy_bin, timeout=ntfy_timeout)
                 except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError) as exc:
@@ -766,10 +876,16 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                     })
                 else:
                     for p in to_notify:
-                        pay_ntfy_sent[_pay_incident_key(p["repo"], p["pr"], p["head_sha"])] = now
+                        key = _pay_incident_key(p["repo"], p["pr"])
+                        pay_ntfy_sent[key] = now
+                        pay_ntfy_heads[key] = p["head_sha"]
+                    # P3: 印(P1・P2…)→repo#pr#headの対応を台帳へ残す
+                    # (将軍側が殿の返答からどのPRかを引けるように)。
+                    state.setdefault("pay_ntfy_labels", {}).update(labels)
                     log_lines.append({
                         "ts": now.isoformat(), "event": "pay_ntfy_sent",
                         "prs": [f"{p['repo']}#{p['pr']}" for p in to_notify],
+                        "labels": labels,
                     })
 
     log_lines.append({"ts": now.isoformat(), "event": "cycle", "runner": runner,

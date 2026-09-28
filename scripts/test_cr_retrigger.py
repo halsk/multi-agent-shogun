@@ -13,6 +13,7 @@ cr-decide経由の等価な試験へ置き換えた。
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -884,6 +885,8 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches[0], patches[1], patches[2], patches[3]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -912,6 +915,8 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment"), \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches[0], patches[1], patches[2], patches[3]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -935,6 +940,8 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment"), \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches[0], patches[1], patches[2], patches[3]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -959,6 +966,8 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment"), \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches1[0], patches1[1], patches1[2], patches1[3]:
             state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
         ntfy_mock1.assert_called_once()
@@ -970,6 +979,8 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
                                 return_value=("Review rate limited", now2)), \
              mock.patch.object(cr, "post_comment"), \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches2[0], patches2[1], patches2[2], patches2[3]:
             state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
 
@@ -993,6 +1004,8 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
              mock.patch.object(cr, "post_comment"), \
              mock.patch.object(cr, "_post_pay_ntfy",
                                 side_effect=OSError("ntfy.sh not found")) as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches[0], patches[1], patches[2], patches[3]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -1027,6 +1040,8 @@ class Test29MultiplePayDecisionsBatchedIntoOneNtfy(unittest.TestCase):
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
              patches[0], patches[1], patches[2], patches[3]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -1038,6 +1053,226 @@ class Test29MultiplePayDecisionsBatchedIntoOneNtfy(unittest.TestCase):
         sent_lines = [e for e in log_lines if e.get("event") == "pay_ntfy_sent"]
         self.assertEqual(len(sent_lines), 1)
         self.assertEqual(len(sent_lines[0]["prs"]), 2)
+
+
+# ── cmd_913至急続き: PR#175軍師指摘P1〜P3是正(queue/reports/gunshi_report_cmd913_pay.yaml)。
+#    RED対照: 本節追加前は、_pay_incident_keyがheadを含み(P2)、
+#    _build_pay_ntfy_bodyが止まる範囲を決め打ちで書き(P1)、複数PRの各行に
+#    印が付かず返答書式も無かった(P3)。以下は是正後の期待を固定する。
+
+class Test30P1BlockedScopeReflectsActualState(unittest.TestCase):
+    """RED→GREEN: 『止まる範囲』の文言は決め打ちでなく、実際に同じファイルを
+    触るdraft本数・mainの最新CI結果を読んで書く(cmd_913 P1是正)。"""
+
+    def test_count_blocked_drafts_finds_overlapping_files(self):
+        def fake_list(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "isDraft": False, "files": [{"path": "a.py"}, {"path": "b.py"}]},
+                {"number": 2, "isDraft": True, "files": [{"path": "b.py"}]},
+                {"number": 3, "isDraft": True, "files": [{"path": "c.py"}]},
+            ]
+        with mock.patch.object(cr, "_fetch_open_prs_with_files", side_effect=fake_list):
+            blocked = cr._count_blocked_drafts("geolonia/geonicdb-console", 1)
+        self.assertEqual(blocked, [2])
+
+    def test_count_blocked_drafts_empty_when_no_overlap(self):
+        def fake_list(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "isDraft": False, "files": [{"path": "a.py"}]},
+                {"number": 2, "isDraft": True, "files": [{"path": "c.py"}]},
+            ]
+        with mock.patch.object(cr, "_fetch_open_prs_with_files", side_effect=fake_list):
+            blocked = cr._count_blocked_drafts("geolonia/geonicdb-console", 1)
+        self.assertEqual(blocked, [])
+
+    def test_count_blocked_drafts_none_on_gh_failure(self):
+        with mock.patch.object(
+                cr, "_fetch_open_prs_with_files",
+                side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30)):
+            blocked = cr._count_blocked_drafts("geolonia/geonicdb-console", 1)
+        self.assertIsNone(blocked)
+
+    def test_main_ci_status_reads_state_field(self):
+        with mock.patch.object(cr, "_gh_json", return_value={"state": "failure"}):
+            self.assertEqual(cr._fetch_main_ci_status("geolonia/geonicdb-console"), "failure")
+
+    def test_describe_blocked_scope_reflects_blocked_drafts_and_red_main(self):
+        with mock.patch.object(cr, "_count_blocked_drafts", return_value=[2, 3]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="failure"):
+            desc = cr._describe_blocked_scope("geolonia/geonicdb-console", 1)
+        self.assertIn("2本", desc)
+        self.assertIn("#2", desc)
+        self.assertIn("#3", desc)
+        self.assertIn("赤", desc)
+
+    def test_describe_blocked_scope_single_pr_only_when_no_overlap(self):
+        with mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"):
+            desc = cr._describe_blocked_scope("geolonia/geonicdb-console", 1)
+        self.assertIn("この1本だけが遅れる", desc)
+        self.assertIn("緑", desc)
+
+    def test_pay_ntfy_body_reflects_actual_state_not_hardcoded(self):
+        """RED対照: 旧版は常に固定文『払わぬ間はこの1本のPRのマージが遅れる
+        のみ(mainは赤くならぬ…)』を書いていた(PRの状況を読んでいなかった)。
+        是正後は、モックの戻り値を変えれば本文の中身も変わることを示す。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[7, 9]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches[0], patches[1], patches[2], patches[3]:
+            cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("2本", body)
+        self.assertIn("#7", body)
+        self.assertIn("#9", body)
+        self.assertIn("mainの最新CIは緑", body)
+        self.assertNotIn("mainは赤くならぬ", body)  # 旧・決め打ち文言が消えたことを確認
+
+
+class Test31P2KeyIsRepoPrNotHead(unittest.TestCase):
+    """RED→GREEN: 重複防止の鍵をrepo#prへ変更(cmd_913 P2是正)。殿の返答を
+    待つ間にheadがpushで変わっても再送しない。headの変化は台帳
+    (state['pay_ntfy_heads'])へ記録だけする。"""
+
+    def test_head_change_after_notify_does_not_resend_but_is_recorded(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs_head1(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches1 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs_head1), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches1[0], patches1[1], patches1[2], patches1[3]:
+            state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+        ntfy_mock1.assert_called_once()
+        self.assertEqual(state["pay_ntfy_heads"]["geolonia/geonicdb-console#1"], "sha1")
+
+        # push発生: headが変わる(sha1→sha2)。殿はまだ答えていない。
+        def fake_open_prs_head2(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha2", "isDraft": False, "createdAt": None}]
+
+        now2 = NOW + timedelta(minutes=15)
+        decisions2 = {1: _pay_decision()}
+        patches2 = _patch_cr_decide_wiring(decisions2)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs_head2), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches2[0], patches2[1], patches2[2], patches2[3]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        # P2是正の核心: headが変わっても再送しない。
+        ntfy_mock2.assert_not_called()
+        # だが台帳のheadは新しい値へ更新される(記録だけ・返答時にどのheadへの
+        # 裁可かを確かめられるように)。
+        self.assertEqual(state["pay_ntfy_heads"]["geolonia/geonicdb-console#1"], "sha2")
+        not_resent = [e for e in log_lines2 if e.get("event") == "pay_ntfy_not_resent"]
+        self.assertEqual(len(not_resent), 1)
+        self.assertTrue(not_resent[0]["head_changed_since_notify"])
+        self.assertEqual(not_resent[0]["head_sha"], "sha2")
+
+    def test_key_function_no_longer_takes_head_sha(self):
+        # 旧版(repo#pr#head)ならheadが変わった瞬間に鍵自体が変わり、
+        # 台帳の "already notified" 判定に引っかからず再送されてしまっていた。
+        # 是正後は署名からheadを外し、repo#prのみで一意に定まることを確認する。
+        import inspect
+        params = list(inspect.signature(cr._pay_incident_key).parameters)
+        self.assertEqual(params, ["repo", "pr_number"])
+        self.assertEqual(cr._pay_incident_key("geolonia/geonicdb-console", 1),
+                          "geolonia/geonicdb-console#1")
+
+
+class Test32P3LabelsAndReplyFormatForMultiplePrs(unittest.TestCase):
+    """RED→GREEN: 複数PR一通化時、各行に印(P1・P2…)が付き、返答書式が
+    本文末尾に明記される(cmd_913 P3是正)。印→repo#pr#headの対応が
+    台帳(state['pay_ntfy_labels'])に残る。"""
+
+    def test_multiple_prs_get_labels_and_reply_format_footer(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        decisions = {
+            1: _pay_decision("Wait ~90 min is too long; 2 file(s) cost about $0.50."),
+            2: _pay_decision("Wait ~120 min is too long; 3 file(s) cost about $0.75."),
+        }
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("[P1]", body)
+        self.assertIn("[P2]", body)
+        self.assertIn("はい P1", body)
+        self.assertIn("いいえ", body)
+
+        sent_lines = [e for e in log_lines if e.get("event") == "pay_ntfy_sent"]
+        self.assertEqual(len(sent_lines), 1)
+        self.assertEqual(sent_lines[0]["labels"]["P1"],
+                          {"repo": "geolonia/geonicdb-console", "pr": 1, "head_sha": "sha1"})
+        self.assertEqual(sent_lines[0]["labels"]["P2"],
+                          {"repo": "geolonia/geonicdb-console", "pr": 2, "head_sha": "sha2"})
+        self.assertEqual(state["pay_ntfy_labels"]["P1"]["pr"], 1)
+        self.assertEqual(state["pay_ntfy_labels"]["P2"]["pr"], 2)
+
+    def test_single_pr_still_gets_label_and_reply_format(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
+             mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
+             patches[0], patches[1], patches[2], patches[3]:
+            cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("[P1]", body)
+        self.assertIn("全て払うなら「はい」", body)
 
 
 if __name__ == "__main__":
