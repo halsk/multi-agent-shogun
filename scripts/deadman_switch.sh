@@ -215,24 +215,60 @@ write_back_status() {
   if [ "$cur_mtime" != "$expected_mtime" ]; then
     rc=1  # 家老の書き換え等と競合(読取後にファイルが変わった)
   else
-    local tmp
+    local tmp backup
     tmp=$(mktemp "${file}.XXXXXX" 2>/dev/null)
-    if [ -z "$tmp" ]; then
+    backup=$(mktemp "${file}.orig.XXXXXX" 2>/dev/null)
+    if [ -z "$tmp" ] || [ -z "$backup" ]; then
       rc=1
-    elif awk -v new="$new_status" '
-        BEGIN { done = 0 }
-        !done && /^[[:space:]]*status:[[:space:]]*/ {
-          match($0, /^[[:space:]]*/)
-          printf "%sstatus: %s\n", substr($0, RSTART, RLENGTH), new
-          done = 1
-          next
-        }
-        { print }
-      ' "$file" > "$tmp"; then
-      mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }
+      rm -f "$tmp" "$backup" 2>/dev/null
+    elif ! cp "$file" "$backup" 2>/dev/null; then
+      rc=1
+      rm -f "$tmp" "$backup" 2>/dev/null
     else
-      rm -f "$tmp"
-      rc=1
+      # ★F2是正(cmd914 T2続き・軍師QC): task:直下の字下げ(2つの空白)だけの
+      # status:行に限る。従来は`^[[:space:]]*status:`と字下げ不問だったため、
+      # context/what_to_doのblock文字列中の「status: …」という言及(家老の
+      # 説明文によく出る)が本物のstatus:行より前に現れると、そちらを誤って
+      # 書き換え、本物のtask.statusは残ったままになっていた。
+      if awk -v new="$new_status" '
+          BEGIN { done = 0 }
+          !done && /^  status:[[:space:]]*/ {
+            printf "  status: %s\n", new
+            done = 1
+            next
+          }
+          { print }
+        ' "$file" > "$tmp"; then
+        if mv "$tmp" "$file"; then
+          # ★書き戻した後にyamlで読み直し、task.statusが新しい値になった
+          # ことを確かめる(awkのテキスト一致だけでは、想定と違う行を書き
+          # 換えてしまった場合に気づけない)。一致しなければ元へ戻す。
+          if "$DEADMAN_PYTHON_BIN" -c '
+import sys
+import yaml
+path, expected = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+except Exception:
+    sys.exit(1)
+task = doc.get("task") if isinstance(doc, dict) else None
+sys.exit(0 if isinstance(task, dict) and task.get("status") == expected else 1)
+' "$file" "$new_status" 2>/dev/null; then
+            rc=0
+          else
+            cp "$backup" "$file" 2>/dev/null
+            rc=1
+          fi
+        else
+          rm -f "$tmp"
+          rc=1
+        fi
+      else
+        rm -f "$tmp"
+        rc=1
+      fi
+      rm -f "$backup" 2>/dev/null
     fi
   fi
 
@@ -308,7 +344,12 @@ for f in "$TASKS_DIR"/*.yaml; do
   # 失敗してBSD形式(-f %m)へフォールバックする順序にする(CI ubuntu-latestで実測)。
   m=$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null) || continue
   [ -z "$m" ] && continue
-  status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
+  # ★F2是正(cmd914 T2続き・軍師QC): task:直下の字下げ(2つの空白)だけの
+  # status:行に限る。従来は字下げ不問(`^\s*status:`)だったため、context/
+  # what_to_doのblock文字列中の「status: …」という言及(家老の説明文に
+  # よく出る)が本物のstatus:行より前に現れると、そちらを誤って読んでいた
+  # (write_back_status()と同じ壊れ方が判定の入口にもあった)。
+  status=$(grep -E '^  status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
   # cmd_914【一】T2(軍師設計§3.2): status=doneは手が空いただけで止まってはいない
   # (次割当待ち)。blockedと同じくstalledとして報せない。
@@ -329,7 +370,7 @@ for f in "$TASKS_DIR"/*.yaml; do
     read -r r_verdict r_rest <<< "$reconcile_out"
     if [ "$reconcile_rc" -eq 0 ] && [ "$r_verdict" = "CLOSE" ] && [ -n "$r_rest" ]; then
       new_status="$r_rest"
-      task_id=$(grep -E '^\s*task_id:\s*' "$f" | head -1 | sed 's/.*task_id:[[:space:]]*//' | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
+      task_id=$(grep -E '^  task_id:\s*' "$f" | head -1 | sed 's/.*task_id:[[:space:]]*//' | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
       if write_back_status "$f" "$new_status" "$m"; then
         if [ "$new_status" = "blocked" ]; then
           # ★条件6(軍師設計§4): blockedは「閉じた」と表現しない

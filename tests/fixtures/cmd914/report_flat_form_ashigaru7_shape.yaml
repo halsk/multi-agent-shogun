@@ -1,0 +1,24 @@
+# F1是正(cmd914 T2続き)用fixture。queue/reports/ashigaru7_report.yamlの
+# 実物の形(worker_id・task_id…を文書の一番上に直接並べる「平らな形」・
+# report:で包まない)を模したもの。実物にはskill_candidateが無く
+# skill_candidate_inheritedという別名の欄しか無いため、正典
+# (instructions/ashigaru.md Report Format)どおりskill_candidateを
+# 文書の一番上に追加した点のみ実物と異なる(正典が要求する必須欄を
+# 満たすため・実物が必須欄を欠いていること自体は本fixtureの対象外)。
+worker_id: ashigaru7
+task_id: subtask_test_f1_flat_form
+parent_cmd: cmd_906
+redo_of: subtask_test_f1_flat_form_prev
+timestamp: "2026-09-28T15:50:00"
+status: done
+result:
+  pr: https://github.com/geolonia/geonicdb-console/pull/236
+  head: 7546fc0f8fafb5ca2642fc47aa7f042ad07525bd
+  summary: |
+    coverage数値行のみをorigin/mainの値へ戻した。GIT_DIR隔離関連の
+    差分には一切触れていない。
+  verified:
+    - "git diff origin/main -- README.md README.en.md: 空"
+    - "pnpm typecheck: エラー0"
+skill_candidate:
+  found: false

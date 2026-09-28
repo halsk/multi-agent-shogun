@@ -21,44 +21,36 @@ import datetime
 import os
 import sys
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
 try:
     import yaml
 except ImportError:
     print("STALLED PyYAML未導入")
     sys.exit(0)
 
-# ★report: マッピングの直下にある欄(実物のqueue/reports/*.yamlで実証済み)。
-# skill_candidate・files_modifiedはreport:と同じ階層(文書のトップレベル)に
-# 並ぶ兄弟キーであり、report:マッピングの中には無い(実物で確認済み・
-# queue/reports/ashigaru1_report.yaml参照)。
-REQUIRED_REPORT_FIELDS = [
-    "worker_id", "task_id", "parent_cmd", "status", "timestamp", "result",
-]
-# ★文書のトップレベルに存在すべき欄(report:と兄弟)。
-REQUIRED_TOP_LEVEL_FIELDS = ["skill_candidate"]
+# ★F1是正(cmd914 T2続き・軍師cross_pr_note 20:25): 平らな形(worker_id・
+# task_id…を文書の一番上に直接並べる。正典=instructions/ashigaru.md Report
+# Format・inbox skill Step 10)と、report:で包んだ形の両方を受ける判定は、
+# T1(PR#176)のscripts/finish_task_validate.pyに既にある_top_segment()を
+# そのまま再利用する(自前で再実装すると検める規則が二か所に分かれ、
+# また食い違いが生まれるため)。重複キー検知(_StrictSafeLoader)も同様に
+# 再利用し、本ファイル独自のDupKeyLoaderは廃止した。
+from finish_task_validate import (  # noqa: E402
+    REQUIRED_FIELDS as REQUIRED_REPORT_FIELDS,
+    _DuplicateKeyError,
+    _StrictSafeLoader,
+    _top_segment,
+)
+
 VALID_STATUSES = {"done", "blocked", "failed"}
 
 
 def fail(reason: str) -> None:
     print(f"STALLED {reason}")
     sys.exit(0)
-
-
-class _DupKeyLoader(yaml.SafeLoader):
-    """重複キーがあれば例外を投げる SafeLoader(既定のPyYAMLは後勝ちで黙殺する)。"""
-
-
-def _no_dup_mapping(loader, node, deep=False):
-    mapping = {}
-    for key_node, value_node in node.value:
-        key = loader.construct_object(key_node, deep=deep)
-        if key in mapping:
-            raise ValueError(f"重複キー:{key}")
-        mapping[key] = loader.construct_object(value_node, deep=deep)
-    return mapping
-
-
-_DupKeyLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _no_dup_mapping)
 
 
 def parse_ts(raw):
@@ -102,30 +94,28 @@ def main() -> None:
     if not task_id or task_ts is None:
         fail("taskにtask_id/timestamp欠落")
 
-    # ── report YAML: 複数文書チェック(条件4の一部) ──
+    # ── report YAML: 単一文書性・重複キー(条件4の一部)を_StrictSafeLoaderで
+    # 一度に検める(finish_task_validate.pyと同じLoaderを再利用) ──
     try:
         with open(report_path, encoding="utf-8") as f:
             report_raw = f.read()
-        report_docs = [d for d in yaml.safe_load_all(report_raw) if d is not None]
-    except Exception as e:  # noqa: BLE001
+        report_docs = [d for d in yaml.load_all(report_raw, Loader=_StrictSafeLoader) if d is not None]
+    except _DuplicateKeyError as e:
+        fail(f"report重複キー:{e}")
+    except Exception as e:  # noqa: BLE001 — fail-safe: 何であれSTALLEDへ倒す
         fail(f"report読込失敗:{e}")
     if len(report_docs) != 1:
         fail("reportが単一文書でない(複数文書)")
 
-    # ── 重複キーチェック(条件4の一部) ──
-    try:
-        list(yaml.load_all(report_raw, Loader=_DupKeyLoader))
-    except Exception as e:  # noqa: BLE001
-        fail(f"report重複キー:{e}")
-
-    top_doc = report_docs[0]
-    report = top_doc.get("report")
-    if not isinstance(report, dict):
+    # ★F1是正(cmd914 T2続き・軍師cross_pr_note): _top_segment()が平らな形
+    # (文書の一番上にtask_idがある)と包む形(report:直下)の両方を吸収し、
+    # skill_candidateのような兄弟キーも一緒に拾う。
+    report = _top_segment(report_docs[0])
+    if report is None:
         fail("report欄なし")
 
-    # ── 必須欄(条件4の一部): report:直下 + 文書トップレベル(skill_candidate) ──
+    # ── 必須欄(条件4の一部) ──
     missing = [k for k in REQUIRED_REPORT_FIELDS if k not in report]
-    missing += [k for k in REQUIRED_TOP_LEVEL_FIELDS if k not in top_doc]
     if missing:
         fail(f"report必須欄欠落:{','.join(missing)}")
 

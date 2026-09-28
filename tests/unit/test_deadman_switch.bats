@@ -759,3 +759,93 @@ YAML
   run grep -c "報告ファイルなし" "$KARO_CALLS_LOG"
   [ "$output" -ge 1 ]
 }
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_914【一】T2続き: 軍師QC是正(F1・F2)
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-034【F1・RED→GREEN】報告が「平らな形」(report:で包まない・
+#   worker_id/task_id等を文書の一番上に直接並べる。正典=instructions/
+#   ashigaru.md Report Format・inbox skill Step 10)であってもCLOSEできる。
+#   実測: 今のqueue/reports/ashigaru{2,6,7}_report.yamlはこの形であり、
+#   report:で包む形しか受けなかった是正前は「report欄なし」でSTALLEDの
+#   ままだった(2026-09-28 20:00頃、軍師QCで手動確認済み)。本fixtureは
+#   ashigaru7_report.yamlの実物の形を模したもの(tests/fixtures/cmd914/
+#   report_flat_form_ashigaru7_shape.yaml参照)──
+@test "T-DM-034: 報告が平らな形(ashigaru7_report.yaml実物型)でもCLOSEになる—是正前はSTALLEDのままだった" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  task_id: subtask_test_f1_flat_form
+  status: assigned
+  timestamp: "2026-09-28T15:40:00"
+YAML
+  touch -t 202609281540.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cp "${PROJECT_ROOT}/tests/fixtures/cmd914/report_flat_form_ashigaru7_shape.yaml" "$TMP_DIR/reports/ashigaru1_report.yaml"
+  touch -t 202609281550.00 "$TMP_DIR/reports/ashigaru1_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-28 19:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # task YAMLのstatusがdoneへ書き戻されている(平らな形の報告でCLOSEした証拠)
+  run grep -E '^  status: done$' "$TMP_DIR/tasks/ashigaru1.yaml"
+  [ "$status" -eq 0 ]
+
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "放置中" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+  run grep -c "report欄なし" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+}
+
+# ── T-DM-035【F2・RED→GREEN】task:直下の字下げ(2つの空白)だけのstatus:行を
+#   書き換え、context等のblock文字列中の「status: …」という言及(家老の
+#   説明文によく出る)は書き換わらない。是正前(`^[[:space:]]*status:`と
+#   字下げ不問)ならcontextブロック内の「    status: draft (…)」という行を
+#   誤って書き換え、本物のtask.statusは assigned のまま残った(2026-09-28
+#   軍師QC・手動再現で確認済み)。書き戻し後にyamlで読み直しtask.statusが
+#   新しい値になったことを確かめる仕組み自体もここで検証する ──
+@test "T-DM-035: block文中のstatus:言及は書き換わらず、task:直下の本物のstatus:のみ書き換わる—是正前は誤って書き換わった" {
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  task_id: subtask_test_f2_block_status
+  parent_cmd: cmd_x
+  context: |
+    前回の是正メモ:
+    status: draft (これは足軽が書き残した言及であり、本物のtask.statusではない)
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+  cat > "$TMP_DIR/reports/ashigaru2_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru2
+  task_id: subtask_test_f2_block_status
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru2_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # 本物のtask.status(task:直下・2space)がdoneへ書き換わっている
+  run grep -E '^  status: done$' "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$status" -eq 0 ]
+
+  # contextブロック内の「status: draft」という言及は一切変わっていない
+  run grep -c "status: draft (これは足軽が書き残した言及であり、本物のtask.statusではない)" "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$output" -eq 1 ]
+
+  # 「  status: draft」(2space+status:draft)は存在しない(書き換わっていたら残るはずの旧誤爆の跡が無い)
+  run grep -c '^  status: draft' "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$output" -eq 0 ]
+
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
