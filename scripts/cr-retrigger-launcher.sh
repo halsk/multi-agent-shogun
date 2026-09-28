@@ -22,7 +22,40 @@ set -euo pipefail
 set +x  # secret trace禁止
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 GET_SECRET="${SCRIPT_DIR}/get-secret.sh"
+
+# §追補(cmd908 T2実施中に発覚): launchdのPATHが解決するpython3にPyYAMLが
+# 無く即死した(ModuleNotFoundError)。gh/timeoutの確認と同じ考え方で、
+# PyYAMLをimportできるpython3を実際に確かめてから使う。
+# CR_RETRIGGER_PYTHON3_CANDIDATES(コロン区切り)で候補列を丸ごと差し替え
+# 可能(テスト専用。本番では未設定のまま既定列を使う)。
+_select_python3() {
+  local candidates=()
+  if [[ -n "${CR_RETRIGGER_PYTHON3_CANDIDATES:-}" ]]; then
+    local IFS=':'
+    read -r -a candidates <<< "$CR_RETRIGGER_PYTHON3_CANDIDATES"
+  else
+    candidates=(
+      "${PROJECT_ROOT}/.venv/bin/python3"
+      "python3"
+      "/opt/homebrew/bin/python3"
+      "/usr/local/bin/python3"
+      "/usr/bin/python3"
+      "${HOME}/.pyenv/shims/python3"
+    )
+  fi
+
+  local c
+  for c in "${candidates[@]}"; do
+    [[ -z "$c" ]] && continue
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import yaml" >/dev/null 2>&1; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
 
 # §10.3: launchd から届いた ping だと確かめる目印。
 RUN_ID="$(TZ=UTC date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -59,12 +92,18 @@ if ! command -v gh >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
   exit 1
 fi
 
+PYTHON3_BIN="$(_select_python3)" || {
+  echo "[cr-retrigger-launcher] ERROR: PyYAMLをimportできるpython3が見つからない" >&2
+  _hc_ping "$HC_PING_URL_CR_RETRIGGER" "/fail"
+  exit 1
+}
+
 export CR_RETRIGGER_RUNNER="${CR_RETRIGGER_RUNNER:-launchd}"
 export HC_PING_URL_CR_RETRIGGER
 export CR_RETRIGGER_RUN_ID="$RUN_ID"
 
 set +e
-OUTPUT="$(timeout 300 python3 "${SCRIPT_DIR}/cr_retrigger.py" \
+OUTPUT="$(timeout 300 "$PYTHON3_BIN" "${SCRIPT_DIR}/cr_retrigger.py" \
   --config "${SCRIPT_DIR}/../config/cr_retrigger.yaml" \
   --state "${SCRIPT_DIR}/../state/cr_retrigger.json" \
   --stop-file "${SCRIPT_DIR}/../logs/cr_retrigger.stop" 2>&1)"
