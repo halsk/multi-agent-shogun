@@ -36,7 +36,14 @@ STUB
   export FINISH_TASK_INBOX_WRITE_SCRIPT="$INBOX_WRITE_STUB"
   export FINISH_TASK_LOG_FILE="$TMP_DIR/finish_task.log"
   export FINISH_TASK_LOCK_WAIT_SEC=1
-  export FINISH_TASK_PYTHON3="python3"
+  # ★FINISH_TASK_PYTHON3は意図的に未設定のままにする(cmd_914 T1続き・
+  # macOS CI実測で発覚): 「python3」という裸のコマンド名はPyYAMLを
+  # 持たない環境がある(GitHub Actions macos-latestランナーのbare
+  # python3・system pythonにはPyYAML未インストール)。finish_task.sh
+  # 自身の_select_python3()による実選択(候補列から実際にimport yaml
+  # できるものを選ぶ)をそのまま試験対象にすることで、この種の環境差を
+  # 検知できるようにする。
+  unset FINISH_TASK_PYTHON3
 }
 
 teardown() {
@@ -343,6 +350,45 @@ YAML
   run bash "$SCRIPT" --status done
   [ "$status" -ne 0 ]
   [[ "$output" == *"report_to"* ]]
+  run grep -c "status: assigned" "$TMP_DIR/tasks/ashigaru9.yaml"
+  [ "$output" -eq 1 ]
+  [ ! -s "$INBOX_CALLS_LOG" ]
+}
+
+# ── T-FT-013【macOS CI実測で発覚した回帰の再発防止】PyYAMLをimportできる
+#   python3候補が一つも無ければ、finish_task.sh自体が明確な理由付きで
+#   非0で終わる(曖昧なREJECTEDに化けさせない)。
+#   ★背景: PR#176初回push時、macos-latest CIでT-FT-001等5件が
+#   本来成功すべき場面で拒否扱いになりFAILした。真因はbare「python3」が
+#   PyYAMLを持たない環境があること(GitHub Actions macos-latestランナー
+#   のsystem python3にはPyYAML未インストール・.venv/bin/python3にのみ
+#   入っている)。finish_task_validate.pyがImportErrorで例外を投げ非0で
+#   終わるため、finish_task.shはこれを「report不正」と区別できず
+#   REJECTEDとして扱っていた——「見つからない」と「壊れている」が
+#   区別されない状態。_select_python3()導入により、PyYAMLを持つ
+#   python3を実際に確かめてから選ぶよう是正した(cr-retrigger-launcher.sh
+#   の同型是正に倣う)。本テストは「候補が一つも見つからない」場合に
+#   限定して、その旨が明示的な理由(python3)としてエラー出力に現れる
+#   ことを固定する ──
+@test "T-FT-013: PyYAML持ちのpython3候補が一つも無ければ理由を明示して非0で終わる" {
+  _write_task assigned
+  touch -t 202609281950.00 "$TMP_DIR/tasks/ashigaru9.yaml"
+  _write_report "$(_compliant_report done)"
+  touch -t 202609282000.00 "$TMP_DIR/reports/ashigaru9_report.yaml"
+
+  # PyYAMLをimportできないpython3を模す偽バイナリ(実machineのpython3の
+  # 有無に依らせない)
+  local fake_python="$TMP_DIR/fake_python3_no_yaml.sh"
+  cat > "$fake_python" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$fake_python"
+  export FINISH_TASK_PYTHON3_CANDIDATES="$fake_python"
+
+  run bash "$SCRIPT" --status done
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"python3"* ]]
   run grep -c "status: assigned" "$TMP_DIR/tasks/ashigaru9.yaml"
   [ "$output" -eq 1 ]
   [ ! -s "$INBOX_CALLS_LOG" ]

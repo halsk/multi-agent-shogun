@@ -22,6 +22,38 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/task_yaml_lock.sh
 source "$SCRIPT_DIR/scripts/lib/task_yaml_lock.sh"
 
+# ★PyYAMLをimportできるpython3を実際に確かめてから選ぶ(cmd908 T2・
+# scripts/cr-retrigger-launcher.shの_select_python3と同じ教訓の適用)。
+# 「python3」という裸のコマンド名は環境によってPyYAMLを持たない場合が
+# ある(実測: GitHub Actions macos-latestランナーのbare python3はPyYAML
+# 無し・CI「Setup Python venv with PyYAML」ステップが用意する.venv/bin/
+# python3にのみ入っている)。候補列から実際にimport yamlできるものを選ぶ。
+_select_python3() {
+  local candidates=()
+  if [[ -n "${FINISH_TASK_PYTHON3_CANDIDATES:-}" ]]; then
+    local IFS=':'
+    read -r -a candidates <<< "$FINISH_TASK_PYTHON3_CANDIDATES"
+  else
+    candidates=(
+      "${SCRIPT_DIR}/.venv/bin/python3"
+      "python3"
+      "/opt/homebrew/bin/python3"
+      "/usr/local/bin/python3"
+      "/usr/bin/python3"
+      "${HOME}/.pyenv/shims/python3"
+    )
+  fi
+  local c
+  for c in "${candidates[@]}"; do
+    [[ -z "$c" ]] && continue
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "import yaml" >/dev/null 2>&1; then
+      printf '%s\n' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
 STATUS="done"
 MESSAGE=""
 while [ $# -gt 0 ]; do
@@ -63,7 +95,14 @@ TASKS_DIR="${FINISH_TASK_TASKS_DIR:-$SCRIPT_DIR/queue/tasks}"
 REPORTS_DIR="${FINISH_TASK_REPORTS_DIR:-$SCRIPT_DIR/queue/reports}"
 TASK_FILE="$TASKS_DIR/${AGENT_ID}.yaml"
 REPORT_FILE="$REPORTS_DIR/${AGENT_ID}_report.yaml"
-PYTHON3_BIN="${FINISH_TASK_PYTHON3:-python3}"
+if [[ -n "${FINISH_TASK_PYTHON3:-}" ]]; then
+  PYTHON3_BIN="$FINISH_TASK_PYTHON3"
+else
+  PYTHON3_BIN="$(_select_python3)" || {
+    echo "[finish_task] ERROR: PyYAMLをimportできるpython3が見つからない" >&2
+    exit 1
+  }
+fi
 VALIDATOR="${FINISH_TASK_VALIDATOR:-$SCRIPT_DIR/scripts/finish_task_validate.py}"
 INBOX_WRITE_SCRIPT="${FINISH_TASK_INBOX_WRITE_SCRIPT:-$SCRIPT_DIR/scripts/inbox_write.sh}"
 LOG_FILE="${FINISH_TASK_LOG_FILE:-$SCRIPT_DIR/logs/finish_task.log}"
