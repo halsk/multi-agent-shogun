@@ -857,5 +857,188 @@ class Test26CrDecideToolPinnedShaNotAutoTracked(unittest.TestCase):
         self.assertFalse(captured["called"])
 
 
+# ── cmd_913至急: pay裁可制ntfy(shogun msg_20260928_191226_5ee0f443・
+#    msg_20260928_191314_539b160e)。RED対照: 本節追加前のcr_retrigger.pyは
+#    cr._post_pay_ntfyを持たず、pay判定はcr_decide_observed_not_postedの
+#    ログのみで止まる(ntfyは飛ばない)。以下は是正後の期待を固定する。
+
+def _pay_decision(reason="Wait ~90 min is too long; 2 file(s) cost about $0.50."):
+    return {"action": "pay", "reason": reason, "command": "@coderabbitai review --use-credits"}
+
+
+class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
+    """RED→GREEN⑥: pay判定は実行(投稿)せず、殿へntfyして止まる
+    (PR URL・見込み費え・待ち見込み・止まる範囲を含む本文)。"""
+
+    def test_pay_action_never_posts_and_sends_ntfy_with_details(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        ntfy_mock.assert_called_once()
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("https://github.com/geolonia/geonicdb-console/pull/1", body)
+        self.assertIn("0.50", body)
+        self.assertIn("90", body)
+        self.assertNotIn("推定", body)
+        sent_lines = [e for e in log_lines if e.get("event") == "pay_ntfy_sent"]
+        self.assertEqual(len(sent_lines), 1)
+
+    def test_pay_ntfy_body_marks_estimate_when_cost_not_parseable(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "pay", "reason": "format changed, no numbers here",
+                          "command": "@coderabbitai review --use-credits"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock.assert_called_once()
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("推定", body)
+        self.assertIn("https://github.com/geolonia/geonicdb-console/pull/1", body)
+
+    def test_approve_action_does_not_send_pay_ntfy(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "approve", "reason": "rebase only",
+                          "command": "@coderabbitai approve"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock.assert_not_called()
+
+
+class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
+    """同一PR・同一head(=同一判定)への重複ntfyを防ぐ。殿の返答が来るまで
+    (=台帳から消えるまで)は次周回でも再送しない。"""
+
+    def test_same_pr_same_head_not_renotified_across_cycles(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches1 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
+             patches1[0], patches1[1], patches1[2], patches1[3]:
+            state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+        ntfy_mock1.assert_called_once()
+
+        now2 = NOW + timedelta(minutes=10)
+        patches2 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
+             patches2[0], patches2[1], patches2[2], patches2[3]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock2.assert_not_called()
+        not_resent = [e for e in log_lines2 if e.get("event") == "pay_ntfy_not_resent"]
+        self.assertEqual(len(not_resent), 1)
+        self.assertEqual(not_resent[0]["pr"], 1)
+
+    def test_ntfy_failure_does_not_mark_sent_so_next_cycle_retries(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: _pay_decision()}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             mock.patch.object(cr, "_post_pay_ntfy",
+                                side_effect=OSError("ntfy.sh not found")) as ntfy_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock.assert_called_once()
+        self.assertEqual(state.get("pay_ntfy_sent", {}), {})
+        failed = [e for e in log_lines if e.get("event") == "pay_ntfy_failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["level"], "warn")
+
+
+class Test29MultiplePayDecisionsBatchedIntoOneNtfy(unittest.TestCase):
+    """同一周回内で複数PRがpay判定になった場合、一通のntfyにまとめる
+    (鳴らしすぎ防止)。"""
+
+    def test_two_prs_pay_same_cycle_batched_into_one_ntfy(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        decisions = {
+            1: _pay_decision("Wait ~90 min is too long; 2 file(s) cost about $0.50."),
+            2: _pay_decision("Wait ~120 min is too long; 3 file(s) cost about $0.75."),
+        }
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        ntfy_mock.assert_called_once()
+        body = ntfy_mock.call_args.args[0]
+        self.assertIn("https://github.com/geolonia/geonicdb-console/pull/1", body)
+        self.assertIn("https://github.com/geolonia/geonicdb-console/pull/2", body)
+        sent_lines = [e for e in log_lines if e.get("event") == "pay_ntfy_sent"]
+        self.assertEqual(len(sent_lines), 1)
+        self.assertEqual(len(sent_lines[0]["prs"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

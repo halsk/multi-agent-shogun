@@ -16,12 +16,20 @@ LLMを実行経路に一切含めない。「決める」はcr-decide(node子プ
 本番HCのcheck作成。本モジュールはファイルを置くのみで、それらには触れない。
 cr-decideのapprove(@coderabbitai approve)を実際に投じることも範囲外
 (cmd_913一段め・殿/将軍のご判断待ち)——記録のみ行う。
+
+cmd_913至急(殿ご下命・shogun msg_20260928_191226_5ee0f443・
+msg_20260928_191314_539b160e): cr-decideがpay(`@coderabbitai review
+--use-credits`)と判じた時は、実行(投稿)せず殿へntfyし、ご裁可(「はい」)を
+待つ形に拡張する。実行そのものの接続(殿の「はい」を受けて次周回で
+実際に投じる経路)は本T1の範囲外——ここでは「止まる」「ntfyする」
+「答えを待つ」までを実装する。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -303,6 +311,83 @@ def _parse_retry_at(retry_at_str):
         return None
 
 
+# ── cmd_913至急: pay裁可制ntfy ──────────────────────────────────────
+
+# cr-decide.mjsのpay分岐の文言(検めたtool_ref固定・§8.1と同じ「検めた
+# 文言だけを信じる」流儀): "Wait ~90 min is too long; 2 file(s) cost
+# about $0.50." から待ち分数・ファイル数・費えを取り出す。取れなければ
+# _build_pay_ntfy_bodyが「推定」と明記した代替値へ倒す。
+_PAY_COST_RE = re.compile(r"(\d+) file\(s\) cost about \$(\d+(?:\.\d+)?)")
+_PAY_WAIT_RE = re.compile(r"Wait ~(\d+) min")
+
+# 正規表現で取れなかった時の代替ファイル数(cr-decideのpolicy.jsonの
+# pay.maxFiles相当の上限値。実測できないので上限側に倒し、費えを
+# 少なく見せない)。
+PAY_COST_FALLBACK_FILES = 4
+
+
+def _pay_incident_key(repo, pr_number, head_sha):
+    """このPR・このhead・このpay判定を一意に指す鍵(重複ntfy防止の台帳キー)。"""
+    return f"{repo}#{pr_number}#{head_sha}"
+
+
+def _estimate_pay_cost(decision):
+    """cr-decideのreason文字列から、待ち分数・ファイル数・費えを取り出す。
+
+    戻り値: (file_count, cost_usd, wait_minutes, is_estimate)。
+    reasonの形が変わって取れない場合は、file_count/cost_usdをフォールバック値で
+    埋めた上でis_estimate=Trueを返す(呼び出し側が「推定」と明記する)。
+    """
+    reason = decision.get("reason") or ""
+    cost_match = _PAY_COST_RE.search(reason)
+    wait_match = _PAY_WAIT_RE.search(reason)
+    wait_minutes = int(wait_match.group(1)) if wait_match else None
+    if cost_match:
+        return int(cost_match.group(1)), float(cost_match.group(2)), wait_minutes, False
+    file_count = PAY_COST_FALLBACK_FILES
+    return file_count, round(file_count * 0.25, 2), wait_minutes, True
+
+
+def _build_pay_ntfy_body(pending_pays, now):
+    """複数PRのpay判定を1通のntfy本文へまとめる(鳴らしすぎ防止)。
+
+    PRごとにURL・見込み費え(推定なら明記)・払わぬ場合の待ち見込み・
+    その間止まる範囲(このPR1本の遅延のみ・mainは赤くならない)を書く。
+    """
+    lines = []
+    for p in pending_pays:
+        file_count, cost_usd, wait_minutes, is_estimate = _estimate_pay_cost(p["decision"])
+        est_mark = "(推定)" if is_estimate else ""
+        wait_desc = f"約{wait_minutes}分" if wait_minutes is not None else "不明(cr-decideの答えから読み取れず)"
+        url = f"https://github.com/{p['repo']}/pull/{p['pr']}"
+        lines.append(
+            f"{url} : 見込みの費え 約${cost_usd:.2f}{est_mark}"
+            f"({file_count}ファイル×$0.25)。払わねば{wait_desc}待ち。"
+            f"払わぬ間はこの1本のPRのマージが遅れるのみ(mainは赤くならぬ——"
+            f"当家のマージ門はCodeRabbitレビュー完了を要すため、未マージの"
+            f"PRがmainへ影響することは無い)。"
+        )
+    if len(lines) == 1:
+        header = "cr-decideがpay(課金レビュー)を勧めておる。実行はせず止まっておる。ご裁可(「はい」)を賜りたし。"
+    else:
+        header = (
+            f"cr-decideが{len(lines)}件のPRでpay(課金レビュー)を勧めておる。"
+            "実行はせず止まっておる。ご裁可(「はい」)を賜りたし(鳴らしすぎぬよう一通にまとめた)。"
+        )
+    return header + "\n" + "\n".join(lines)
+
+
+def _post_pay_ntfy(body, ntfy_bin=None, cmd_id="cmd_913", timeout=30):
+    """殿へpay裁可要求のntfyを送る(scripts/ntfy.shの`--kind 要承認`型を使う。
+    新しい流儀は作らない——cmd_913至急の指示どおり既存経路に乗せる)。"""
+    if ntfy_bin is None:
+        ntfy_bin = os.path.join(os.path.dirname(__file__), "ntfy.sh")
+    subprocess.run(
+        [ntfy_bin, "--cmd", cmd_id, "--kind", "要承認", "--eta", "殿のご返答まで", "--body", body],
+        check=True, timeout=timeout,
+    )
+
+
 # ── main(): T1の範囲では実配線のみ。本番のgh呼び出しはCI/ローカルでは
 #    走らない(引数無しでは何もしない)。orchestration のみを担い、
 #    判定規則そのものは上の純関数に閉じ込めてある。────────────────────
@@ -316,13 +401,17 @@ def _load_config(path):
 
 def _load_state(path):
     if not os.path.exists(path):
-        return {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+        return {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                 "pay_ntfy_sent": {}}
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     raw["sent_log"] = [datetime.fromisoformat(t) for t in raw.get("sent_log", [])]
     raw["query_log"] = [datetime.fromisoformat(t) for t in raw.get("query_log", [])]
     raw["query_incidents"] = {
         k: datetime.fromisoformat(v) for k, v in raw.get("query_incidents", {}).items()
+    }
+    raw["pay_ntfy_sent"] = {
+        k: datetime.fromisoformat(v) for k, v in raw.get("pay_ntfy_sent", {}).items()
     }
     heads = raw.get("heads", {})
     for head_state in heads.values():
@@ -339,6 +428,9 @@ def _save_state(path, state):
     out["query_log"] = [t.isoformat() for t in state.get("query_log", [])]
     out["query_incidents"] = {
         k: v.isoformat() for k, v in state.get("query_incidents", {}).items()
+    }
+    out["pay_ntfy_sent"] = {
+        k: v.isoformat() for k, v in state.get("pay_ntfy_sent", {}).items()
     }
     heads_out = {}
     for key, head_state in state.get("heads", {}).items():
@@ -430,10 +522,14 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
         os.path.dirname(__file__), "..", clones_dir_raw)
     node_bin = cr_decide_cfg.get("node_bin", "node")
     cr_decide_timeout = cr_decide_cfg.get("timeout", 30)
+    ntfy_cfg = cfg.get("ntfy", {})
+    ntfy_bin = ntfy_cfg.get("bin")
+    ntfy_timeout = ntfy_cfg.get("timeout", 30)
     log_lines = []
 
     tool_paths = None  # (script_path, policy_path) — 最初のcandidateで初期化する
     repo_clone_dirs = {}
+    pending_pays = []  # cmd_913至急: このcycleでpay判定になったPR(ntfy候補)
 
     prs = []
     pr_count = 0
@@ -552,6 +648,13 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                                 "action": action, "command": command,
                                 "reason": decision.get("reason"),
                             })
+                            if action == "pay":
+                                # cmd_913至急: payは実行せず殿へntfyして止まる
+                                # (ntfy本体は全PR分見終えた後に一通へまとめる)。
+                                pending_pays.append({
+                                    "repo": repo, "pr": pr_number, "head_sha": sha,
+                                    "decision": decision,
+                                })
                         elif command == "@coderabbitai rate limit":
                             incident_key = f"{repo}#{pr_number}#{sha}#{action}"
                             if (query_enabled and not killed
@@ -628,6 +731,46 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
             head_state["last_trigger_at"] = now  # F2: 再投げの鮮度判定に使う
             state.setdefault("sent_log", []).append(now)
         log_lines.append(entry)
+
+    if pending_pays:
+        # cmd_913至急: pay判定は実行せず、殿へntfyして止まる。
+        # 同一PR・同一head(=同一判定)は殿の返答があるまで再送しない
+        # (台帳=state["pay_ntfy_sent"])。同一周回内の複数PRは一通にまとめる。
+        pay_ntfy_sent = state.setdefault("pay_ntfy_sent", {})
+        to_notify = []
+        for p in pending_pays:
+            key = _pay_incident_key(p["repo"], p["pr"], p["head_sha"])
+            if key in pay_ntfy_sent:
+                log_lines.append({
+                    "ts": now.isoformat(), "repo": p["repo"], "pr": p["pr"],
+                    "event": "pay_ntfy_not_resent",
+                    "reason": "already_notified_waiting_for_lord",
+                })
+            else:
+                to_notify.append(p)
+
+        if to_notify:
+            if dry_run:
+                log_lines.append({
+                    "ts": now.isoformat(), "event": "pay_ntfy_would_send", "dry_run": True,
+                    "prs": [f"{p['repo']}#{p['pr']}" for p in to_notify],
+                })
+            else:
+                body = _build_pay_ntfy_body(to_notify, now)
+                try:
+                    _post_pay_ntfy(body, ntfy_bin=ntfy_bin, timeout=ntfy_timeout)
+                except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError) as exc:
+                    log_lines.append({
+                        "ts": now.isoformat(), "event": "pay_ntfy_failed", "level": "warn",
+                        "error": str(exc),
+                    })
+                else:
+                    for p in to_notify:
+                        pay_ntfy_sent[_pay_incident_key(p["repo"], p["pr"], p["head_sha"])] = now
+                    log_lines.append({
+                        "ts": now.isoformat(), "event": "pay_ntfy_sent",
+                        "prs": [f"{p['repo']}#{p['pr']}" for p in to_notify],
+                    })
 
     log_lines.append({"ts": now.isoformat(), "event": "cycle", "runner": runner,
                        "run_id": run_id, "prs_seen": pr_count})
