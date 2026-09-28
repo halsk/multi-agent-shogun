@@ -857,5 +857,88 @@ class Test26CrDecideToolPinnedShaNotAutoTracked(unittest.TestCase):
         self.assertFalse(captured["called"])
 
 
+# ── cmd_913至急: cr-decide の ENOBUFS の根治(scripts/cr_decide_maxbuffer.cjs) ──
+
+_FAKE_CR_DECIDE_MJS = """\
+import { execFileSync } from "node:child_process";
+// cr-decide.mjs の run() と同じ形: maxBuffer を指定しない。
+function run(cmd, args, opts = {}) {
+  return execFileSync(cmd, args, { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], ...opts });
+}
+try {
+  const files = JSON.parse(run("gh", ["api", "--paginate", "--slurp", "repos/x/y/pulls/1/files"]));
+  console.log(JSON.stringify({ action: "check", reason: `files=${files.flat().length}` }));
+} catch (err) {
+  console.log(JSON.stringify({ action: "error", reason: String(err.stderr || err.message).trim().split("\\n")[0] }));
+  process.exit(1);
+}
+"""
+
+# 偽の gh: PR#226 の実測(1,103,253 バイト)より大きい JSON を返す。
+_FAKE_GH = """\
+#!/usr/bin/env python3
+import json, sys
+page = [{"filename": f"docs/f{i}.md", "additions": 1, "deletions": 0, "patch": "x" * 16000}
+        for i in range(80)]
+sys.stdout.write(json.dumps([page]))
+"""
+
+
+class Test40CrDecideMaxBufferPreload(unittest.TestCase):
+    """cmd_913至急: 1 MiB を超える gh の出力でも、cr-decide が判定まで届く。
+
+    本物の node で走らせる(preload が ESM の named import に効くかは、mock では
+    確かめられない)。是正の前後を同じ fixture で比べ、fixture が本当に既定の
+    上限を超えていること(RED)を先に確かめる。
+    """
+
+    def setUp(self):
+        import shutil
+        if shutil.which("node") is None:
+            self.fail("node が見つからない(SKIP は FAIL・この試験は本物の node を要する)")
+        self.tmp = tempfile.mkdtemp()
+        self.script = os.path.join(self.tmp, "cr-decide.mjs")
+        with open(self.script, "w", encoding="utf-8") as f:
+            f.write(_FAKE_CR_DECIDE_MJS)
+        bindir = os.path.join(self.tmp, "bin")
+        os.mkdir(bindir)
+        gh = os.path.join(bindir, "gh")
+        with open(gh, "w", encoding="utf-8") as f:
+            f.write(_FAKE_GH)
+        os.chmod(gh, 0o755)
+        self.env_patch = mock.patch.dict(os.environ, {"PATH": bindir + os.pathsep + os.environ["PATH"]})
+        self.env_patch.start()
+
+    def tearDown(self):
+        import shutil
+        self.env_patch.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_red_without_preload_the_fixture_overflows_default_buffer(self):
+        import subprocess as sp
+        out = sp.run(["node", self.script], capture_output=True, text=True, timeout=60)
+        data = json.loads(out.stdout)
+        self.assertEqual(data["action"], "error")
+        self.assertIn("ENOBUFS", data["reason"])
+
+    def test_green_call_cr_decide_reaches_a_decision(self):
+        result = cr.call_cr_decide("geolonia/geonicdb-docs", 226, self.tmp, self.script, timeout=60)
+        self.assertEqual(result["action"], "check", result)
+        self.assertEqual(result["reason"], "files=80")
+
+    def test_missing_preload_is_fail_closed(self):
+        with mock.patch.object(cr, "CR_DECIDE_PRELOAD", os.path.join(self.tmp, "nope.cjs")):
+            result = cr.call_cr_decide("geolonia/geonicdb-docs", 226, self.tmp, self.script, timeout=60)
+        self.assertEqual(result["action"], "error")
+
+    def test_explicit_max_buffer_from_caller_is_respected(self):
+        # 呼ぶ側が maxBuffer を決めているなら、preload はそれを上書きしない。
+        with open(self.script, "w", encoding="utf-8") as f:
+            f.write(_FAKE_CR_DECIDE_MJS.replace('...opts }', '...opts, maxBuffer: 1024 }'))
+        result = cr.call_cr_decide("geolonia/geonicdb-docs", 226, self.tmp, self.script, timeout=60)
+        self.assertEqual(result["action"], "error")
+        self.assertIn("ENOBUFS", result.get("reason", ""))
+
+
 if __name__ == "__main__":
     unittest.main()
