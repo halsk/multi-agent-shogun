@@ -234,6 +234,137 @@ def _save_state(path, state):
         json.dump(out, f, ensure_ascii=False, indent=2)
 
 
+def _gh_json(args, gh_bin="gh", timeout=30):
+    """`gh <args...>` を実行し、stdoutをJSONとして返す。非0終了はraiseする。"""
+    result = subprocess.run(
+        [gh_bin, *args], capture_output=True, text=True, timeout=timeout, check=True,
+    )
+    return json.loads(result.stdout) if result.stdout.strip() else None
+
+
+def _fetch_open_prs(repo, gh_bin="gh", timeout=30):
+    """repo の halsk 名義の open PR を列挙する(§1)。"""
+    return _gh_json(
+        ["pr", "list", "--repo", repo, "--author", "halsk", "--state", "open",
+         "--json", "number,headRefOid,isDraft"],
+        gh_bin=gh_bin, timeout=timeout,
+    ) or []
+
+
+def _fetch_coderabbit_status(repo, sha, gh_bin="gh", timeout=30):
+    """head commitのCodeRabbit commit statusから(description, updated_at)を読む(§1)。
+    見つからなければ(None, None)。"""
+    data = _gh_json(
+        ["api", f"repos/{repo}/commits/{sha}/status"], gh_bin=gh_bin, timeout=timeout,
+    ) or {}
+    for status in data.get("statuses", []):
+        if "coderabbit" in (status.get("context") or "").lower():
+            updated_at = status.get("updated_at")
+            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if updated_at else None
+            return status.get("description") or "", dt
+    return None, None
+
+
+def _fetch_latest_wait_notice(repo, pr_number, gh_bin="gh", timeout=30, since_hours=6):
+    """CodeRabbitの要約コメントから待ち時間の通知を読む(§2)。
+    見つからなければ(None, None)。
+
+    ★`since`で直近`since_hours`時間に絞る(古いPRの全コメント履歴を毎周回
+    無制限に取得しないため。10分毎に回る本ジョブでは直近の通知で足りる)。
+    """
+    since = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    comments = _gh_json(
+        ["api", f"repos/{repo}/issues/{pr_number}/comments",
+         "-f", f"since={since}", "--paginate"],
+        gh_bin=gh_bin, timeout=timeout,
+    ) or []
+    for comment in reversed(comments):
+        login = ((comment.get("user") or {}).get("login") or "")
+        if "coderabbit" not in login.lower():
+            continue
+        body = comment.get("body") or ""
+        wait = parse_wait(body)
+        if wait is not None:
+            updated_at = comment.get("updated_at") or comment.get("created_at")
+            dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if updated_at else None
+            return dt, wait
+    return None, None
+
+
+def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None):
+    """1周回ぶんの判定・投げ直しを行う(§1〜§3・確定版§8〜§9)。
+
+    戻り値: (更新後のstate, 実行ログの行のlist)
+    """
+    killed = is_killed(stop_path)
+    allowlist = cfg.get("allowlist", [])
+    fallback_mode = cfg.get("fallback_mode", "window")
+    budget = cfg.get("budget", {})
+    log_lines = []
+
+    prs = []
+    for repo in allowlist:
+        if not is_allowed_repo(repo, allowlist):
+            continue  # 上流denylistとの重複防御(§1)
+        try:
+            raw_prs = _fetch_open_prs(repo, gh_bin=gh_bin)
+        except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError) as exc:
+            log_lines.append({"ts": now.isoformat(), "repo": repo, "error": str(exc)})
+            continue
+        for raw in raw_prs:
+            sha = raw.get("headRefOid")
+            desc, updated_at = _fetch_coderabbit_status(repo, sha, gh_bin=gh_bin)
+            if desc is None:
+                log_lines.append({"ts": now.isoformat(), "repo": repo,
+                                   "pr": raw.get("number"), "result": "no_status"})
+                continue
+            sources = {}
+            if updated_at is not None:
+                sources["notice_updated_at"] = updated_at
+                sources["notice_wait_minutes"] = parse_wait(desc)
+            if sources.get("notice_wait_minutes") is None:
+                notice_at, wait_minutes = _fetch_latest_wait_notice(
+                    repo, raw.get("number"), gh_bin=gh_bin)
+                if notice_at is not None:
+                    sources["notice_updated_at"] = notice_at
+                    sources["notice_wait_minutes"] = wait_minutes
+            next_at = next_attempt_at(sources, now, mode=fallback_mode)
+            prs.append({
+                "repo": repo, "pr": raw.get("number"), "head_sha": sha,
+                "description": desc, "draft": bool(raw.get("isDraft")),
+                "allowed": is_allowed_repo(repo, allowlist),
+                "next_attempt_at": next_at,
+            })
+
+    targets = select_targets(state, prs, budget, now, killed=killed)
+
+    for pr in targets:
+        key = f"{pr['repo']}#{pr['pr']}#{pr['head_sha']}"
+        entry = {"ts": now.isoformat(), "repo": pr["repo"], "pr": pr["pr"],
+                  "head_sha": pr["head_sha"], "result": "triggered", "dry_run": dry_run}
+        if not dry_run:
+            try:
+                post_comment(pr["repo"], pr["pr"], TRIGGER_BODY, gh_bin=gh_bin)
+            except (subprocess.SubprocessError, subprocess.TimeoutExpired, ValueError) as exc:
+                entry["result"] = "post_failed"
+                entry["error"] = str(exc)
+                log_lines.append(entry)
+                continue
+            state.setdefault("heads", {}).setdefault(key, {"attempts": 0})
+            state["heads"][key]["attempts"] = state["heads"][key].get("attempts", 0) + 1
+            state.setdefault("sent_log", []).append(now)
+        log_lines.append(entry)
+
+    if log_path:
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            for entry in log_lines:
+                f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+
+    return state, log_lines
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default=os.path.join(
@@ -242,8 +373,10 @@ def main(argv=None):
         os.path.dirname(__file__), "..", "state", "cr_retrigger.json"))
     parser.add_argument("--stop-file", default=os.path.join(
         os.path.dirname(__file__), "..", "logs", "cr_retrigger.stop"))
+    parser.add_argument("--log-file", default=os.path.join(
+        os.path.dirname(__file__), "..", "logs", "cr_retrigger.jsonl"))
     parser.add_argument("--dry-run", action="store_true",
-                         help="投稿せず、候補のみ標準出力へ出す")
+                         help="投稿せず、候補のみログへ出す")
     args = parser.parse_args(argv)
 
     cfg = _load_config(args.config)
@@ -251,15 +384,17 @@ def main(argv=None):
         print("[cr_retrigger] disabled by config — exit")
         return 0
 
-    killed = is_killed(args.stop_file)
     now = datetime.now(timezone.utc)
+    state = _load_state(args.state)
 
-    # T1の範囲では実際のgh検索・commit status取得は行わない(orchestrationの
-    # 骨組みのみ提供する。本番接続はT2で家老がlaunchd登録後に確認する)。
-    if killed:
-        print("[cr_retrigger] kill switch active (logs/cr_retrigger.stop) — no post")
-    else:
-        print(f"[cr_retrigger] {now.isoformat()} 周回(dry_run={args.dry_run})")
+    state, log_lines = run(
+        cfg, state, now, args.stop_file, dry_run=args.dry_run, log_path=args.log_file,
+    )
+    _save_state(args.state, state)
+
+    for entry in log_lines:
+        print(json.dumps(entry, ensure_ascii=False, default=str))
+    print(f"[cr_retrigger] {now.isoformat()} 周回終了(候補{len(log_lines)}件・dry_run={args.dry_run})")
     return 0
 
 
