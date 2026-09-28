@@ -27,10 +27,12 @@ budget:
   query_per_day: 6
 
 # 予備の問い合わせ(cr-decideのcheckが返すcommand)の投稿有効/無効。
-# 既定は無効: cr-decideの答え(check)は常に記録するが、実際に
-# `[AI] @coderabbitai rate limit` を投じるかはこのスイッチで絞る。
+# cmd_913 X1是正: cr-decideのcollect()は、通知の待ち時間が過ぎると予算を
+# 「古い」とみなしcheckを返し続ける(§9.2)。query.enabled=falseのままでは
+# 引き金が永久に投げられなくなるため有効化する。下限(may_query: 1件1回・
+# 30分に1回・1日6回)は既に台帳(cr_retrigger.py側)が守る(design §9.2)。
 query:
-  enabled: false
+  enabled: true
 
 # cmd_913: 「決める」部分(cr-decide)の設定。
 # geolonia/skillsのskills/coderabbit-pr-flow/scripts/cr-decide.mjsを
@@ -40,6 +42,15 @@ cr_decide:
   enabled: true
   # cr-decide.mjs・policy.jsonの実物を取ってくる元repo。
   tool_repo: geolonia/skills
+  # cmd_913 X2是正: origin/mainへのreset --hardによる自動追随を禁止し、
+  # 検めた特定commitへ固定する(pin)。この値は geolonia/skills#108
+  # (cr-decide prototype追加PR)のmerge commit SHA — 軍師が
+  # queue/reports/cmd913_crdecide_integration.md §1で実物を読んで
+  # 妥当性を確認したもの(merged_at 2026-09-28T05:34:28Z)。
+  # 更新する時は、家老がgeolonia/skillsの差分を検めてから、この1行を
+  # 明示的に書き換えること(origin/mainのreset --hard等、自動追随の
+  # 仕組みは作らない)。
+  tool_ref: d42738355cd994382f5fadf4febdf2089842ce83
   script_relpath: skills/coderabbit-pr-flow/scripts/cr-decide.mjs
   policy_relpath: skills/coderabbit-pr-flow/policy.json
   # 読み取り専用cloneの置き場(allowlistの各repo + tool_repo自身の分)。

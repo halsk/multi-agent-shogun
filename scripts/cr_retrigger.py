@@ -234,12 +234,29 @@ def _ensure_clone(repo, clones_dir, gh_bin="gh", git_bin="git", timeout=60):
 
 def _ensure_cr_decide_tool(cr_decide_cfg, clones_dir, gh_bin="gh", git_bin="git", timeout=60):
     """cr-decide.mjs・policy.jsonの実物を用意する(geolonia/skillsのclone、
-    origin/mainへ揃える)。戻り値: (script_path, policy_path)。"""
+    検めた特定commitへpinする — cmd_913 X2是正)。
+
+    ★origin/mainやbranch名への自動追随(reset --hard origin/main等)は
+    禁止する。org側で誰かがgeolonia/skillsのmainへmergeした内容が、
+    当家の検めなしに殿のgh権限で自動実行される穴になるため
+    (cr-decide.mjsを子プロセスとして呼ぶ以上、そのコードが実行される)。
+    cr_decide_cfg["tool_ref"](検めたcommit SHA)を必須とし、
+    そのSHAをdetached HEADでcheckoutする。更新は家老が差分を検めた
+    上でtool_refの値を明示的に書き換える運用とする。
+
+    戻り値: (script_path, policy_path)。
+    """
     tool_repo = cr_decide_cfg.get("tool_repo", "geolonia/skills")
+    tool_ref = cr_decide_cfg.get("tool_ref")
+    if not tool_ref:
+        raise ValueError(
+            "cr_decide.tool_ref is required (pinned, vetted commit SHA). "
+            "origin/main auto-tracking is forbidden (cmd_913 X2)."
+        )
     clone_dir = _ensure_clone(tool_repo, clones_dir, gh_bin=gh_bin, git_bin=git_bin, timeout=timeout)
     env = _clean_git_env()
     subprocess.run(
-        [git_bin, "-C", clone_dir, "reset", "--quiet", "--hard", "origin/main"],
+        [git_bin, "-C", clone_dir, "checkout", "--quiet", "--detach", tool_ref],
         check=True, timeout=timeout, env=env,
     )
     script_path = os.path.join(

@@ -737,5 +737,125 @@ class Test24CrDecideDisabledFallsBackSafely(unittest.TestCase):
         self.assertEqual(len(disabled_lines), 1)
 
 
+# ── cmd_913続き(PR#173 QC是正): X1 query.enabled有効化・X2 pin検証 ──
+
+class Test25QueryEnabledEndToEndFlow(unittest.TestCase):
+    """X1是正: query.enabled=trueで、check→問い合わせ→(答えが付いた後の
+    次周回の)review投稿、まで実際に流れることをend-to-endで固定する。
+    RED対照(是正前・query.enabled=false)はTest22.
+    test_check_not_posted_when_query_disabledが固定済み
+    (checkがdisabledとして記録され続け、投稿もreviewへも進まない)。"""
+
+    def test_check_then_query_then_review_across_two_cycles(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        # 1周回め: 待ち時間が読めず、cr-decideはcheckを返す。
+        decisions_cycle1 = {1: {"action": "check", "reason": "budget unknown",
+                                  "command": "@coderabbitai rate limit"}}
+        patches1 = _patch_cr_decide_wiring(decisions_cycle1)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock1, \
+             patches1[0], patches1[1], patches1[2], patches1[3]:
+            state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock1.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+        self.assertIn("geolonia/geonicdb-console#1#sha1#check", state["query_incidents"])
+
+        # 2周回め(10分後): 問い合わせの答えをcr-decide自身が読んだ想定
+        # (答えの読み取り自体はcr-decideの役目・cmd913_crdecide_integration.md
+        # §1)。答えが付いたのでcr-decideはreviewを返す。
+        now2 = NOW + timedelta(minutes=10)
+        decisions_cycle2 = {1: {"action": "review", "reason": "1 review available now",
+                                  "command": "@coderabbitai review"}}
+        patches2 = _patch_cr_decide_wiring(decisions_cycle2)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment") as post_mock2, \
+             patches2[0], patches2[1], patches2[2], patches2[3]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        post_mock2.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+
+    def test_second_incident_query_within_30min_stays_throttled_by_ledger(self):
+        # X1の下限(design §9.2)がquery.enabled=true下でも守られることの回帰
+        # (Test22と同型だが、query_enabled=trueが既定になった後の固定として
+        # ここにも残す)。
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [NOW - timedelta(minutes=5)],
+                  "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2], patches[3]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
+        self.assertEqual(len(not_posted), 1)
+
+
+class Test26CrDecideToolPinnedShaNotAutoTracked(unittest.TestCase):
+    """X2是正: geolonia/skillsの取り込みが検めた特定SHAへdetached checkoutで
+    固定され、origin/mainへのreset --hard(自動追随)になっていないことを
+    固定する。"""
+
+    def test_checks_out_pinned_sha_via_detached_head(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured.setdefault("calls", []).append(cmd)
+            return mock.Mock(returncode=0)
+
+        cfg = {"tool_repo": "geolonia/skills",
+                "tool_ref": "d42738355cd994382f5fadf4febdf2089842ce83",
+                "script_relpath": "skills/coderabbit-pr-flow/scripts/cr-decide.mjs",
+                "policy_relpath": "skills/coderabbit-pr-flow/policy.json"}
+        with mock.patch.object(cr, "_ensure_clone", return_value="/fake/skills-clone"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            script_path, policy_path = cr._ensure_cr_decide_tool(cfg, "/fake/clones")
+
+        checkout_calls = [c for c in captured["calls"] if "checkout" in c]
+        self.assertEqual(len(checkout_calls), 1)
+        self.assertIn("d42738355cd994382f5fadf4febdf2089842ce83", checkout_calls[0])
+        self.assertIn("--detach", checkout_calls[0])
+        # origin/mainへの自動追随(reset --hard等)が残っていないこと。
+        self.assertFalse(any("reset" in c for c in captured["calls"]))
+        self.assertFalse(any("origin/main" in c for c in captured["calls"]))
+        self.assertTrue(script_path.endswith("cr-decide.mjs"))
+        self.assertTrue(policy_path.endswith("policy.json"))
+
+    def test_missing_tool_ref_raises_without_touching_git(self):
+        captured = {"called": False}
+
+        def fake_run(cmd, **kwargs):
+            captured["called"] = True
+            return mock.Mock(returncode=0)
+
+        cfg = {"tool_repo": "geolonia/skills"}  # tool_ref無し
+        with mock.patch.object(cr, "_ensure_clone", return_value="/fake/skills-clone"), \
+             mock.patch("subprocess.run", side_effect=fake_run):
+            with self.assertRaises(ValueError):
+                cr._ensure_cr_decide_tool(cfg, "/fake/clones")
+
+        self.assertFalse(captured["called"])
+
+
 if __name__ == "__main__":
     unittest.main()
