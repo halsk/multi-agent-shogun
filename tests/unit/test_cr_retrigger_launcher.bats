@@ -11,6 +11,12 @@ bats_require_minimum_version 1.5.0
 #   T-CRL-007: テストは偽のget-secret.shだけを読む(本物のKeychainを呼ばない)
 #   T-CRL-008: ghが無い → /failを送りexit非0
 #   T-CRL-009: 成功時のpingの本文にrunnerとrun_idが載る
+#   T-CRL-010: 複数python3候補のうちPyYAMLを持つものだけを選び実処理に使う
+#              (cmd908 T2実施中に発覚: launchdのPATHが解決するpython3に
+#              PyYAMLが無く即死した教訓の是正。CR_RETRIGGER_PYTHON3_CANDIDATES
+#              でテスト用候補列に差し替える)
+#   T-CRL-011: どのpython3候補もPyYAMLを持たない → /failを送りexit非0・
+#              cr_retrigger.pyは一切起動しない(fail-openしない)
 #
 # Approach: stall-watchdog-launcher.sh の T-HC-004/005 と同じ「temp project copy」
 # 方式。launcherはSCRIPT_DIR相対でget-secret.shとcr_retrigger.pyを解決するため、
@@ -211,4 +217,117 @@ MOCK_TIMEOUT
   success_ping_line="$(grep "mock-ping-url-009$" "${CALLS_LOG}")"
   [[ "$success_ping_line" == *"--data"* ]]
   [[ "$success_ping_line" =~ runner=launchd\ run_id=[0-9TZ]+-[0-9]+ ]]
+}
+
+# ── T-CRL-010: PyYAMLを持つpython3候補だけを選ぶ(cmd908 T2教訓の是正) ──
+#
+# MOCK_BIN/python3(裸のpython3)はlaunchdのPATHが解決する壊れたpython3を
+# 模す(PyYAMLが無くModuleNotFoundErrorで即死)。是正前のコードはこれを
+# 無条件に使うためこのテストはREDになる。CR_RETRIGGER_PYTHON3_CANDIDATES
+# には別のPyYAMLを持つ候補を含め、是正後のコードがそちらへ落ちて成功する
+# ことを示す(GREEN)。
+
+@test "T-CRL-010: falls back to a PyYAML-capable python3 candidate and uses it" {
+  _make_proj_copy
+
+  cat > "$PROJ_COPY/scripts/get-secret.sh" << 'MOCK_GS'
+#!/usr/bin/env bash
+get_secret() {
+  local key="$1"
+  if [[ "$key" == "hc-ping-url-cr-retrigger" ]]; then
+    echo "http://127.0.0.1:9/mock-ping-url-010"
+    return 0
+  fi
+  return 1
+}
+MOCK_GS
+
+  cat > "${MOCK_BIN}/gh" << 'MOCK_GH'
+#!/usr/bin/env bash
+exit 0
+MOCK_GH
+  chmod +x "${MOCK_BIN}/gh"
+  REAL_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout)"
+  cat > "${MOCK_BIN}/timeout" << MOCK_TIMEOUT
+#!/usr/bin/env bash
+exec "${REAL_TIMEOUT_BIN}" "\$@"
+MOCK_TIMEOUT
+  chmod +x "${MOCK_BIN}/timeout"
+
+  # 裸のpython3(PATH解決): PyYAMLを持たず、-c 判定でも実処理呼出でも
+  # ModuleNotFoundErrorで落ちる(launchdのPATHが解決する壊れたpython3を模す)。
+  cat > "${MOCK_BIN}/python3" << 'MOCK_PY_NOYAML'
+#!/usr/bin/env bash
+echo "Traceback (most recent call last):" >&2
+echo "ModuleNotFoundError: No module named 'yaml'" >&2
+exit 1
+MOCK_PY_NOYAML
+  chmod +x "${MOCK_BIN}/python3"
+
+  # 候補列: 1件目はPyYAMLを持たない(裸のpython3と同じ挙動)・2件目は持つ。
+  cp "${MOCK_BIN}/python3" "${MOCK_BIN}/py_noyaml"
+  cat > "${MOCK_BIN}/py_yaml" << 'MOCK_PY_YAML'
+#!/usr/bin/env bash
+if [[ "$1" == "-c" ]]; then
+  exit 0
+fi
+echo "[stub] cr_retrigger.py invoked"
+exit 0
+MOCK_PY_YAML
+  chmod +x "${MOCK_BIN}/py_yaml"
+
+  run env PATH="${MOCK_BIN}:${PATH}" \
+    CR_RETRIGGER_PYTHON3_CANDIDATES="${MOCK_BIN}/py_noyaml:${MOCK_BIN}/py_yaml" \
+    bash "$PROJ_COPY/scripts/cr-retrigger-launcher.sh"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[stub] cr_retrigger.py invoked"* ]]
+  grep -q "CURL_CALLED.*mock-ping-url-010/start" "${CALLS_LOG}"
+  run ! grep -q "mock-ping-url-010/fail" "${CALLS_LOG}"
+}
+
+# ── T-CRL-011: どの候補もPyYAMLを持たない → /failを送りexit非0・fail-openしない ──
+
+@test "T-CRL-011: sends /fail and never invokes cr_retrigger.py when no python3 candidate has PyYAML" {
+  _make_proj_copy
+
+  cat > "$PROJ_COPY/scripts/get-secret.sh" << 'MOCK_GS'
+#!/usr/bin/env bash
+get_secret() {
+  local key="$1"
+  if [[ "$key" == "hc-ping-url-cr-retrigger" ]]; then
+    echo "http://127.0.0.1:9/mock-ping-url-011"
+    return 0
+  fi
+  return 1
+}
+MOCK_GS
+
+  cat > "${MOCK_BIN}/gh" << 'MOCK_GH'
+#!/usr/bin/env bash
+exit 0
+MOCK_GH
+  chmod +x "${MOCK_BIN}/gh"
+  REAL_TIMEOUT_BIN="$(command -v timeout || command -v gtimeout)"
+  cat > "${MOCK_BIN}/timeout" << MOCK_TIMEOUT
+#!/usr/bin/env bash
+exec "${REAL_TIMEOUT_BIN}" "\$@"
+MOCK_TIMEOUT
+  chmod +x "${MOCK_BIN}/timeout"
+
+  cat > "${MOCK_BIN}/py_noyaml1" << 'MOCK_PY_NOYAML1'
+#!/usr/bin/env bash
+echo "ModuleNotFoundError: No module named 'yaml'" >&2
+exit 1
+MOCK_PY_NOYAML1
+  chmod +x "${MOCK_BIN}/py_noyaml1"
+  cp "${MOCK_BIN}/py_noyaml1" "${MOCK_BIN}/py_noyaml2"
+
+  run env PATH="${MOCK_BIN}:${PATH}" \
+    CR_RETRIGGER_PYTHON3_CANDIDATES="${MOCK_BIN}/py_noyaml1:${MOCK_BIN}/py_noyaml2" \
+    bash "$PROJ_COPY/scripts/cr-retrigger-launcher.sh"
+
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"[stub] cr_retrigger.py invoked"* ]]
+  grep -q "CURL_CALLED.*mock-ping-url-011/fail" "${CALLS_LOG}"
 }
