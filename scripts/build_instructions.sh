@@ -10,7 +10,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 PARTS_DIR="$ROOT_DIR/instructions"
-OUTPUT_DIR="$ROOT_DIR/instructions/generated"
+# OUTPUT_ROOT: where generated/auto-load files are WRITTEN. Defaults to ROOT_DIR
+# (normal operation). Tests override this (e.g. to a bats temp dir) so running
+# the build doesn't dirty the real tracked AGENTS.md / .github/copilot-instructions.md /
+# agents/default/system.md as a side effect of executing the test suite.
+# Source parts (instructions/, CLAUDE.md) are always read from the real ROOT_DIR.
+OUTPUT_ROOT="${OUTPUT_ROOT:-$ROOT_DIR}"
+OUTPUT_DIR="$OUTPUT_ROOT/instructions/generated"
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -106,7 +112,7 @@ build_instruction_file "kimi" "gunshi" "kimi-gunshi.md"
 # Codex CLIはリポジトリルートのAGENTS.mdを自動読み込みする。
 # CLAUDE.mdを正本とし、Claude固有部分をCodex固有に置換して生成。
 generate_agents_md() {
-    local output_path="$ROOT_DIR/AGENTS.md"
+    local output_path="$OUTPUT_ROOT/AGENTS.md"
     local claude_md="$ROOT_DIR/CLAUDE.md"
 
     echo "Generating: AGENTS.md (Codex auto-load)"
@@ -166,7 +172,7 @@ generate_agents_md() {
 # GitHub Copilot CLIは .github/copilot-instructions.md を自動読み込みする。
 # CLAUDE.mdを正本とし、Claude固有部分をCopilot固有に置換して生成。
 generate_copilot_instructions() {
-    local github_dir="$ROOT_DIR/.github"
+    local github_dir="$OUTPUT_ROOT/.github"
     local output_path="$github_dir/copilot-instructions.md"
     local claude_md="$ROOT_DIR/CLAUDE.md"
 
@@ -219,7 +225,7 @@ generate_copilot_instructions() {
 # Kimi K2 CLIは agents/default/agent.yaml + system.md を自動読み込みする。
 # CLAUDE.mdを正本とし、Claude固有部分をKimi固有に置換して生成。
 generate_kimi_instructions() {
-    local agents_dir="$ROOT_DIR/agents/default"
+    local agents_dir="$OUTPUT_ROOT/agents/default"
     local system_md_path="$agents_dir/system.md"
     local agent_yaml_path="$agents_dir/agent.yaml"
     local claude_md="$ROOT_DIR/CLAUDE.md"
@@ -298,7 +304,7 @@ echo "Generated instruction files:"
 ls -lh "$OUTPUT_DIR"/*.md
 echo ""
 echo "CLI auto-load files:"
-[ -f "$ROOT_DIR/AGENTS.md" ] && ls -lh "$ROOT_DIR/AGENTS.md"
-[ -f "$ROOT_DIR/.github/copilot-instructions.md" ] && ls -lh "$ROOT_DIR/.github/copilot-instructions.md"
-[ -f "$ROOT_DIR/agents/default/system.md" ] && ls -lh "$ROOT_DIR/agents/default/system.md"
-[ -f "$ROOT_DIR/agents/default/agent.yaml" ] && ls -lh "$ROOT_DIR/agents/default/agent.yaml"
+[ -f "$OUTPUT_ROOT/AGENTS.md" ] && ls -lh "$OUTPUT_ROOT/AGENTS.md"
+[ -f "$OUTPUT_ROOT/.github/copilot-instructions.md" ] && ls -lh "$OUTPUT_ROOT/.github/copilot-instructions.md"
+[ -f "$OUTPUT_ROOT/agents/default/system.md" ] && ls -lh "$OUTPUT_ROOT/agents/default/system.md"
+[ -f "$OUTPUT_ROOT/agents/default/agent.yaml" ] && ls -lh "$OUTPUT_ROOT/agents/default/agent.yaml"
