@@ -22,7 +22,7 @@ setup() {
 
   export TMP_DIR
   TMP_DIR="$(mktemp -d "$BATS_TMPDIR/deadman.XXXXXX")"
-  mkdir -p "$TMP_DIR/tasks" "$TMP_DIR/state"
+  mkdir -p "$TMP_DIR/tasks" "$TMP_DIR/state" "$TMP_DIR/reports"
 
   export CALLS_LOG
   CALLS_LOG="$(mktemp "$BATS_TMPDIR/deadman_ntfy_calls.XXXXXX")"
@@ -67,6 +67,28 @@ STUB
   # (実際に本is修正の開発中、この隔離漏れにより新規checkへ実ping34件が送信される
   # 事故を起こした・実害は開発中の一時checkのみで本番監視への影響は無かった)。
   export DEADMAN_GET_SECRET="$TMP_DIR/nonexistent-get-secret.sh"
+
+  # cmd_914【一】T2: REPORTED_NOT_CLOSED判定の隔離口。REPORTS_DIRは既定で
+  # dirname(DEADMAN_TASKS_DIR)/reports = $TMP_DIR/reports を指す(本番でも
+  # queue/tasksとqueue/reportsは兄弟ディレクトリ)ため明示指定は必須では
+  # ないが、テストの意図を読みやすくするため明示する。DEADMAN_PYTHON_BIN
+  # は本番同様、.venv/bin/python3があればそれを、無ければ python3 を使う
+  # (deadman_switch.sh自身のデフォルト解決に委ねるため未設定のままにする)。
+  export DEADMAN_REPORTS_DIR="$TMP_DIR/reports"
+  export DEADMAN_RECONCILE_SCRIPT="${PROJECT_ROOT}/scripts/deadman_reconcile.py"
+}
+
+# cmd_914【一】T2: fixture(実物のashigaru1 task/report YAMLの複製・
+# tests/fixtures/cmd914/)をTMP_DIR/tasks・TMP_DIR/reportsへ配置し、
+# mtimeを指定する。task/reportどちらもfixtureのtimestamp欄(task=16:53:00・
+# report=17:00:00)はそのまま(report > task)。
+place_cmd914_fixture() {
+  local agent="$1" task_mtime="$2" report_mtime="$3"
+  local fixtures_dir="${PROJECT_ROOT}/tests/fixtures/cmd914"
+  cp "$fixtures_dir/task_ashigaru1_reported_not_closed.yaml" "$TMP_DIR/tasks/${agent}.yaml"
+  cp "$fixtures_dir/report_ashigaru1_reported_not_closed.yaml" "$TMP_DIR/reports/${agent}_report.yaml"
+  touch -t "$task_mtime" "$TMP_DIR/tasks/${agent}.yaml"
+  touch -t "$report_mtime" "$TMP_DIR/reports/${agent}_report.yaml"
 }
 
 teardown() {
@@ -459,12 +481,40 @@ YAML
 }
 
 # ══════════════════════════════════════════════════════════════════════════
-# cmd_785⑨: 夜間・status:done限定の家老通知間引き(3時間cooldown)
+# cmd_785⑨(2026-09-09)→cmd_914【一】T2(2026-09-28)で置き換え:
+# 当初は「夜間・全員status:done停止」を3時間cooldownへ間引くだけだった
+# (20分毎の連打を減らす対症療法)。軍師設計(queue/reports/
+# cmd914_status_update_gap.md §3.2)は真因に踏み込み、「status=doneは
+# 手が空いただけで止まっていない」と判じ、間引くのではなく★そもそも
+# stalledとして報せない★よう改めた(blockedと同じ扱い)。旧T-DM-024〜026
+# (間引きcooldownの実証)はこの変更で検証対象そのものが消えたため、
+# 新しいT-DM-024〜026(status=doneは常にstalled非対象であることの実証)へ
+# 置き換える。
 # ══════════════════════════════════════════════════════════════════════════
 
-# ── T-DM-024【間引き実証】夜間・停止中の全員がstatus:doneなら、20分後の
-#   再実行では再通知されない(3時間cooldownへ間引かれる) ──
-@test "T-DM-024: 夜間・全員status:doneの停止は20分後に再通知されない(3時間へ間引き)" {
+# ── T-DM-024【新】status=doneで手が空いた足軽は、idleがどれだけ長くても
+#   stalledと報せない(夜間・昼間いずれも)──
+@test "T-DM-024: status=doneは夜間・昼間いずれもstalledと報せない" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  status: done
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+
+  # 夜間(idle=17h超)でも通知なし
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+
+  # 昼間に切り替わってもなお通知なし(idle=32h超)
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+}
+
+# ── T-DM-025【新】停止中に1件でもstatus:assigned等(done以外)が混じれば、
+#   その1件だけは従来どおり検知・通知される(doneの足軽は引き続き無視) ──
+@test "T-DM-025: status:done以外が1件混じればその1件だけ検知・通知される" {
   cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
 task:
   status: done
@@ -472,64 +522,22 @@ YAML
   touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
   cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
 task:
-  status: done
+  status: unknown
 YAML
   touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
 
-  # 1回目: 23:00 → 家老通知1件目
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ -s "$KARO_CALLS_LOG" ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 1 ]
-
-  # 2回目: 23:21(21分後・旧20分cooldownなら再通知されるはずの時刻) → 3時間へ
-  # 間引かれ再通知されない(呼び出し件数が1件のまま)
-  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:21:00")" run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 1 ]
-
-  # 3回目: 3時間超経過後(翌02:05) → 間引き後も再通知は生きている(呼び出し2件目)
-  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 02:05:00")" run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 2 ]
-  run grep -c "全員done・3時間間隔に間引き中" "$KARO_CALLS_LOG"
+  run grep -c "ashigaru1" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+  run grep -c "ashigaru2" "$KARO_CALLS_LOG"
   [ "$output" -ge 1 ]
 }
 
-# ── T-DM-025【間引き対象外の実証】夜間でも停止中に1件でもstatus:done以外
-#   (実働中フリーズ相当)が混じれば、従来どおり20分cooldownのまま再通知される ──
-@test "T-DM-025: 夜間でもstatus:done以外が1件混じれば20分cooldownのまま再通知される" {
-  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
-task:
-  status: done
-YAML
-  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
-  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
-task:
-  status: assigned
-YAML
-  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
-
-  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 1 ]
-
-  # 21分後・混在ケースゆえ20分cooldownどおり再通知される
-  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:21:00")" run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 2 ]
-  run grep -c "全員done・3時間間隔に間引き中" "$KARO_CALLS_LOG"
-  [ "$output" -eq 0 ]
-}
-
-# ── T-DM-026【日中は間引かない】昼間は全員status:doneでも従来どおり20分
-#   cooldownのまま(間引きは夜間限定)──
-@test "T-DM-026: 昼間は全員status:doneでも間引かれず20分cooldownのまま再通知される" {
+# ── T-DM-026【新】status=doneの足軽しかいない場合、全体としても発火しない
+#   (stalled配列が空のまま終わることの実証・heartbeat行のstalled=0も確認) ──
+@test "T-DM-026: status=doneの足軽しかいなければstalled=0のまま発火しない" {
   cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
 task:
   status: done
@@ -538,11 +546,306 @@ YAML
 
   DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
+  [ ! -s "$KARO_CALLS_LOG" ]
+  run grep -c "stalled=0" "$DEADMAN_DASHBOARD"
+  [ "$output" -ge 1 ]
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_914【一】T2: REPORTED_NOT_CLOSED判定(軍師設計§3.2・§4の条件1〜6)
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-027【RED→GREEN・実物fixture】ashigaru1の実際の食い違い
+#   (subtask_cmd911_e1_e2_vault_write・task=assigned/report=done)を複製した
+#   fixtureを使う。是正前のdeadman_switch.shならこの組は単なる「放置」として
+#   stalled扱いのまま残った(2026-09-28 16:40の実ログと同じ形)。是正後は
+#   task YAMLのstatusをdoneへ書き戻し、stalledとは別の文言で家老へ通知する ──
+@test "T-DM-027: REPORTED_NOT_CLOSED正常系(実物ashigaru1食い違いfixture)—書き戻し・専用文言通知・stalledに入らない" {
+  place_cmd914_fixture ashigaru1 202609281651.00 202609281654.00
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-28 19:30:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # task YAMLのstatusがdoneへ書き戻されている
+  run grep -E '^\s*status:\s*done\s*$' "$TMP_DIR/tasks/ashigaru1.yaml"
+  [ "$status" -eq 0 ]
+
+  # 家老へは「閉じた」の専用文言で通知され、放置の文言(「放置中」)は含まない
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "放置中" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+
+  # dashboard・logにも記録される
+  run grep -c "REPORTED_NOT_CLOSED" "$DEADMAN_DASHBOARD"
+  [ "$output" -ge 1 ]
+  run grep -c "REPORTED_NOT_CLOSED agent=ashigaru1" "$DEADMAN_LOG_FILE"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-028【安全側①】報告のtask_idがtask YAMLと違えば閉じない。
+#   前のtaskの報告で今のtaskを誤って閉じる事故(2026-09-28実測の知らせの
+#   取り違えと同型)を防ぐ ──
+@test "T-DM-028: 報告のtask_idがtaskと違えばREPORTED_NOT_CLOSEDとせずstalledのまま(理由付き)" {
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  task_id: subtask_test_028_task
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+  cat > "$TMP_DIR/reports/ashigaru2_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru2
+  task_id: subtask_test_028_OTHER
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru2_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "task_idが違う" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  # taskのstatusは書き換わっていない(assignedのまま)
+  run grep -E '^\s*status:\s*assigned\s*$' "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$status" -eq 0 ]
+}
+
+# ── T-DM-029【安全側②】報告のmtimeがtaskより古ければ閉じない。家老の書き足し・
+#   差し戻し(addendum)後に古い報告で閉じる事故を防ぐ ──
+@test "T-DM-029: 報告のmtimeがtaskより古ければREPORTED_NOT_CLOSEDとせずstalledのまま" {
+  cat > "$TMP_DIR/tasks/ashigaru3.yaml" <<'YAML'
+task:
+  task_id: subtask_test_029
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081200.00 "$TMP_DIR/tasks/ashigaru3.yaml"   # task mtime: 12:00(報告より後)
+  cat > "$TMP_DIR/reports/ashigaru3_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru3
+  task_id: subtask_test_029
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru3_report.yaml"  # report mtime: 10:05(taskより古い)
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "報告がtaskより古い" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-030【安全側③-a】報告が複数文書(`---`区切り)なら閉じない ──
+@test "T-DM-030: 報告が複数文書ならREPORTED_NOT_CLOSEDとせずstalledのまま" {
+  cat > "$TMP_DIR/tasks/ashigaru4.yaml" <<'YAML'
+task:
+  task_id: subtask_test_030
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru4.yaml"
+  cat > "$TMP_DIR/reports/ashigaru4_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru4
+  task_id: subtask_test_030
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+  skill_candidate: null
+---
+stray: doc
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru4_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "単一文書でない" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-031【安全側③-b】報告に重複キーがあれば閉じない(2026-09-27
+#   ashigaru2の重複キー事故=cmd_900と同型の壊れ方を、閉じる材料として
+#   使わない) ──
+@test "T-DM-031: 報告に重複キーがあればREPORTED_NOT_CLOSEDとせずstalledのまま" {
+  cat > "$TMP_DIR/tasks/ashigaru5.yaml" <<'YAML'
+task:
+  task_id: subtask_test_031
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru5.yaml"
+  cat > "$TMP_DIR/reports/ashigaru5_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru5
+  worker_id: ashigaru5
+  task_id: subtask_test_031
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+  skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru5_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "重複キー" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-032【条件6】報告のstatusがblockedならtaskへblockedを書き戻すが、
+#   「閉じた」「closed」とは表現しない(軍師設計§4条件6) ──
+@test "T-DM-032: 報告のstatusがblockedならblockedへ書き戻すが「閉じた」とは言わない" {
+  cat > "$TMP_DIR/tasks/ashigaru6.yaml" <<'YAML'
+task:
+  task_id: subtask_test_032
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru6.yaml"
+  cat > "$TMP_DIR/reports/ashigaru6_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru6
+  task_id: subtask_test_032
+  parent_cmd: cmd_x
+  status: blocked
+  timestamp: "2026-09-08T10:05:00"
+  result: 1Password認証待ち
+skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru6_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run grep -E '^\s*status:\s*blocked\s*$' "$TMP_DIR/tasks/ashigaru6.yaml"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+  run grep -c "blocked" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-033【報告なし】対応する報告ファイルが存在しなければ、従来どおり
+#   stalledとして報せる(REPORTED_NOT_CLOSEDへ迂回しない) ──
+@test "T-DM-033: 報告ファイルが無ければREPORTED_NOT_CLOSEDとせず従来どおりstalledとして報せる" {
+  cat > "$TMP_DIR/tasks/ashigaru7.yaml" <<'YAML'
+task:
+  task_id: subtask_test_033
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru7.yaml"
+  # queue/reports/ashigaru7_report.yaml を意図的に用意しない
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "放置中" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "報告ファイルなし" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ══════════════════════════════════════════════════════════════════════════
+# cmd_914【一】T2続き: 軍師QC是正(F1・F2)
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-034【F1・RED→GREEN】報告が「平らな形」(report:で包まない・
+#   worker_id/task_id等を文書の一番上に直接並べる。正典=instructions/
+#   ashigaru.md Report Format・inbox skill Step 10)であってもCLOSEできる。
+#   実測: 今のqueue/reports/ashigaru{2,6,7}_report.yamlはこの形であり、
+#   report:で包む形しか受けなかった是正前は「report欄なし」でSTALLEDの
+#   ままだった(2026-09-28 20:00頃、軍師QCで手動確認済み)。本fixtureは
+#   ashigaru7_report.yamlの実物の形を模したもの(tests/fixtures/cmd914/
+#   report_flat_form_ashigaru7_shape.yaml参照)──
+@test "T-DM-034: 報告が平らな形(ashigaru7_report.yaml実物型)でもCLOSEになる—是正前はSTALLEDのままだった" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  task_id: subtask_test_f1_flat_form
+  status: assigned
+  timestamp: "2026-09-28T15:40:00"
+YAML
+  touch -t 202609281540.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cp "${PROJECT_ROOT}/tests/fixtures/cmd914/report_flat_form_ashigaru7_shape.yaml" "$TMP_DIR/reports/ashigaru1_report.yaml"
+  touch -t 202609281550.00 "$TMP_DIR/reports/ashigaru1_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-28 19:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # task YAMLのstatusがdoneへ書き戻されている(平らな形の報告でCLOSEした証拠)
+  run grep -E '^  status: done$' "$TMP_DIR/tasks/ashigaru1.yaml"
+  [ "$status" -eq 0 ]
+
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+  run grep -c "放置中" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+  run grep -c "report欄なし" "$KARO_CALLS_LOG"
+  [ "$output" -eq 0 ]
+}
+
+# ── T-DM-035【F2・RED→GREEN】task:直下の字下げ(2つの空白)だけのstatus:行を
+#   書き換え、context等のblock文字列中の「status: …」という言及(家老の
+#   説明文によく出る)は書き換わらない。是正前(`^[[:space:]]*status:`と
+#   字下げ不問)ならcontextブロック内の「    status: draft (…)」という行を
+#   誤って書き換え、本物のtask.statusは assigned のまま残った(2026-09-28
+#   軍師QC・手動再現で確認済み)。書き戻し後にyamlで読み直しtask.statusが
+#   新しい値になったことを確かめる仕組み自体もここで検証する ──
+@test "T-DM-035: block文中のstatus:言及は書き換わらず、task:直下の本物のstatus:のみ書き換わる—是正前は誤って書き換わった" {
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  task_id: subtask_test_f2_block_status
+  parent_cmd: cmd_x
+  context: |
+    前回の是正メモ:
+    status: draft (これは足軽が書き残した言及であり、本物のtask.statusではない)
+  status: assigned
+  timestamp: "2026-09-08T10:00:00"
+YAML
+  touch -t 202609081000.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+  cat > "$TMP_DIR/reports/ashigaru2_report.yaml" <<'YAML'
+report:
+  worker_id: ashigaru2
+  task_id: subtask_test_f2_block_status
+  parent_cmd: cmd_x
+  status: done
+  timestamp: "2026-09-08T10:05:00"
+  result: ok
+skill_candidate: null
+YAML
+  touch -t 202609081005.00 "$TMP_DIR/reports/ashigaru2_report.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 15:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+
+  # 本物のtask.status(task:直下・2space)がdoneへ書き換わっている
+  run grep -E '^  status: done$' "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$status" -eq 0 ]
+
+  # contextブロック内の「status: draft」という言及は一切変わっていない
+  run grep -c "status: draft (これは足軽が書き残した言及であり、本物のtask.statusではない)" "$TMP_DIR/tasks/ashigaru2.yaml"
   [ "$output" -eq 1 ]
 
-  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 14:21:00")" run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  run wc -l < "$KARO_CALLS_LOG"
-  [ "$output" -eq 2 ]
+  # 「  status: draft」(2space+status:draft)は存在しない(書き換わっていたら残るはずの旧誤爆の跡が無い)
+  run grep -c '^  status: draft' "$TMP_DIR/tasks/ashigaru2.yaml"
+  [ "$output" -eq 0 ]
+
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "閉じた" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
 }
