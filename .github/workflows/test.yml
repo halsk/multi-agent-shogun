@@ -233,10 +233,10 @@ jobs:
             exit 0
           fi
 
-          git diff --exit-code instructions/generated/ || {
+          git diff --exit-code instructions/generated/ AGENTS.md .github/copilot-instructions.md agents/default/system.md || {
             echo "::error::Generated instructions files are out of sync!"
             echo "::error::Run 'bash scripts/build_instructions.sh' and commit the changes."
-            git diff instructions/generated/
+            git diff instructions/generated/ AGENTS.md .github/copilot-instructions.md agents/default/system.md
             exit 1
           }
 
