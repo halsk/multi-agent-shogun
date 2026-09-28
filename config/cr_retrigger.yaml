@@ -1,0 +1,44 @@
+# cmd_908 T1: CodeRabbit rate-limited PR 自動再引き金 — 設定
+#
+# 設計: queue/reports/cmd908_ratelimit_retrigger_design.md
+#   §1(allowlist)・§3.2(予算)・§9.1(上限の件数を持たない)・
+#   §9.2(予備の問い合わせ)・§9.4(見直しの条件)
+#
+# ★上限の件数はここにも一切置かない(§9.1)。budget は CodeRabbit の割当の
+# 推測ではなく、当家の試行の数を抑えるための自前の枷である。
+
+enabled: true
+
+# allowlist: halsk の PR のみを対象とする repo(§1)。
+# 上流(yohey-w/*・digital-go-jp/*)はここに書かれてもコード側(is_allowed_repo)
+# が拒む。
+allowlist:
+  - geolonia/geonicdb-console
+  - geolonia/geonicdb
+  - geolonia/skills
+  - geolonia/geonicdb-docs
+
+budget:
+  # 引き金(`[AI] @coderabbitai review`)の自前の予算(確定版§9.1・追補2の勧め)。
+  trigger_per_hour: 1
+  trigger_per_day: 8
+  # 予備の問い合わせ(`[AI] @coderabbitai rate limit`)の下限(確定版§9.2)。
+  query_min_interval_min: 30
+  query_per_day: 6
+
+# 予備の問い合わせの有効/無効。既定は無効: 通知の待ち時間の読み取り
+# (§9.2の手段1)で足りる時は使わない。
+query:
+  enabled: false
+
+# 待ち時間が読めない時の退きの求め方(確定版§9.2の手段3・§9.4)。
+#   window: 直前60分に実際に走ったレビューのうち最古 + 60分 + 2分(既定)
+#   hourly: 次の正時 + 2分
+fallback_mode: window
+
+# 問い合わせをいつ試みるか(確定版§9.4)。
+#   before_computed:     自前の計算(手段3)より先に問い合わせ(手段2)を試みる(既定)
+#   after_computed_miss: 手段3の刻限に投げてなお rate limited が返った件だけ問う
+#   (cmd_907の問い二=移動窓が家老の巡回で3件確定した後、軍師の判定で切り替える。
+#    コード変更は不要・この1行を変えるだけ)
+query_policy: before_computed
