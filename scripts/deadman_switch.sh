@@ -75,6 +75,26 @@ THRESHOLD_MIN=150
 # 最後の砦を再利用する(新規経路は作らない)。★独立性の掟との整合: これは
 # 既存の検知スクリプト(inbox_watcher等)への依存ではなく、mailboxデータを
 # task YAMLと同様に直接読むだけであり、判定を他機構へ委ねてはいない。
+#
+# REPORTED_NOT_CLOSED 判定の追加(cmd_914【一】T2・軍師設計
+# queue/reports/cmd914_status_update_gap.md §3.2・§4): 足軽の手順(skill)に
+# taskのstatusをdoneへ書き戻す段が無い(真因は§1に調査済み)ため、報告は
+# doneでもtask YAMLのstatusがassigned/in_progressのまま残り、本網が
+# 「放置」と誤検知する食い違いが常態化していた(生きた例=ashigaru1
+# subtask_cmd911_e1_e2_vault_write)。status=assigned/in_progressで
+# idleが閾値超の足軽については、stalledとして報せる前に対応する報告
+# (queue/reports/{agent}_report.yaml)を検め、軍師設計の条件1〜6を
+# すべて満たす場合に限りtask YAMLのstatusを報告の値へ書き戻し、
+# stalledとは別の文言で家老へ報せる(write_back_status()・
+# scripts/deadman_reconcile.py)。
+#
+# ★同時に是正(軍師設計§3.2): status=doneで手が空いているだけの足軽は
+# 「止まった」のではなく「次割当待ち」であり、stalledとして報せない
+# (blockedと同じ扱いへ変更)。これにより、cmd_785⑨で導入した「夜間・
+# 全員status:done停止」専用の間引きcooldown(NIGHT_DONE_COOLDOWN_SEC・
+# KARO_NIGHT_DONE_LAST_FIRE_FILE)は、doneがstalledへ二度と入らなくなった
+# ため到達不能となった。間引く対象そのものが無くなった(=鳴らないのが
+# 正しい)ので、間引き機構ごと削除する(実装・テストとも)。
 
 set -uo pipefail
 
@@ -94,20 +114,28 @@ KARO_INBOX="${DEADMAN_KARO_INBOX:-$SCRIPT_DIR/queue/inbox/karo.yaml}"      # cmd
 SHOGUN_INBOX="${DEADMAN_SHOGUN_INBOX:-$SCRIPT_DIR/queue/inbox/shogun.yaml}" # cmd_784: 将軍の生存信号
 LAST_FIRE_FILE="$STATE_DIR/last_fire_epoch.txt"
 KARO_LAST_FIRE_FILE="$STATE_DIR/karo_last_fire_epoch.txt"   # 殿宛cooldownとは別名(混線防止)
-KARO_NIGHT_DONE_LAST_FIRE_FILE="$STATE_DIR/karo_night_done_last_fire_epoch.txt"  # cmd_785⑨: 夜間・全員done停止専用cooldown
 KARO_NOTIFIED_AGENTS_FILE="$STATE_DIR/karo_notified_agents.txt"  # cmd_783: 家老通知時刻+停止agent一覧のスナップショット
 COOLDOWN_SEC=$((2 * 60 * 60))   # 殿宛: 1回/2時間
 KARO_COOLDOWN_SEC=$((20 * 60))  # 家老宛: 1回/20分(cmd_783受入条件。cmd_784バグ②修正: 従前の30分はcmd_783受入条件との食い違いだった)
-# cmd_785⑨: 夜間、停止中の全員がstatus:done(実働中フリーズが1件も混在しない)場合に限る
-# 間引き用cooldown。3時間という値は本リポでの直近の同種是正(cmd_741・CI心拍ntfyの
-# 狼少年化対策で30分→3時間)に倣う。status:assigned等が1件でも混在する場合はこの間引きを
-# 適用せず、従来どおりKARO_COOLDOWN_SEC(20分)を維持する(実働中フリーズの検知速度を
-# 落とさないため——2026-09-06のashigaru4 24h凍結のような事故は夜間にも起こりうる)。
-NIGHT_DONE_COOLDOWN_SEC=$((3 * 60 * 60))
 LORD_ESCALATION_WAIT_SEC=$((15 * 60))  # cmd_783: 家老通知から殿宛エスカレーションまでの猶予
 NIGHT_START_HOUR=22             # config/settings.yaml console_stall_watchdog に倣う
 NIGHT_END_HOUR=8
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")"
+
+# cmd_914【一】T2: REPORTED_NOT_CLOSED判定の差し替え口(未設定時は本番パス)。
+# REPORTS_DIRはTASKS_DIRの兄弟ディレクトリを既定とする——bats単体テストが
+# DEADMAN_TASKS_DIRだけを差し替えても、既定でREPORTS_DIRも自動的に隔離された
+# 一時dirを指すようにするため(本番はqueue/tasksとqueue/reportsが実際に
+# 兄弟ディレクトリである・既存テストの多くを無改造のまま安全に保つ)。
+REPORTS_DIR="${DEADMAN_REPORTS_DIR:-$(dirname "$TASKS_DIR")/reports}"
+RECONCILE_SCRIPT="${DEADMAN_RECONCILE_SCRIPT:-$SCRIPT_DIR/scripts/deadman_reconcile.py}"
+if [ -z "${DEADMAN_PYTHON_BIN:-}" ]; then
+  if [ -x "$SCRIPT_DIR/.venv/bin/python3" ]; then
+    DEADMAN_PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+  else
+    DEADMAN_PYTHON_BIN="python3"
+  fi
+fi
 
 # cmd_880: Healthchecks.io ping URL 確保 (launchd global env → Keychain、
 # yaml-slim-launcher.sh / stall-watchdog-launcher.sh 前例に倣う。本スクリプトは
@@ -156,6 +184,66 @@ oldest_unread_epoch() {
   return 0
 }
 
+# cmd_914【一】T2: REPORTED_NOT_CLOSED判定でCLOSE可と判じたtask YAMLの
+# status行だけを書き戻す。finish_task.sh(T1・別task)と同じ考え方
+# (flock/mkdir排他・読取後mtime再確認・一時ファイル+rename)を、
+# 本スクリプトに依存を作らず自己完結で実装する。
+# $1=task YAMLパス $2=書き戻す新status $3=読取時点のmtime(競合検出用)
+# 戻り値: 0=書き戻し成功、1=失敗(競合・IO失敗等。呼び出し側は
+# stalledへフォールバックすること)
+write_back_status() {
+  local file="$1" new_status="$2" expected_mtime="$3"
+  local lockfile="${file}.lock" lockdir="${file}.lock.d"
+  local have_flock=0
+
+  if command -v flock &>/dev/null; then
+    exec 200>"$lockfile"
+    flock -w 5 200 || { exec 200>&-; return 1; }
+    have_flock=1
+  else
+    local i=0
+    while ! mkdir "$lockdir" 2>/dev/null; do
+      sleep 0.1
+      i=$((i + 1))
+      [ $i -ge 50 ] && return 1
+    done
+  fi
+
+  local rc=0
+  local cur_mtime
+  cur_mtime=$(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file" 2>/dev/null)
+  if [ "$cur_mtime" != "$expected_mtime" ]; then
+    rc=1  # 家老の書き換え等と競合(読取後にファイルが変わった)
+  else
+    local tmp
+    tmp=$(mktemp "${file}.XXXXXX" 2>/dev/null)
+    if [ -z "$tmp" ]; then
+      rc=1
+    elif awk -v new="$new_status" '
+        BEGIN { done = 0 }
+        !done && /^[[:space:]]*status:[[:space:]]*/ {
+          match($0, /^[[:space:]]*/)
+          printf "%sstatus: %s\n", substr($0, RSTART, RLENGTH), new
+          done = 1
+          next
+        }
+        { print }
+      ' "$file" > "$tmp"; then
+      mv "$tmp" "$file" || { rm -f "$tmp"; rc=1; }
+    else
+      rm -f "$tmp"
+      rc=1
+    fi
+  fi
+
+  if [ "$have_flock" = 1 ]; then
+    exec 200>&-
+  else
+    rmdir "$lockdir" 2>/dev/null
+  fi
+  return $rc
+}
+
 # DEADMAN_NOW_EPOCH: 誤報/夜間の再現テスト用の時刻偽装(未設定時は実時計)
 now_epoch="${DEADMAN_NOW_EPOCH:-$(date +%s)}"
 now_iso=$(date -r "$now_epoch" '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d "@$now_epoch" '+%Y-%m-%dT%H:%M:%S%z')
@@ -199,7 +287,7 @@ fi
 file_count=0
 stalled=()
 stalled_agents=()  # cmd_783: 殿宛エスカレーション比較用の素のagent名一覧(detail文言を含まぬ)
-stalled_statuses=()  # cmd_785⑨: 夜間done間引き判定用(dispatcher停止は"dispatcher"を積む)
+reconciled=()      # cmd_914 T2: REPORTED_NOT_CLOSEDとして自動で書き戻したagentの記録
 for f in "$TASKS_DIR"/*.yaml; do
   [ -f "$f" ] || continue
   agent="$(basename "$f" .yaml)"
@@ -222,12 +310,49 @@ for f in "$TASKS_DIR"/*.yaml; do
   [ -z "$m" ] && continue
   status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
+  # cmd_914【一】T2(軍師設計§3.2): status=doneは手が空いただけで止まってはいない
+  # (次割当待ち)。blockedと同じくstalledとして報せない。
+  [ "$status" = "done" ] && continue
   idle=$(( (now_epoch - m) / 60 ))
-  if [ "$idle" -ge "$THRESHOLD_MIN" ]; then
-    stalled+=("${agent}(status=${status:-不明}・idle=${idle}分)")
-    stalled_agents+=("$agent")
-    stalled_statuses+=("${status:-不明}")
+  [ "$idle" -ge "$THRESHOLD_MIN" ] || continue
+
+  reconcile_detail=""
+  if [ "$status" = "assigned" ] || [ "$status" = "in_progress" ]; then
+    # cmd_914【一】T2: stalledと決めつける前に、対応する報告が既に
+    # done/blocked/failedを告げているのにtask YAMLのstatusだけが
+    # 書き戻されていない「REPORTED_NOT_CLOSED」でないかを検める
+    # (軍師設計§3.2・§4の条件1〜6)。
+    report_file="$REPORTS_DIR/${agent}_report.yaml"
+    reconcile_out=$("$DEADMAN_PYTHON_BIN" "$RECONCILE_SCRIPT" "$f" "$report_file" 2>/dev/null)
+    reconcile_rc=$?
+    r_verdict=""; r_rest=""
+    read -r r_verdict r_rest <<< "$reconcile_out"
+    if [ "$reconcile_rc" -eq 0 ] && [ "$r_verdict" = "CLOSE" ] && [ -n "$r_rest" ]; then
+      new_status="$r_rest"
+      task_id=$(grep -E '^\s*task_id:\s*' "$f" | head -1 | sed 's/.*task_id:[[:space:]]*//' | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
+      if write_back_status "$f" "$new_status" "$m"; then
+        if [ "$new_status" = "blocked" ]; then
+          # ★条件6(軍師設計§4): blockedは「閉じた」と表現しない
+          karo_msg2="報告済みでstatusが戻っていなかったゆえ書き戻した: ${agent} ${task_id} → blocked(理由は報告を参照)"
+          dash_msg2="ℹ️ [deadman_switch] REPORTED_NOT_CLOSED: ${agent} ${task_id} → blocked(理由は報告を参照)"
+        else
+          karo_msg2="報告済みでstatusが戻っていなかったゆえ閉じた: ${agent} ${task_id}(→ ${new_status})"
+          dash_msg2="✅ [deadman_switch] REPORTED_NOT_CLOSED: ${agent} ${task_id} を ${new_status} へ書き戻した"
+        fi
+        bash "$INBOX_WRITE_SCRIPT" karo "$karo_msg2" report_received deadman_switch
+        printf '\n- %s @ %s\n' "$dash_msg2" "$now_iso" >> "$DASHBOARD"
+        echo "[deadman_switch] $now_iso REPORTED_NOT_CLOSED agent=$agent task_id=$task_id new_status=$new_status" >> "$LOG_FILE"
+        reconciled+=("${agent}(${new_status})")
+        continue  # stalledへは積まない
+      fi
+      reconcile_detail="・書き戻し失敗(競合の疑い、次回再判定)"
+    else
+      reconcile_detail="・${r_rest:-未知の理由}"
+    fi
   fi
+
+  stalled+=("${agent}(status=${status:-不明}・idle=${idle}分${reconcile_detail})")
+  stalled_agents+=("$agent")
 done
 
 # ── cmd_784: 家老/将軍(dispatcher)の生存判定を stalled 網へ相乗りさせる ──
@@ -250,7 +375,6 @@ for dispatcher in karo shogun; do
   if [ "$d_idle" -ge "$THRESHOLD_MIN" ]; then
     stalled+=("${dispatcher}(inbox未読滞留=${d_idle}分)")
     stalled_agents+=("$dispatcher")
-    stalled_statuses+=("dispatcher")  # cmd_785⑨: done扱いしない(実働中フリーズ相当として速い cadence を維持)
   fi
 done
 
@@ -289,27 +413,13 @@ fi
 
 detail=$(IFS=', '; echo "${stalled[*]}")
 
-# cmd_785⑨: 停止中の全員がstatus:done(dispatcher停止・status:assigned等の実働中
-# フリーズが1件も混在しない)かどうかを判定する。夜間はこの場合のみcooldownを
-# 20分→3時間へ間引く——「doneのまま放置」の検知価値(cmd_771)は保ったまま、深夜に
-# 同じ顔ぶれを20分毎に連打するノイズだけを削る(2026-09-09未明の実測: 8エージェント
-# 全員status=doneのまま20分毎に6時間以上連打が続いていた)。1件でもstatus:assigned等が
-# 混じれば「done除外」にはならず、従来どおり20分cooldownのまま速く家老へ知らせる
-# (実働中フリーズは夜間にも起こりうるため——2026-09-06 ashigaru4 24h凍結の教訓)。
-all_done_stall=true
-for st in "${stalled_statuses[@]}"; do
-  if [ "$st" != "done" ]; then
-    all_done_stall=false
-    break
-  fi
-done
-
+# ★cmd_914【一】T2是正: status=doneは上のループで既にstalledから除外済み
+# (blockedと同じ扱い)。ゆえに「停止中の全員がstatus:done」というケースは
+# もう発生し得ず、cmd_785⑨で導入した夜間限定の間引きcooldownは丸ごと
+# 到達不能になったため削除した(間引く対象そのものが無い=鳴らないのが
+# 正しい)。家老inboxへの通知は常にKARO_COOLDOWN_SEC/KARO_LAST_FIRE_FILEを使う。
 karo_cooldown_sec="$KARO_COOLDOWN_SEC"
 karo_last_fire_file="$KARO_LAST_FIRE_FILE"
-if $in_night && $all_done_stall; then
-  karo_cooldown_sec="$NIGHT_DONE_COOLDOWN_SEC"
-  karo_last_fire_file="$KARO_NIGHT_DONE_LAST_FIRE_FILE"
-fi
 
 # 家老inboxへの通知(昼夜問わず・独立cooldown。夜間は「軽い作業のみ回せ」を明記)
 karo_last_fire=0
@@ -317,7 +427,6 @@ karo_last_fire=0
 if [ $(( now_epoch - karo_last_fire )) -ge "$karo_cooldown_sec" ]; then
   if $in_night; then
     karo_msg="🚨【死者確認スイッチ・夜間】status:blocked以外で放置中: ${detail} @ $now_iso ★夜間である。軽い作業のみ回せ★"
-    $all_done_stall && karo_msg="${karo_msg}(全員done・3時間間隔に間引き中)"
   else
     karo_msg="🚨【死者確認スイッチ】status:blocked以外で放置中: ${detail} @ $now_iso"
   fi

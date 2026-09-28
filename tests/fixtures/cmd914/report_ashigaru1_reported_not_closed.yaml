@@ -1,0 +1,65 @@
+report:
+  worker_id: ashigaru1
+  task_id: subtask_cmd911_e1_e2_vault_write
+  parent_cmd: cmd_911
+  redo_of: subtask_cmd911_recording_file_label_audit
+  status: done
+  model: claude-sonnet-5
+  timestamp: '2026-09-28T17:00:00'
+  result: |
+    ## cmd_911: E1・E2のvault実書込み、完了(裁可の出所=msg_20260928_165127_a9ef624e)
+
+    ### 前提
+
+    前task(subtask_cmd911_recording_file_label_audit)のworktreeは既に
+    撤収済みだったため、本taskはvaultへの直接書込みのみ実施(automation側の
+    worktreeは使用せず)。
+
+    ### E1: code for japan/プリザンター（インプリム）打ち合わせ.md
+
+    - recording_fileを空(旧: 2026-08-18_1157「コミュニケーション集約…」
+      ="Geolonia 取締役会 2026-08-18.md"と誤って同一のtranscriptを指して
+      いたもの)にした。
+    - 末尾に `<!-- autolink-notfound: 該当日時の文字起こしが見つからない
+      (same_meeting=falseの候補のみ、または候補0件)。手動確認が要る -->`
+      マーカーを追記(既存の他notfound事例と文言を一致させた)。
+    - ai:summaryブロック: **本ノートには元々存在しなかった**(本文確認済み・
+      grep 0件)。削除対象なし。
+
+    ### E2: ワカモレ：オペレーションミーティング.md
+
+    - recording_fileを旧(2026-07-21_0902)から
+      `[[2026-07-21_1000_週次会議_自治体向けゼロトラスト導入検証計画_transcript]]`
+      へ張り替えた。
+    - ai:summaryブロック: **本ノートにも元々存在しなかった**(本文確認済み・
+      grep 0件)。削除対象なし。
+    - 既存の`<!-- autolink: 録音候補(要確認) -->`候補一覧コメントは、
+      task指示に無い改変を避けるため手を付けず残した(recording_fileが
+      非空になったため、次回sweepはこのノートを素通りする=実害なし)。
+
+    ### git操作
+
+    commit・push は一切行っていない。`git -C ~/workspace/obsidian status
+    --short` の結果:
+
+    ```
+     M "code for japan/プリザンター（インプリム）打ち合わせ.md"
+     M "ワカモレ：オペレーションミーティング.md"
+    ```
+
+    ### ★殿の確認要(E1)
+
+    E1の根拠は「同日(2026-08-18)の他candidate 4件(0836/0906/1157/1336)
+    いずれも本文と一致せず、正しい候補が同日に存在しない」という消極的
+    確認であり、E2(transcript本文中に「WAKAMORI」という固有語が直接
+    出現する決定的確認)より確度が一段低い。家老context指示どおり、
+    dashboard 🚨へ記載し殿の一目確認を仰がれたい。
+
+  next_steps:
+    - "家老: dashboard 🚨にE1(プリザンター→notfound化)の処置を記載し、殿の事後確認を仰ぐこと(裁可の出所=msg_20260928_165127_a9ef624e、context中の家老指示どおり)"
+    - "家老: 次回gitops同期後、E1・E2の2件がorigin/mainへ反映されたかをgit logで確認されたい"
+    - "次回09:00 sweepのlogで、E2(ワカモレ)がrecording_file非空ゆえ素通りされることを確認されたい(N1・CoIU同様)"
+skill_candidate: null
+files_modified:
+  - "/Users/hal/workspace/obsidian/code for japan/プリザンター（インプリム）打ち合わせ.md"
+  - "/Users/hal/workspace/obsidian/ワカモレ：オペレーションミーティング.md"

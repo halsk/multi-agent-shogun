@@ -165,6 +165,7 @@
 !scripts/mgmt_bloat_watchdog.sh
 !scripts/stall_watchdog_report.sh
 !scripts/deadman_switch.sh
+!scripts/deadman_reconcile.py
 !scripts/com.swarm.deadman.plist
 !scripts/branch_drift_check.sh
 !scripts/check_sc2314_baseline.sh
