@@ -52,6 +52,8 @@ workflow:
   - step: 3
     action: update_status
     value: in_progress
+    command: 'bash scripts/start_task.sh'
+    note: "cmd_914: 手書きのstatus更新から一つの操作へ集約。statusがassignedの時だけin_progressへ書き換える(flock・mtime確認込み)。"
   - step: 3.5
     action: set_current_task
     command: 'tmux set-option -p @current_task "{task_id_short}"'
@@ -64,6 +66,8 @@ workflow:
   - step: 6
     action: update_status
     value: done
+    deferred_to: step 9
+    note: "cmd_914: 実際のstatus書換はstep 9のfinish_task.sh呼出にまとめて行う(git_push/build_verify/seo記録が全て終わってから)。ここでは何もしない(重複書換防止)。"
   - step: 6.5
     action: clear_current_task
     command: 'tmux set-option -p @current_task ""'
@@ -78,11 +82,11 @@ workflow:
     action: seo_keyword_record
     note: "If SEO project, append completed keywords to done_keywords.txt"
   - step: 9
-    action: inbox_write
+    action: finish_task
     target: gunshi
-    method: "bash scripts/inbox_write.sh"
+    command: "bash scripts/finish_task.sh --status done"
     mandatory: true
-    note: "Changed from karo to gunshi. Gunshi now handles quality check + dashboard."
+    note: "cmd_914: 旧step6(update_status done)+旧step9(inbox_write)を1回の呼出に統合。report YAMLの検め(task_id一致・重複キー無し・必須欄そろう・statusが--statusと一致・reportのmtimeがtaskより新しい)に一つでも失敗すれば非0で止まり、status書換もinbox_writeも行われない。blocked/failedで終える場合は--status blocked/--status failed。"
   - step: 9.5
     action: check_inbox
     target: "queue/inbox/ashigaru{N}.yaml"
@@ -211,11 +215,19 @@ date "+%Y-%m-%dT%H:%M:%S"
 
 ## Report Notification Protocol
 
-After writing report YAML, notify Gunshi (NOT Karo):
+After writing report YAML, finish the task (cmd_914 — replaces the old manual `inbox_write.sh` call):
 
 ```bash
-bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質チェックを仰ぎたし。" report_received ashigaru{N}
+bash scripts/finish_task.sh --status done
+# --status blocked / --status failed for those outcomes
+# --message "..." to override the default 戦国口調 message
 ```
+
+`finish_task.sh` validates the report YAML (single document, task_id match, no duplicate
+keys, required fields present, status matches `--status`, report mtime newer than task
+mtime) and — only if all checks pass — rewrites the task YAML's status AND notifies
+Gunshi via `inbox_write.sh` (type=report_received) in one atomic call. If any check
+fails, it exits non-zero and touches nothing (neither task YAML nor inbox).
 
 Gunshi now handles quality check and dashboard aggregation. No state checking, no retry, no delivery verification.
 The inbox_write guarantees persistence. inbox_watcher handles delivery.
@@ -306,7 +318,7 @@ Act without waiting for Karo's instruction:
 1. Self-review deliverables (re-read your output)
 2. **Purpose validation**: Read `parent_cmd` in `queue/shogun_to_karo.yaml` and verify your deliverable actually achieves the cmd's stated purpose. If there's a gap between the cmd purpose and your output, note it in the report under `purpose_gap:`.
 3. Write report YAML
-4. Notify Gunshi via inbox_write
+4. Run `bash scripts/finish_task.sh --status done` (validates the report, rewrites task YAML status, and notifies Gunshi via inbox_write — cmd_914)
 5. **Check own inbox** (MANDATORY): Read `queue/inbox/ashigaru{N}.yaml`, process any `read: false` entries
 6. (No delivery verification needed — inbox_write guarantees persistence)
 

@@ -66,7 +66,15 @@ instructions:
 
   # 完了報告
   - "完了報告 YAML を queue/reports/ashigaru<N>_report.yaml に出力"
-  - "家老に inbox_write で報告 (戦国口調)"
+  - "bash scripts/finish_task.sh --status done で終える (report検め→task YAML status書換→家老/軍師へinbox_writeを一括で行う。cmd_914)"
+
+# 完了報告コマンド(cmd_914: 旧inbox_write.sh直呼びから移行。finish_task.shが
+# report YAMLの検め(task_id一致・重複キー無し・必須欄そろう・statusが
+# --statusと一致・reportのmtimeがtaskより新しい)→task YAMLのstatus書換→
+# report_toへのinbox_writeを一つの呼出で行う。一つでも条件を欠けば非0で
+# 止まり何も書き換えない)
+report_command: |
+  bash scripts/finish_task.sh --status done
 
 acceptance_criteria:
   - "<検証可能な条件 1>"
