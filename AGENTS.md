@@ -548,6 +548,7 @@ unresolved)を見るのは、★レビューが実際に行われたことを確
 | 7 | 上流 repo (yohey-w/* / digital-go-jp/*) への `gh pr create` をブロック | Prompt Injection Defense |
 | 8 | `inbox_write.sh` 呼出コマンドの二重引用符内に未エスケープのバッククォート、または `$(...)` 開きがあればブロック | メッセージ本文のバッククォート事故防止 |
 | 9 | 可逆性ゲート(cmd_813): worktree外への書込み・削除、`config/settings.yaml`等の常駐設定ファイルへの書込み・削除(rm/cp/mv/ln)、`gh pr merge`・`gh pr/issue close`・`gh repo archive/delete`、`launchctl load/unload/bootstrap/bootout`・`crontab`編集をブロック。`.guard-authorized`(task_id/expires・期限付き・git追跡下限定)設置で殿/将軍の裁可があれば通す(使用時はlogs/+dashboard.mdへ記録) | 「夜間の家中運用」節(instructions/generated/codex-karo.md) |
+| 12 | `gh pr comment`・`gh issue comment`・`gh pr create`・`gh issue create`・`gh pr review`で、`--body`/`--body-file`の中身の先頭が`[AI]`で始まっていなければブロック(cmd_923)。`--body`/`--body-file`のいずれも無ければ内容検証不能として一律ブロック | Iron Law 7細則「殿の代理での外部書込み」節(2026-09-09殿改訂) |
 
 ★Hook 9 の効き目について(軍師QC是正・check_1・C1・過大な安心を防ぐための正直な記述):
 Hook 9 が実際に捕捉するのは、Bash ツールへ渡された**そのコマンド文字列自身**に現れる rm/unlink・cp/mv/ln・gh・launchctl・crontab の呼出のみである。直接形に加え、絶対/相対パス接頭(`/bin/rm`)・バックスラッシュエスケープ(`\rm`)・引用符("rm"/'rm')・変数エイリアス(`R=rm; $R ...`)、および `bash -c '...'`/`eval "..."` の中身の再走査までは捕捉する(軍師QCで実証された回避形への対応済み)。
@@ -558,6 +559,8 @@ Hook 9 が実際に捕捉するのは、Bash ツールへ渡された**そのコ
 ★もう一つの頻度の高い罠(軍師が本QC中に実際に踏んだもの): 対象操作の語(例: `gh pr merge`)は、実行するコマンド本体でなく説明文・grepの検索語・echoのラベルに書いただけでも検知される(Hook 11で繰り返し踏んだ「地の文が検知される」病と同型)。調べ物をする時は語を分割するか、ファイル経由で渡すこと。
 
 ★Hook1・Hook3の効き目について(cmd_903・軍師設計 queue/reports/cmd903_hook1_hook3_design.md§9): 両者が見るのは Bash ツールへ渡る文字列に現れる git の呼出のみである。直接形・引用符や `\` で包んだ語・フルパス・包み(env/timeout等)・変数/関数エイリアス・`bash -c`/`eval`/パイプで解釈系へ渡した中身までは捕捉する。しかし子プロセスの内部から呼ばれるgitは一切見えない(cmd_901の空ツリーのコミットは、この経路で本物のmainに入った)。「mainへのコミットはもう構造的に防がれた」と思い込むな。第一の守りは、テストやスクリプトが本物のリポに触れない設計である(GIT_\*を引き継がない・一時dirを確かめる)。
+
+★Hook 12の効き目について(cmd_923・正直に明記): 本Hookが実際に検知するのは、Bashツールへ渡されたコマンド文字列自身に現れる`gh pr/issue comment`・`gh pr/issue create`・`gh pr review`の直接呼出のみである。子プロセス経由(別プログラム/スクリプトがgh CLIやGitHub APIを内部で呼ぶ形)・GUI・他CLI(Codex/Copilot/Kimi)・直接シェルからの投稿は一切見えない。「これで(全て)防げる」わけではなく、Bashツールを通る経路に限り検知する。地の文誤爆(将軍が本task着手中に既存Hook9・Hook11の単純な`\b`正規表現による全文検索設計で自分のgrepコマンドを2度誤爆させた実例)を防ぐため、コマンド文字列を引用符を理解する状態機械で「区切り(; & | および引用符の外の改行)」ごとのセグメントへ分割し、セグメントの★先頭(=実行位置の語)が`gh`である場合のみ実コマンドとみなす設計を採る——コマンド全体を`\b`正規表現でgrepする設計(既存Hook9のgh検知等)は地の文を誤検知するため踏襲していない。変数エイリアス経由(`GH=gh; $GH pr comment ...`)・`bash -c`/`eval`内部への再帰的展開は実装していない(既知の限界)。
 
 設定場所: project の `.claude/settings.json` の `hooks.PreToolUse`（★`~/.codex/settings.json` ではない。将軍実測: `~/.codex/settings.json` に `hooks` キーは存在しない=model/tui/skipDangerousModePermissionPrompt/theme のみ。過去の記載は誤りであった）
 スクリプト: `scripts/hooks/guard.sh`（実行権限必須）

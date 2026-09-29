@@ -1803,6 +1803,21 @@ check "Hook12-H3 GREEN: gh api pulls reviews --raw-field body・[AI]あり(allow
 check "Hook12-H3 GREEN-2: gh api user (無関係なエンドポイント・allow)" allow \
   'gh api user'
 
+# ★是正(cmd_923続き・PR#180・軍師QC fail_must_fix G1是正)
+# gh api は -f/-F/--field/--raw-field/--input のいずれも無く、
+# -X/--methodがGET以外でもなければ既定でGET(読むだけ)。誤爆是正の核心
+# ——issues/comments のパスに一致するだけで書き込みとみなしてはならない。
+check "Hook12-G1 GREEN: 読むだけのgh api --paginate -q (issues/comments一致でも書込フラグ無し・allow)" allow \
+  'gh api --paginate "repos/geolonia/x/issues/230/comments?per_page=100" -q ".[].body"'
+check "Hook12-G1 GREEN: 読むだけのgh api pulls reviews一致(書込フラグ無し・allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews'
+check "Hook12-G1 GREEN: gh api -X GET明示(書込フラグ無し・allow)" allow \
+  'gh api -X GET repos/halsk/multi-agent-shogun/issues/1/comments'
+check "Hook12-G1 RED: gh api -X POST明示・[AI]無し(bodyフラグ無くとも書込とみなしblock)" block \
+  'gh api -X POST repos/halsk/multi-agent-shogun/issues/1/comments'
+check "Hook12-G1 RED: gh api --input経由・[AI]は検証できぬためblock" block \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments --input payload.json'
+
 echo ""
 echo "================================"
 echo "Results: PASS=$PASS, FAIL=$FAIL"

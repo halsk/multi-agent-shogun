@@ -2972,6 +2972,66 @@ _extract_gh_api_body_field_value() {
   ' <<<"$seg"
 }
 
+# ★FIX-G1(cmd_923続き・PR#180軍師QC): gh api セグメントが実際に
+# issues/pulls へ「書き込む」試みかどうかを判定する。gh api は
+# -f/-F/--field/--raw-field/--input のいずれも無ければ既定で GET
+# (読むだけ)であり、-X/--method を明示していてもその値が GET なら
+# 同様に読むだけである。これらが無い限り書き込みとはみなさない
+# (誤爆是正の核心——`gh api --paginate ".../comments?per_page=100"
+# -q ".[].body"` のような読むだけの呼出まで投稿とみなしてブロック
+# していた・軍師実測)。
+_ai_gh_api_is_write_attempt() {
+  local seg="$1"
+  awk -v RS='\004' '
+    {
+      n = length($0)
+      i = 1
+      nwords = 0
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == " " || c == "\t" || c == "\n") { i++; continue }
+        w = ""
+        st = "N"
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (st == "N" && (c == " " || c == "\t" || c == "\n")) break
+          if (st == "N" && c == "\\") { w = w substr($0, i + 1, 1); i += 2; continue }
+          if (st == "N") {
+            if (c == "\047") { st = "S"; i++; continue }
+            if (c == "\"") { st = "D"; i++; continue }
+            w = w c; i++; continue
+          }
+          if (st == "S") {
+            if (c == "\047") { st = "N"; i++; continue }
+            w = w c; i++; continue
+          }
+          # st == "D"
+          if (c == "\\") { i++; if (i <= n) w = w substr($0, i, 1); i++; continue }
+          if (c == "\"") { st = "N"; i++; continue }
+          w = w c; i++; continue
+        }
+        nwords++; words[nwords] = w
+      }
+      is_write = 0
+      method = ""
+      for (k = 1; k <= nwords; k++) {
+        w = words[k]
+        if (w == "-f" || w == "-F" || w == "--field" || w == "--raw-field" || w == "--input") {
+          is_write = 1
+        } else if (index(w, "--field=") == 1 || index(w, "--raw-field=") == 1 || index(w, "--input=") == 1) {
+          is_write = 1
+        } else if (w == "-X" || w == "--method") {
+          if (k < nwords) method = words[k + 1]
+        } else if (index(w, "--method=") == 1) {
+          method = substr(w, 10)
+        }
+      }
+      if (method != "" && toupper(method) != "GET") { is_write = 1 }
+      print (is_write ? "WRITE" : "READ")
+    }
+  ' <<<"$seg"
+}
+
 # --body/-b の値が heredoc の $(cat <<TAG ... TAG) 形で渡された時、本文の
 # 先頭行を取り出す。GitHub投稿の実際の形(足軽がPRを作る時の常の形)を
 # 正しく読めるようにする(★FIX-H1)。構造が想定と厳密に一致しない場合は
@@ -3043,7 +3103,8 @@ while IFS= read -r -d '' _ai_gh_seg; do
     _ai_flag="${_ai_flagline%%$'\t'*}"
     _ai_rawval="${_ai_flagline#*$'\t'}"
   elif [[ "$_ai_gh_seg" =~ ${_AI_GH_WRAP_RE}${_AI_GH_GLOBOPT_RE}api[[:space:]] ]] \
-    && [[ "$_ai_gh_seg" =~ (repos/[^[:space:]]+/(issues|pulls)/[^[:space:]]+/(comments|reviews)|/issues/[^[:space:]]+/comments|/pulls/[^[:space:]]+/reviews) ]]; then
+    && [[ "$_ai_gh_seg" =~ (repos/[^[:space:]]+/(issues|pulls)/[^[:space:]]+/(comments|reviews)|/issues/[^[:space:]]+/comments|/pulls/[^[:space:]]+/reviews) ]] \
+    && [[ "$(_ai_gh_api_is_write_attempt "$_ai_gh_seg")" == "WRITE" ]]; then
     _ai_rawval="$(_extract_gh_api_body_field_value "$_ai_gh_seg")"
     if [[ -z "$_ai_rawval" ]]; then
       echo "❌ [AI]接頭辞ゲート(cmd_923): gh api でissues/pullsへ投稿する際、-f/-F/--field/--raw-fieldのbody=を検証できぬためブロックします。" >&2
