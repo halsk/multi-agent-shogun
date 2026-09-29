@@ -2774,6 +2774,28 @@ done < <(echo "$_OP_SECRET_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|])[^;&|]*
 #   --body-file で標準入力(-)を指定する形は内容を検証できないため
 #   一律ブロックする。--body-file のパス解決は素朴な相対パス結合であり、
 #   シンボリックリンクや複雑なcd連鎖までは追跡しない。
+#
+# ★是正履歴(cmd_923続き・PR#180・軍師QC fail_must_fix・
+#   queue/reports/gunshi_report_cmd923_hook12.yaml):
+#   H1(誤爆・high): `--body "$(cat <<'EOF' ... EOF)"` 形(足軽がPRを作る
+#   時の常の形)を、本文が[AI]で始まっていても止めていた。原因は二つ——
+#   ①この形はファイルへの書出しを伴わないため既存の
+#   _mask_heredoc_bodies_for_git_detection ではマスクされず素通しされる
+#   (これ自体は意図した挙動)、②しかし _extract_gh_invocation_segments
+#   の flush() が awk の ORS("\n")区切りで segment を返すため、heredoc
+#   本文が実際に複数行のまま残ると呼出元の `while read` が最初の1行だけ
+#   受け取り本文が欠落していた。NUL区切り化(_ai_prefix_unwrap_heredoc_cat
+#   による厳密なheredoc構造検証込み)で是正。
+#   H2(誤爆・medium): 短い `-b`/`-F`(--body/--body-fileの短縮形)を
+#   未対応のまま「--bodyの無い投稿」として止めていた。また変数展開
+#   (`--body "$msg"`)を「[AI]で始まっていない」と誤った訳で止めていた
+#   (正しくは「確かめられぬ」)。-b/-F受理+変数/コマンド展開の正しい
+#   分類で是正。
+#   H3(見逃し・medium): `gh -R org/repo pr comment ...`(-Rが先に来る
+#   形)・`env ... gh pr comment ...`・`gh api .../issues/N/comments -f
+#   body=...` は [AI] が無くても素通りしていた。大域option(-R/--repo/
+#   --hostname)を飛ばしてサブコマンドを見る形へ拡張し、gh api の
+#   issues/pulls へのbody送信も別枝で検める形を追加して是正。
 # ============================================================
 _AI_PREFIX_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
 
@@ -2782,13 +2804,27 @@ _AI_PREFIX_MASKED_COMMAND="$(_mask_heredoc_bodies_for_git_detection "$COMMAND")"
 # セグメントのみを返す。設計はHook8/既存Hook9の一パス走査(state=N/S/D)を
 # 踏襲する——境界判定は必ず引用符の外でのみ行い、&>はリダイレクトとして
 # 除外する(Hook8のowner_segment()と同じ配慮)。
+#
+# ★FIX-H3(cmd_923続き・PR#180是正): 元の判定 `s ~ /^([^ \t]*\/)?gh([ \t]|$)/`
+#   は env/command ラッパー(`env FOO=bar gh ...`・`command gh ...`)を先頭に
+#   持つ形を「先頭語が env/command で gh ではない」として丸ごと捨てていた
+#   (このawk自体が候補から除外するため、後段のbash側チェックにすら届かない)。
+#   ラッパーを許容する形へ広げる——後段のbash側正規表現が pr/issue・api の
+#   判定を厳密に行うため、ここでの絞り込みが多少広くても誤allowにはならない。
+#
+# ★FIX-H1(NUL区切り): 元の `print s` は awk の ORS("\n")で区切るため、
+#   heredoc本文が実際に複数行のまま残る場合(masking対象外・後述)、呼出元の
+#   `while read` が最初の1行だけを受け取り残りを次の"segment"と誤認する
+#   事故を生んでいた(PR#180実測: `--body "$(cat <<'EOF' ... EOF)"` の
+#   heredoc本文が丸ごと欠落し、[AI]接頭辞が見えなくなって誤爆した)。
+#   NUL(\0)区切りへ変更し、呼出元は `read -r -d ''` で受け取る。
 _extract_gh_invocation_segments() {
   local cmd="$1"
   awk '
     function flush(   s) {
       s = seg
       sub(/^[ \t]+/, "", s)
-      if (s ~ /^([^ \t]*\/)?gh([ \t]|$)/) print s
+      if (s ~ /^(env([ \t]+[A-Za-z_][A-Za-z0-9_]*=[^ \t]*)*[ \t]+)?(command[ \t]+)?([^ \t]*\/)?gh([ \t]|$)/) printf "%s%c", s, 0
       seg = ""
     }
     BEGIN { state = "N" }
@@ -2862,8 +2898,15 @@ _extract_gh_body_flag_value() {
       }
       for (k = 1; k <= nwords; k++) {
         w = words[k]
-        if (w == "--body" || w == "--body-file") {
-          if (k < nwords) print w "\t" words[k + 1]
+        # ★FIX-H2(cmd_923続き・PR#180是正): -b(=--bodyの短縮形)・
+        #   -F(=--body-fileの短縮形)を素通ししていた。gh pr/issue の
+        #   comment/create/review はいずれも短縮形を等価に受け付けるため
+        #   (gh --help実測)、長短どちらで書かれても同じ判定へ正規化する。
+        if (w == "--body" || w == "-b") {
+          if (k < nwords) print "--body\t" words[k + 1]
+          exit
+        } else if (w == "--body-file" || w == "-F") {
+          if (k < nwords) print "--body-file\t" words[k + 1]
           exit
         } else if (index(w, "--body=") == 1) {
           print "--body\t" substr(w, 8); exit
@@ -2875,20 +2918,137 @@ _extract_gh_body_flag_value() {
   ' <<<"$seg"
 }
 
-while IFS= read -r _ai_gh_seg; do
+# gh api セグメントから -f/-F/--field/--raw-field で渡された body=VALUE を
+# 取り出す(=既に引用符を剥がした値を返す)。gh api は --body/--body-file
+# を持たず、`-f body=...`/`-F body=...` のような key=value 形で本文を渡す
+# (--raw-field/--field はその長形式)。複数の -f/-F が指定されうるため、
+# body= に一致する最初の1つを返す(通常は1つしか無い)。
+_extract_gh_api_body_field_value() {
+  local seg="$1"
+  awk -v RS='\004' '
+    {
+      n = length($0)
+      i = 1
+      nwords = 0
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == " " || c == "\t" || c == "\n") { i++; continue }
+        w = ""
+        st = "N"
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (st == "N" && (c == " " || c == "\t" || c == "\n")) break
+          if (st == "N" && c == "\\") { w = w substr($0, i + 1, 1); i += 2; continue }
+          if (st == "N") {
+            if (c == "\047") { st = "S"; i++; continue }
+            if (c == "\"") { st = "D"; i++; continue }
+            w = w c; i++; continue
+          }
+          if (st == "S") {
+            if (c == "\047") { st = "N"; i++; continue }
+            w = w c; i++; continue
+          }
+          # st == "D"
+          if (c == "\\") { i++; if (i <= n) w = w substr($0, i, 1); i++; continue }
+          if (c == "\"") { st = "N"; i++; continue }
+          w = w c; i++; continue
+        }
+        nwords++; words[nwords] = w
+      }
+      for (k = 1; k <= nwords; k++) {
+        w = words[k]
+        if ((w == "-f" || w == "-F" || w == "--field" || w == "--raw-field") && k < nwords) {
+          nextw = words[k + 1]
+          if (index(nextw, "body=") == 1) { print substr(nextw, 6); exit }
+        }
+      }
+    }
+  ' <<<"$seg"
+}
+
+# --body/-b の値が heredoc の $(cat <<TAG ... TAG) 形で渡された時、本文の
+# 先頭行を取り出す。GitHub投稿の実際の形(足軽がPRを作る時の常の形)を
+# 正しく読めるようにする(★FIX-H1)。構造が想定と厳密に一致しない場合は
+# NOMATCH を返し、呼出側は「読めぬ形」として安全側でブロックする(黙って
+# 通す方向の誤りを避ける)。
+_ai_prefix_unwrap_heredoc_cat() {
+  local raw="$1"
+  awk '
+    { L[NR] = $0 }
+    END {
+      n = NR
+      if (n < 2) { print "NOMATCH"; exit }
+      first = L[1]
+      sub(/^[ \t]+/, "", first)
+      if (sub(/^\$\(cat[ \t]+<<-?/, "", first) == 0) { print "NOMATCH"; exit }
+      dash = (L[1] ~ /<<-/) ? 1 : 0
+      sub(/^[ \t]+/, "", first)
+      q = substr(first, 1, 1)
+      if (q == "\"" || q == "\047") {
+        rest0 = substr(first, 2)
+        e = index(rest0, q)
+        if (e == 0) { print "NOMATCH"; exit }
+        tag = substr(rest0, 1, e - 1)
+        rest1 = substr(rest0, e + 1)
+      } else {
+        if (match(first, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+          tag = substr(first, RSTART, RLENGTH)
+          rest1 = substr(first, RSTART + RLENGTH)
+        } else { print "NOMATCH"; exit }
+      }
+      sub(/^[ \t]+/, "", rest1); sub(/[ \t]+$/, "", rest1)
+      if (rest1 != "" || tag == "") { print "NOMATCH"; exit }
+      term = 0
+      for (i = 2; i <= n; i++) {
+        chk = L[i]
+        if (dash) sub(/^\t+/, "", chk)
+        if (chk == tag) { term = i; break }
+      }
+      if (term < 2 || term + 1 != n) { print "NOMATCH"; exit }
+      closing = L[n]
+      sub(/^[ \t]+/, "", closing); sub(/[ \t]+$/, "", closing)
+      if (closing != ")") { print "NOMATCH"; exit }
+      if (term - 1 < 2) { print "NOMATCH"; exit }
+      print "MATCH\t" L[2]
+    }
+  ' <<<"$raw"
+}
+
+# ★FIX-H3(cmd_923続き・PR#180是正): gh の後の大域option(-R/--repo/
+#   --repo=/--hostname)を飛ばしてサブコマンドを見る。env/commandラッパー
+#   も _extract_gh_invocation_segments 側で既に許容済み。gh api で
+#   issues/…/comments・pulls/…/reviews へ body を送る形は別枝(_ai_gh_kind
+#   == api)で検める(gh api は --body/--body-file を持たず -f/-F/--field/
+#   --raw-field の body=VALUE で渡すため、構文が異なる)。
+_AI_GH_WRAP_RE='^(env([[:space:]]+[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)*[[:space:]]+)?(command[[:space:]]+)?([^[:space:]]*/)?gh[[:space:]]+'
+_AI_GH_GLOBOPT_RE='(-R[[:space:]]+[^[:space:]]+[[:space:]]+|--repo[[:space:]]+[^[:space:]]+[[:space:]]+|--repo=[^[:space:]]+[[:space:]]+|--hostname[[:space:]]+[^[:space:]]+[[:space:]]+)*'
+
+while IFS= read -r -d '' _ai_gh_seg; do
   [[ -z "$_ai_gh_seg" ]] && continue
-  echo "$_ai_gh_seg" | grep -qE '^([^[:space:]]*/)?gh[[:space:]]+(pr|issue)[[:space:]]+(comment|create|review)\b' || continue
 
-  _ai_flagline="$(_extract_gh_body_flag_value "$_ai_gh_seg")"
-  if [[ -z "$_ai_flagline" ]]; then
-    echo "❌ [AI]接頭辞ゲート(cmd_923): --body/--body-fileの無いGitHub投稿は本文を検証できぬためブロックします。" >&2
-    echo "   投稿コマンド(抜粋): $_ai_gh_seg" >&2
-    echo "   --body \"[AI] ...\" のように本文冒頭へ[AI]を明示せよ(CLAUDE.md Iron Law 7細則・2026-09-09殿改訂)。" >&2
-    exit 2
+  if [[ "$_ai_gh_seg" =~ ${_AI_GH_WRAP_RE}${_AI_GH_GLOBOPT_RE}(pr|issue)[[:space:]]+(comment|create|review)([[:space:]]|$) ]]; then
+    _ai_flagline="$(_extract_gh_body_flag_value "$_ai_gh_seg")"
+    if [[ -z "$_ai_flagline" ]]; then
+      echo "❌ [AI]接頭辞ゲート(cmd_923): --body/--body-fileの無いGitHub投稿は本文を検証できぬためブロックします。" >&2
+      echo "   投稿コマンド(抜粋): $_ai_gh_seg" >&2
+      echo "   --body \"[AI] ...\" のように本文冒頭へ[AI]を明示せよ(CLAUDE.md Iron Law 7細則・2026-09-09殿改訂)。" >&2
+      exit 2
+    fi
+    _ai_flag="${_ai_flagline%%$'\t'*}"
+    _ai_rawval="${_ai_flagline#*$'\t'}"
+  elif [[ "$_ai_gh_seg" =~ ${_AI_GH_WRAP_RE}${_AI_GH_GLOBOPT_RE}api[[:space:]] ]] \
+    && [[ "$_ai_gh_seg" =~ (repos/[^[:space:]]+/(issues|pulls)/[^[:space:]]+/(comments|reviews)|/issues/[^[:space:]]+/comments|/pulls/[^[:space:]]+/reviews) ]]; then
+    _ai_rawval="$(_extract_gh_api_body_field_value "$_ai_gh_seg")"
+    if [[ -z "$_ai_rawval" ]]; then
+      echo "❌ [AI]接頭辞ゲート(cmd_923): gh api でissues/pullsへ投稿する際、-f/-F/--field/--raw-fieldのbody=を検証できぬためブロックします。" >&2
+      echo "   投稿コマンド(抜粋): $_ai_gh_seg" >&2
+      echo "   -f body=\"[AI] ...\" のように本文冒頭へ[AI]を明示せよ。" >&2
+      exit 2
+    fi
+    _ai_flag="--body"
+  else
+    continue
   fi
-
-  _ai_flag="${_ai_flagline%%$'\t'*}"
-  _ai_rawval="${_ai_flagline#*$'\t'}"
 
   if [[ "$_ai_flag" == "--body-file" ]]; then
     if [[ "$_ai_rawval" == "-" ]]; then
@@ -2903,7 +3063,30 @@ while IFS= read -r _ai_gh_seg; do
     fi
     _ai_bodycontent="$(head -c 200 "$_ai_filepath" 2>/dev/null || echo "")"
   else
-    _ai_bodycontent="$_ai_rawval"
+    # ★FIX-H1/H2(cmd_923続き・PR#180是正): 値の先頭が "$" ならリテラル
+    # ではない。"$(cat <<TAG ... TAG)" 形(足軽がPRを作る時の常の形)なら
+    # 本文の先頭行を読んで確かめる。それ以外の変数/コマンド展開は
+    # 「確かめられぬ」と正しく言い、黙って通さずブロックする
+    # (--body-file か字の本文を使えと示す)。
+    _ai_trimlead="$(printf '%s' "$_ai_rawval" | sed -E 's/^[[:space:]]+//')"
+    if [[ "$_ai_trimlead" == '$('*cat* ]]; then
+      _ai_hd="$(_ai_prefix_unwrap_heredoc_cat "$_ai_rawval")"
+      if [[ "$_ai_hd" == MATCH$'\t'* ]]; then
+        _ai_bodycontent="${_ai_hd#MATCH$'\t'}"
+      else
+        echo "❌ [AI]接頭辞ゲート(cmd_923): heredocの本文が読める形ではないためブロックします(\$(cat <<TAG ... TAG) の形を厳密に要求)。" >&2
+        echo "   投稿コマンド(抜粋): $_ai_gh_seg" >&2
+        echo "   --body-file で本文をファイルから渡すか、--body \"[AI] ...\" のように字面の本文を渡せ。" >&2
+        exit 2
+      fi
+    elif [[ "$_ai_trimlead" == '$'* ]]; then
+      echo "❌ [AI]接頭辞ゲート(cmd_923): 本文が変数/コマンド展開であり値を確かめられぬためブロックします。" >&2
+      echo "   投稿コマンド(抜粋): $_ai_gh_seg" >&2
+      echo "   --body-file で本文を渡すか、--body \"[AI] ...\" のように字面の本文を渡せ。" >&2
+      exit 2
+    else
+      _ai_bodycontent="$_ai_rawval"
+    fi
   fi
 
   # 前後の空白のみを除いて先頭[AI]判定。★識別子は代筆の許可ではない

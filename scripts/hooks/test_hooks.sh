@@ -1716,6 +1716,93 @@ check "Hook12 RED: --body-file - (標準入力は検証不能・block)" block \
   "gh issue comment 1 --body-file -"
 rm -rf "$HOOK12_BF_TMP"
 
+# ★是正(cmd_923続き・PR#180・軍師QC fail_must_fix H1/H2/H3是正)
+# 軍師report(queue/reports/gunshi_report_cmd923_hook12.yaml)が実際に試した
+# 全形を含める: 実際の形・[AI]つきの実際の形・-b・--body=・'…'・-Rが先・env・
+# gh api -f body・heredocの本文・変数の本文。
+
+# H2: -b(--bodyの短縮形)を正しく受理する
+check "Hook12-H2 RED: -b短縮形・[AI]無し(block)" block \
+  'gh pr comment 123 -b "no ai prefix"'
+check "Hook12-H2 GREEN: -b短縮形・[AI]あり(allow)" allow \
+  'gh pr comment 123 -b "[AI] rate limit reached"'
+
+# H2: 単一引用符('…')の本文も正しく判定する
+check "Hook12-H2 RED: 単一引用符本文・[AI]無し(block)" block \
+  "gh issue comment 45 --body 'no ai prefix'"
+check "Hook12-H2 GREEN: 単一引用符本文・[AI]あり(allow)" allow \
+  "gh issue comment 45 --body '[AI] done'"
+
+# H2: -F(--body-fileの短縮形)を正しく受理する
+HOOK12_H2F_TMP=$(mktemp -d)
+printf '%s' "[AI] ok via -F" > "$HOOK12_H2F_TMP/ok.txt"
+printf '%s' "no ai via -F" > "$HOOK12_H2F_TMP/bad.txt"
+check "Hook12-H2 GREEN: -F短縮形・中身が[AI]で始まる(allow)" allow \
+  "gh issue comment 1 -F $HOOK12_H2F_TMP/ok.txt"
+check "Hook12-H2 RED: -F短縮形・中身が[AI]で始まらない(block)" block \
+  "gh issue comment 1 -F $HOOK12_H2F_TMP/bad.txt"
+rm -rf "$HOOK12_H2F_TMP"
+
+# H2: 変数展開の本文は「確かめられぬ」としてブロックする(黙って通さない・
+# 誤って「[AI]で始まっていない」と言わない)
+check "Hook12-H2 RED: 変数展開の本文(\$msg)は確かめられぬためblock" block \
+  'msg="[AI] hello"; gh pr comment 123 --body "$msg"'
+check "Hook12-H2 RED: heredoc以外のコマンド展開本文も確かめられぬためblock" block \
+  'gh pr comment 123 --body "$(date)"'
+
+# H1: --body "$(cat <<'TAG' ... TAG)" (足軽がPRを作る時の常の形) の本文を
+# 正しく読む(誤爆是正の核心)
+check "Hook12-H1 RED: heredoc経由--body・[AI]無し(block)" block \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "$(cat <<'"'"'EOF'"'"'
+no ai prefix here
+EOF
+)"'
+check "Hook12-H1 GREEN: heredoc経由--body・[AI]あり(allow)" allow \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "$(cat <<'"'"'EOF'"'"'
+[AI] hello world
+EOF
+)"'
+check "Hook12-H1 GREEN: heredoc経由--body・複数行・[AI]あり(allow)" allow \
+  'gh pr comment 123 --body "$(cat <<'"'"'EOF'"'"'
+[AI] 関の代理でAIが投稿している
+本文2行目
+EOF
+)"'
+# heredocの形が壊れている(終端行が無い)場合は読めぬ形として安全側でblock
+check "Hook12-H1 RED: heredocの終端行が無い(読めぬ形・block)" block \
+  'gh pr comment 123 --body "$(cat <<'"'"'EOF'"'"'
+[AI] hello
+)"'
+
+# H3: gh -R org/repo (大域optionがpr/issueより先に来る形)
+check "Hook12-H3 RED: gh -Rが先・[AI]無し(block)" block \
+  'gh -R halsk/multi-agent-shogun pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: gh -Rが先・[AI]あり(allow)" allow \
+  'gh -R halsk/multi-agent-shogun pr comment 123 --body "[AI] rate limit reached"'
+check "Hook12-H3 RED: --repo=形式が先・[AI]無し(block)" block \
+  'gh --repo=halsk/multi-agent-shogun pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: --repo=形式が先・[AI]あり(allow)" allow \
+  'gh --repo=halsk/multi-agent-shogun pr comment 123 --body "[AI] ok"'
+
+# H3: env ... gh pr comment ... (envラッパー)
+check "Hook12-H3 RED: envラッパー・[AI]無し(block)" block \
+  'env GH_TOKEN=x gh pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: envラッパー・[AI]あり(allow)" allow \
+  'env GH_TOKEN=x gh pr comment 123 --body "[AI] rate limit reached"'
+
+# H3: gh api .../issues/N/comments -f body=... (cr_retriggerと同じ投じ方)
+check "Hook12-H3 RED: gh api issues comments -f body・[AI]無し(block)" block \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments -f body="no ai prefix"'
+check "Hook12-H3 GREEN: gh api issues comments -f body・[AI]あり(allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments -f body="[AI] rate limit reached"'
+check "Hook12-H3 RED: gh api pulls reviews --raw-field body・[AI]無し(block)" block \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews --raw-field body="no ai prefix"'
+check "Hook12-H3 GREEN: gh api pulls reviews --raw-field body・[AI]あり(allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews --raw-field body="[AI] lgtm"'
+# gh api でも issues/comments 以外(無関係なエンドポイント)は対象外(allow)
+check "Hook12-H3 GREEN-2: gh api user (無関係なエンドポイント・allow)" allow \
+  'gh api user'
+
 echo ""
 echo "================================"
 echo "Results: PASS=$PASS, FAIL=$FAIL"
