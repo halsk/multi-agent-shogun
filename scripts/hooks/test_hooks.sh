@@ -1133,11 +1133,14 @@ check "Hook7: gh pr create --repo yohey-w/* (block)" block \
 check "Hook7: gh pr create --repo digital-go-jp/* (block)" block \
   "gh pr create --repo digital-go-jp/genai-web --title \"test\""
 # ALLOW: --repo halsk/* (下流・自前 repo)
+# ★Hook12(cmd_923)追加に伴い、--bodyへ[AI]接頭辞を付す(本テストの主眼は
+# Hook7の--repo判定であり、Hook12の要求を満たす形へ更新しただけで意味は
+# 変えていない)。
 check "Hook7: gh pr create --repo halsk/* (allow)" allow \
-  "gh pr create --repo halsk/multi-agent-shogun --title \"test\""
+  "gh pr create --repo halsk/multi-agent-shogun --title \"test\" --body \"[AI] test\""
 # ALLOW: --repo geolonia/* (下流・自前 org)
 check "Hook7: gh pr create --repo geolonia/* (allow)" allow \
-  "gh pr create --repo geolonia/geonicdb-docs --title \"test\""
+  "gh pr create --repo geolonia/geonicdb-docs --title \"test\" --body \"[AI] test\""
 # ALLOW: gh api (read-only) は上流リポ名を含んでもブロックしない
 check "Hook7: gh api repos/yohey-w/* read-only (allow)" allow \
   "gh api repos/yohey-w/multi-agent-shogun/pulls"
@@ -1654,6 +1657,166 @@ if [[ -f "$PROJ_ROOT/queue/shogun_to_karo.yaml" ]]; then
   QYG_ELAPSED=$(python3 -c "print(f'{$QYG_T1 - $QYG_T0:.3f}')")
   echo "  ℹ️  実ファイル(1.32MB)での実行時間: ${QYG_ELAPSED}s (timeout=10s)"
 fi
+
+echo ""
+echo "=== Hook 12: GitHub投稿[AI]接頭辞強制 (cmd_923) ==="
+
+# RED: [AI]接頭辞の無いGitHub投稿は実際にブロックされる
+check "Hook12 RED: gh pr comment without [AI] prefix (block)" block \
+  'gh pr comment 123 --body "rate limit reached"'
+check "Hook12 RED: gh issue comment without [AI] prefix (block)" block \
+  'gh issue comment 45 --body "no prefix here"'
+check "Hook12 RED: gh pr create without [AI] prefix (block)" block \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "missing prefix"'
+check "Hook12 RED: gh issue create without [AI] prefix (block)" block \
+  'gh issue create --title "t" --body "missing prefix"'
+check "Hook12 RED: gh pr review --body without [AI] prefix (block)" block \
+  'gh pr review 12 --request-changes --body "no prefix"'
+check "Hook12 RED: --body/--body-file省略(内容検証不能・安全側でblock)" block \
+  'gh issue comment 1'
+
+# GREEN-1: [AI]接頭辞ありは正しくblockされない
+check "Hook12 GREEN-1: gh pr comment with [AI] prefix (allow)" allow \
+  'gh pr comment 123 --body "[AI] rate limit reached"'
+check "Hook12 GREEN-1: gh issue comment with [AI] prefix (allow)" allow \
+  'gh issue comment 45 --body "[AI] done"'
+check "Hook12 GREEN-1: gh pr create with [AI] prefix (allow)" allow \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "[AI] hello"'
+check "Hook12 GREEN-1: gh issue create with [AI] prefix (allow)" allow \
+  'gh issue create --title "t" --body "[AI] hello"'
+check "Hook12 GREEN-1: gh pr review --body with [AI] prefix (allow)" allow \
+  'gh pr review 12 --approve --body "[AI] lgtm"'
+check "Hook12 GREEN-1: --body=形式(=区切り)も正しく判定する(allow)" allow \
+  'gh issue comment 1 --body="[AI] ok"'
+
+# GREEN-2: 地の文(grep/echo/heredocの説明)は"gh"がセグメント先頭に無いため
+# 誤爆しない(将軍自身が既存Hook9/Hook11で2度誤爆させた地の文誤爆の再発防止)
+check "Hook12 GREEN-2: grepの検索語に'gh pr comment'を含むだけ(allow)" allow \
+  'grep -n "gh pr comment" scripts/hooks/guard.sh'
+check "Hook12 GREEN-2: echoの二重引用符内の地の文(allow)" allow \
+  'echo "gh issue create --body test"'
+check "Hook12 GREEN-2: echoの単一引用符内の地の文(allow)" allow \
+  "echo 'gh pr comment 1 --body \"no ai prefix\"'"
+HOOK12_PROSE_TMP=$(mktemp -d)
+check "Hook12 GREEN-2: heredoc本文の地の文(cat受け手・実行されないデータ・allow)" allow \
+  "cat > $HOOK12_PROSE_TMP/prose.md <<'EOF'
+gh pr comment 123 --body \"test\"
+EOF"
+rm -rf "$HOOK12_PROSE_TMP"
+
+# --body-file: ファイルの中身の先頭[AI]で判定する
+HOOK12_BF_TMP=$(mktemp -d)
+printf '%s' "[AI] ok body" > "$HOOK12_BF_TMP/ok.txt"
+printf '%s' "no prefix body" > "$HOOK12_BF_TMP/bad.txt"
+check "Hook12 GREEN-1: --body-fileの中身が[AI]で始まる(allow)" allow \
+  "gh issue comment 1 --body-file $HOOK12_BF_TMP/ok.txt"
+check "Hook12 RED: --body-fileの中身が[AI]で始まらない(block)" block \
+  "gh issue comment 1 --body-file $HOOK12_BF_TMP/bad.txt"
+check "Hook12 RED: --body-file - (標準入力は検証不能・block)" block \
+  "gh issue comment 1 --body-file -"
+rm -rf "$HOOK12_BF_TMP"
+
+# ★是正(cmd_923続き・PR#180・軍師QC fail_must_fix H1/H2/H3是正)
+# 軍師report(queue/reports/gunshi_report_cmd923_hook12.yaml)が実際に試した
+# 全形を含める: 実際の形・[AI]つきの実際の形・-b・--body=・'…'・-Rが先・env・
+# gh api -f body・heredocの本文・変数の本文。
+
+# H2: -b(--bodyの短縮形)を正しく受理する
+check "Hook12-H2 RED: -b短縮形・[AI]無し(block)" block \
+  'gh pr comment 123 -b "no ai prefix"'
+check "Hook12-H2 GREEN: -b短縮形・[AI]あり(allow)" allow \
+  'gh pr comment 123 -b "[AI] rate limit reached"'
+
+# H2: 単一引用符('…')の本文も正しく判定する
+check "Hook12-H2 RED: 単一引用符本文・[AI]無し(block)" block \
+  "gh issue comment 45 --body 'no ai prefix'"
+check "Hook12-H2 GREEN: 単一引用符本文・[AI]あり(allow)" allow \
+  "gh issue comment 45 --body '[AI] done'"
+
+# H2: -F(--body-fileの短縮形)を正しく受理する
+HOOK12_H2F_TMP=$(mktemp -d)
+printf '%s' "[AI] ok via -F" > "$HOOK12_H2F_TMP/ok.txt"
+printf '%s' "no ai via -F" > "$HOOK12_H2F_TMP/bad.txt"
+check "Hook12-H2 GREEN: -F短縮形・中身が[AI]で始まる(allow)" allow \
+  "gh issue comment 1 -F $HOOK12_H2F_TMP/ok.txt"
+check "Hook12-H2 RED: -F短縮形・中身が[AI]で始まらない(block)" block \
+  "gh issue comment 1 -F $HOOK12_H2F_TMP/bad.txt"
+rm -rf "$HOOK12_H2F_TMP"
+
+# H2: 変数展開の本文は「確かめられぬ」としてブロックする(黙って通さない・
+# 誤って「[AI]で始まっていない」と言わない)
+check "Hook12-H2 RED: 変数展開の本文(\$msg)は確かめられぬためblock" block \
+  'msg="[AI] hello"; gh pr comment 123 --body "$msg"'
+check "Hook12-H2 RED: heredoc以外のコマンド展開本文も確かめられぬためblock" block \
+  'gh pr comment 123 --body "$(date)"'
+
+# H1: --body "$(cat <<'TAG' ... TAG)" (足軽がPRを作る時の常の形) の本文を
+# 正しく読む(誤爆是正の核心)
+check "Hook12-H1 RED: heredoc経由--body・[AI]無し(block)" block \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "$(cat <<'"'"'EOF'"'"'
+no ai prefix here
+EOF
+)"'
+check "Hook12-H1 GREEN: heredoc経由--body・[AI]あり(allow)" allow \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "$(cat <<'"'"'EOF'"'"'
+[AI] hello world
+EOF
+)"'
+check "Hook12-H1 GREEN: heredoc経由--body・複数行・[AI]あり(allow)" allow \
+  'gh pr comment 123 --body "$(cat <<'"'"'EOF'"'"'
+[AI] 関の代理でAIが投稿している
+本文2行目
+EOF
+)"'
+# heredocの形が壊れている(終端行が無い)場合は読めぬ形として安全側でblock
+check "Hook12-H1 RED: heredocの終端行が無い(読めぬ形・block)" block \
+  'gh pr comment 123 --body "$(cat <<'"'"'EOF'"'"'
+[AI] hello
+)"'
+
+# H3: gh -R org/repo (大域optionがpr/issueより先に来る形)
+check "Hook12-H3 RED: gh -Rが先・[AI]無し(block)" block \
+  'gh -R halsk/multi-agent-shogun pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: gh -Rが先・[AI]あり(allow)" allow \
+  'gh -R halsk/multi-agent-shogun pr comment 123 --body "[AI] rate limit reached"'
+check "Hook12-H3 RED: --repo=形式が先・[AI]無し(block)" block \
+  'gh --repo=halsk/multi-agent-shogun pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: --repo=形式が先・[AI]あり(allow)" allow \
+  'gh --repo=halsk/multi-agent-shogun pr comment 123 --body "[AI] ok"'
+
+# H3: env ... gh pr comment ... (envラッパー)
+check "Hook12-H3 RED: envラッパー・[AI]無し(block)" block \
+  'env GH_TOKEN=x gh pr comment 123 --body "no ai prefix"'
+check "Hook12-H3 GREEN: envラッパー・[AI]あり(allow)" allow \
+  'env GH_TOKEN=x gh pr comment 123 --body "[AI] rate limit reached"'
+
+# H3: gh api .../issues/N/comments -f body=... (cr_retriggerと同じ投じ方)
+check "Hook12-H3 RED: gh api issues comments -f body・[AI]無し(block)" block \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments -f body="no ai prefix"'
+check "Hook12-H3 GREEN: gh api issues comments -f body・[AI]あり(allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments -f body="[AI] rate limit reached"'
+check "Hook12-H3 RED: gh api pulls reviews --raw-field body・[AI]無し(block)" block \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews --raw-field body="no ai prefix"'
+check "Hook12-H3 GREEN: gh api pulls reviews --raw-field body・[AI]あり(allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews --raw-field body="[AI] lgtm"'
+# gh api でも issues/comments 以外(無関係なエンドポイント)は対象外(allow)
+check "Hook12-H3 GREEN-2: gh api user (無関係なエンドポイント・allow)" allow \
+  'gh api user'
+
+# ★是正(cmd_923続き・PR#180・軍師QC fail_must_fix G1是正)
+# gh api は -f/-F/--field/--raw-field/--input のいずれも無く、
+# -X/--methodがGET以外でもなければ既定でGET(読むだけ)。誤爆是正の核心
+# ——issues/comments のパスに一致するだけで書き込みとみなしてはならない。
+check "Hook12-G1 GREEN: 読むだけのgh api --paginate -q (issues/comments一致でも書込フラグ無し・allow)" allow \
+  'gh api --paginate "repos/geolonia/x/issues/230/comments?per_page=100" -q ".[].body"'
+check "Hook12-G1 GREEN: 読むだけのgh api pulls reviews一致(書込フラグ無し・allow)" allow \
+  'gh api repos/halsk/multi-agent-shogun/pulls/1/reviews'
+check "Hook12-G1 GREEN: gh api -X GET明示(書込フラグ無し・allow)" allow \
+  'gh api -X GET repos/halsk/multi-agent-shogun/issues/1/comments'
+check "Hook12-G1 RED: gh api -X POST明示・[AI]無し(bodyフラグ無くとも書込とみなしblock)" block \
+  'gh api -X POST repos/halsk/multi-agent-shogun/issues/1/comments'
+check "Hook12-G1 RED: gh api --input経由・[AI]は検証できぬためblock" block \
+  'gh api repos/halsk/multi-agent-shogun/issues/1/comments --input payload.json'
 
 echo ""
 echo "================================"
