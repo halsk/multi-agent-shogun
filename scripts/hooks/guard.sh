@@ -2774,6 +2774,12 @@ done < <(echo "$_OP_SECRET_MASKED_COMMAND" | grep -oE '(^|[[:space:];&|])[^;&|]*
 #   --body-file で標準入力(-)を指定する形は内容を検証できないため
 #   一律ブロックする。--body-file のパス解決は素朴な相対パス結合であり、
 #   シンボリックリンクや複雑なcd連鎖までは追跡しない。
+#   ★H3是正で追加した大域option飛ばし(_AI_GH_GLOBOPT_RE)は -R/--repo/
+#   --repo=/--hostname のみを列挙する。ここに無い大域option(将来gh CLIが
+#   追加するもの等)がpr/issueより前に来た場合、その一形だけは本Hookの
+#   検知から漏れる(=誤blockはしないが誤allowの余地が残る)。網羅的な
+#   全option解析は本Hookの射程外とする(過剰設計を避ける・既存の他Hookの
+#   限界明記と同じ判断)。
 #
 # ★是正履歴(cmd_923続き・PR#180・軍師QC fail_must_fix・
 #   queue/reports/gunshi_report_cmd923_hook12.yaml):
