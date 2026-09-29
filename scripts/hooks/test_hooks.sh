@@ -1133,11 +1133,14 @@ check "Hook7: gh pr create --repo yohey-w/* (block)" block \
 check "Hook7: gh pr create --repo digital-go-jp/* (block)" block \
   "gh pr create --repo digital-go-jp/genai-web --title \"test\""
 # ALLOW: --repo halsk/* (下流・自前 repo)
+# ★Hook12(cmd_923)追加に伴い、--bodyへ[AI]接頭辞を付す(本テストの主眼は
+# Hook7の--repo判定であり、Hook12の要求を満たす形へ更新しただけで意味は
+# 変えていない)。
 check "Hook7: gh pr create --repo halsk/* (allow)" allow \
-  "gh pr create --repo halsk/multi-agent-shogun --title \"test\""
+  "gh pr create --repo halsk/multi-agent-shogun --title \"test\" --body \"[AI] test\""
 # ALLOW: --repo geolonia/* (下流・自前 org)
 check "Hook7: gh pr create --repo geolonia/* (allow)" allow \
-  "gh pr create --repo geolonia/geonicdb-docs --title \"test\""
+  "gh pr create --repo geolonia/geonicdb-docs --title \"test\" --body \"[AI] test\""
 # ALLOW: gh api (read-only) は上流リポ名を含んでもブロックしない
 check "Hook7: gh api repos/yohey-w/* read-only (allow)" allow \
   "gh api repos/yohey-w/multi-agent-shogun/pulls"
@@ -1654,6 +1657,64 @@ if [[ -f "$PROJ_ROOT/queue/shogun_to_karo.yaml" ]]; then
   QYG_ELAPSED=$(python3 -c "print(f'{$QYG_T1 - $QYG_T0:.3f}')")
   echo "  ℹ️  実ファイル(1.32MB)での実行時間: ${QYG_ELAPSED}s (timeout=10s)"
 fi
+
+echo ""
+echo "=== Hook 12: GitHub投稿[AI]接頭辞強制 (cmd_923) ==="
+
+# RED: [AI]接頭辞の無いGitHub投稿は実際にブロックされる
+check "Hook12 RED: gh pr comment without [AI] prefix (block)" block \
+  'gh pr comment 123 --body "rate limit reached"'
+check "Hook12 RED: gh issue comment without [AI] prefix (block)" block \
+  'gh issue comment 45 --body "no prefix here"'
+check "Hook12 RED: gh pr create without [AI] prefix (block)" block \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "missing prefix"'
+check "Hook12 RED: gh issue create without [AI] prefix (block)" block \
+  'gh issue create --title "t" --body "missing prefix"'
+check "Hook12 RED: gh pr review --body without [AI] prefix (block)" block \
+  'gh pr review 12 --request-changes --body "no prefix"'
+check "Hook12 RED: --body/--body-file省略(内容検証不能・安全側でblock)" block \
+  'gh issue comment 1'
+
+# GREEN-1: [AI]接頭辞ありは正しくblockされない
+check "Hook12 GREEN-1: gh pr comment with [AI] prefix (allow)" allow \
+  'gh pr comment 123 --body "[AI] rate limit reached"'
+check "Hook12 GREEN-1: gh issue comment with [AI] prefix (allow)" allow \
+  'gh issue comment 45 --body "[AI] done"'
+check "Hook12 GREEN-1: gh pr create with [AI] prefix (allow)" allow \
+  'gh pr create --repo halsk/multi-agent-shogun --title "t" --body "[AI] hello"'
+check "Hook12 GREEN-1: gh issue create with [AI] prefix (allow)" allow \
+  'gh issue create --title "t" --body "[AI] hello"'
+check "Hook12 GREEN-1: gh pr review --body with [AI] prefix (allow)" allow \
+  'gh pr review 12 --approve --body "[AI] lgtm"'
+check "Hook12 GREEN-1: --body=形式(=区切り)も正しく判定する(allow)" allow \
+  'gh issue comment 1 --body="[AI] ok"'
+
+# GREEN-2: 地の文(grep/echo/heredocの説明)は"gh"がセグメント先頭に無いため
+# 誤爆しない(将軍自身が既存Hook9/Hook11で2度誤爆させた地の文誤爆の再発防止)
+check "Hook12 GREEN-2: grepの検索語に'gh pr comment'を含むだけ(allow)" allow \
+  'grep -n "gh pr comment" scripts/hooks/guard.sh'
+check "Hook12 GREEN-2: echoの二重引用符内の地の文(allow)" allow \
+  'echo "gh issue create --body test"'
+check "Hook12 GREEN-2: echoの単一引用符内の地の文(allow)" allow \
+  "echo 'gh pr comment 1 --body \"no ai prefix\"'"
+HOOK12_PROSE_TMP=$(mktemp -d)
+check "Hook12 GREEN-2: heredoc本文の地の文(cat受け手・実行されないデータ・allow)" allow \
+  "cat > $HOOK12_PROSE_TMP/prose.md <<'EOF'
+gh pr comment 123 --body \"test\"
+EOF"
+rm -rf "$HOOK12_PROSE_TMP"
+
+# --body-file: ファイルの中身の先頭[AI]で判定する
+HOOK12_BF_TMP=$(mktemp -d)
+printf '%s' "[AI] ok body" > "$HOOK12_BF_TMP/ok.txt"
+printf '%s' "no prefix body" > "$HOOK12_BF_TMP/bad.txt"
+check "Hook12 GREEN-1: --body-fileの中身が[AI]で始まる(allow)" allow \
+  "gh issue comment 1 --body-file $HOOK12_BF_TMP/ok.txt"
+check "Hook12 RED: --body-fileの中身が[AI]で始まらない(block)" block \
+  "gh issue comment 1 --body-file $HOOK12_BF_TMP/bad.txt"
+check "Hook12 RED: --body-file - (標準入力は検証不能・block)" block \
+  "gh issue comment 1 --body-file -"
+rm -rf "$HOOK12_BF_TMP"
 
 echo ""
 echo "================================"
