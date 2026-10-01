@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 # ── §1: allowlist・上流拒否 ──────────────────────────────────────────
@@ -938,14 +939,10 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
     return state, log_lines
 
 
-def _write_status_summary(status_path, log_path, now, window_hours=24):
-    """queue/reports/cr_retrigger_status.yaml: 直近window_hours時間の要約(確定版§4)。
-    cmd_861の『朝に分かること』のため、家老が巡回でdashboardへ写せる形にする。
-    ★cmd_913: cr-decideのerror・observed_not_posted(approve/pay)の件数も加える
-    (観察のため・pay/approveの枝がいつ・何度出たかを見える形にする)。
+def _read_recent_log_entries(log_path, now, window_hours=24):
+    """log_path(jsonl)から直近window_hours時間分のentryを読む(破損行はスキップ)。
+    _write_status_summaryと_detect_cr_decide_error_streaksで共用する。
     """
-    import yaml  # PyYAML
-
     entries = []
     if log_path and os.path.exists(log_path):
         cutoff = now - timedelta(hours=window_hours)
@@ -968,6 +965,150 @@ def _write_status_summary(status_path, log_path, now, window_hours=24):
                 if dt is not None and dt < cutoff:
                     continue
                 entries.append(entry)
+    return entries
+
+
+# cmd_928【四】: 同一repo#prでcr_decide_errorが連続して検知を知らせる閾値。
+# com.swarm.cr-retrigger.plistのStartInterval=600秒(10分)・実測ログでも
+# 周回間隔10:11〜10:28(平均約10分強)を確認した(2026-10-01)。6回×約10分強
+# ≒ 約60〜62分であり、「約1時間」の目安に合う値として6を採る。
+CR_DECIDE_ERROR_STREAK_THRESHOLD = 6
+
+
+def _detect_cr_decide_error_streaks(log_path, now, threshold=CR_DECIDE_ERROR_STREAK_THRESHOLD,
+                                     window_hours=24):
+    """同一repo#prでcr_decide_errorが連続threshold回以上続く"streak"を検出する。
+
+    run()は、cr_decideの候補となった各PRについて毎周回必ず1本の判定記録
+    ("decision"キーを持つentry、771-776行のcr_decide_errorログとは別本・同一ts)を
+    log_lines(ひいてはjsonl)へ残す。errorの周回はそこにcr_decide_action="error"が
+    乗る(call_cr_decideがfail closedで{"action":"error",...}を返す経路)。
+
+    「連続」は、この判定記録をrepo#pr単位で時系列に並べ、末尾から遡って
+    cr_decide_action=="error"が途切れずに続いた回数で数える。それ以外の判定
+    (cr_decideが正常に何らかのactionを返した・categoryが変わりcr_decide対象
+    から外れた等、いずれも「このPRでエラー以外の処理が出来た」ことを意味する)
+    が1回でも挟まればstreakは0に戻る——これが「cr_decide_success相当の正常
+    処理が挟まれば連続は途切れる」の実装である。
+    """
+    entries = _read_recent_log_entries(log_path, now, window_hours)
+
+    per_pr = {}
+    for e in entries:
+        if "decision" not in e:
+            continue
+        repo = e.get("repo")
+        pr = e.get("pr")
+        if repo is None or pr is None:
+            continue
+        ts = e.get("ts")
+        try:
+            dt = datetime.fromisoformat(ts) if ts else None
+        except ValueError:
+            dt = None
+        is_error = e.get("cr_decide_action") == "error"
+        per_pr.setdefault((repo, pr), []).append((ts, dt, is_error))
+
+    streaks = []
+    for (repo, pr), records in per_pr.items():
+        records.sort(key=lambda r: (r[1] is None, r[1]))
+        count = 0
+        first_ts = None
+        last_ts = None
+        for ts, _dt, is_error in records:
+            if is_error:
+                if count == 0:
+                    first_ts = ts
+                count += 1
+                last_ts = ts
+            else:
+                count = 0
+                first_ts = None
+                last_ts = None
+        if count >= threshold:
+            streaks.append({
+                "repo": repo, "pr": pr, "count": count,
+                "first_ts": first_ts, "last_ts": last_ts,
+            })
+    return streaks
+
+
+def _format_cr_decide_error_streak_alert(streak, threshold):
+    return (
+        f"- ⚠️ [cr_retrigger watchdog] {streak['repo']}#{streak['pr']} で "
+        f"cr_decide_error が{streak['count']}回連続(閾値{threshold}回=約1時間)。"
+        f"最初={streak['first_ts']} 最後={streak['last_ts']}。"
+        f"cr-decide呼出が繰り返し失敗している——原因確認要(ntfyは鳴らしていない)。"
+    )
+
+
+def _append_dashboard_alerts(dashboard_path, alert_lines):
+    """dashboard.mdの先頭(タイトル行の直後)へ新規行を追記する。
+    stall_watchdog.shのnotify_dashboard()と同じ『先頭近くに積む』流儀に合わせる。
+
+    cmd_928【四】やり直し(M1): 一時ファイルへ書いてからos.replace()で
+    置き換える(途中でプロセスが落ちてもdashboard.mdが空にならない)。
+    flockでの排他はここでは行わない(他の書き手全員が同じlockを使わねば
+    効かぬため、別途task化が要る所見——報告参照)。
+    """
+    if not alert_lines or not dashboard_path or not os.path.exists(dashboard_path):
+        return
+    with open(dashboard_path, encoding="utf-8") as f:
+        lines = f.readlines()
+    insert_at = 1 if lines else 0
+    new_lines = [line + "\n" for line in alert_lines]
+    lines[insert_at:insert_at] = new_lines
+
+    dashboard_dir = os.path.dirname(dashboard_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".dashboard_tmp_", dir=dashboard_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp_path, dashboard_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _check_cr_decide_error_streaks_and_notify(
+        state, log_path, dashboard_path, now,
+        threshold=CR_DECIDE_ERROR_STREAK_THRESHOLD, window_hours=24):
+    """cmd_928【四】本体。streakを検出し、未通知のものだけdashboard.mdへ追記する。
+
+    重複連投対策: state["cr_decide_error_streak_notified"][repo#pr] に
+    「直近で通知した時のstreak開始ts(first_ts)」を覚えておく。streakが
+    途切れず続いているだけなら first_ts は変わらないため再通知しない。
+    一度途切れて再度閾値を跨いだ(=first_tsが変わった)時だけ再通知する。
+    """
+    streaks = _detect_cr_decide_error_streaks(
+        log_path, now, threshold=threshold, window_hours=window_hours)
+    notified = state.setdefault("cr_decide_error_streak_notified", {})
+    new_alerts = []
+    for s in streaks:
+        key = f"{s['repo']}#{s['pr']}"
+        if notified.get(key) == s["first_ts"]:
+            continue
+        new_alerts.append(s)
+        notified[key] = s["first_ts"]
+    if new_alerts:
+        _append_dashboard_alerts(
+            dashboard_path,
+            [_format_cr_decide_error_streak_alert(s, threshold) for s in new_alerts],
+        )
+    return new_alerts
+
+
+def _write_status_summary(status_path, log_path, now, window_hours=24):
+    """queue/reports/cr_retrigger_status.yaml: 直近window_hours時間の要約(確定版§4)。
+    cmd_861の『朝に分かること』のため、家老が巡回でdashboardへ写せる形にする。
+    ★cmd_913: cr-decideのerror・observed_not_posted(approve/pay)の件数も加える
+    (観察のため・pay/approveの枝がいつ・何度出たかを見える形にする)。
+    """
+    import yaml  # PyYAML
+
+    entries = _read_recent_log_entries(log_path, now, window_hours)
 
     triggered = [e for e in entries if e.get("event") == "triggered"]
     failed = [e for e in entries if e.get("event") in (
@@ -1022,6 +1163,8 @@ def main(argv=None):
         os.path.dirname(__file__), "..", "logs", "cr_retrigger.jsonl"))
     parser.add_argument("--status-file", default=os.path.join(
         os.path.dirname(__file__), "..", "queue", "reports", "cr_retrigger_status.yaml"))
+    parser.add_argument("--dashboard-file", default=os.path.join(
+        os.path.dirname(__file__), "..", "dashboard.md"))
     parser.add_argument("--dry-run", action="store_true",
                          help="投稿せず、候補のみログへ出す")
     args = parser.parse_args(argv)
@@ -1041,6 +1184,10 @@ def main(argv=None):
         cfg, state, now, args.stop_file, dry_run=args.dry_run, log_path=args.log_file,
         run_id=run_id, runner=runner,
     )
+    # cmd_928【四】: 当家側の見張り——同一repo#prでcr_decide_errorが連続した時、
+    # dashboard.mdへ気づける形で記す(ntfyは鳴らさない)。state更新はsave前に行う。
+    _check_cr_decide_error_streaks_and_notify(
+        state, args.log_file, args.dashboard_file, now)
     _save_state(args.state, state)
     _write_status_summary(args.status_file, args.log_file, now)
 
