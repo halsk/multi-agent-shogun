@@ -1564,5 +1564,98 @@ class Test34CrDecideErrorStreakWatchdog(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
+class TestAppendDashboardAlertsAtomicWrite(unittest.TestCase):
+    """cmd_928【四】やり直し(M1): dashboard.md書込みの一時ファイル+rename方式を固定する。"""
+
+    def test_normal_write_updates_dashboard(self):
+        tmpdir = tempfile.mkdtemp(prefix="dashboard_atomic_write_")
+        try:
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write("# 📊 戦況報告 (Battle Status Report)\n既存行\n")
+            cr._append_dashboard_alerts(dashboard_path, ["- 新規アラート"])
+            with open(dashboard_path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("新規アラート", content)
+            self.assertIn("既存行", content)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_no_leftover_tmp_file_after_success(self):
+        """成功時、一時ファイル(.dashboard_tmp_*)が残骸として残らないこと。"""
+        tmpdir = tempfile.mkdtemp(prefix="dashboard_atomic_write_tmp_")
+        try:
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write("# 📊 戦況報告 (Battle Status Report)\n")
+            cr._append_dashboard_alerts(dashboard_path, ["- アラート"])
+            remaining = [n for n in os.listdir(tmpdir) if n != "dashboard.md"]
+            self.assertEqual(remaining, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_write_failure_does_not_corrupt_dashboard(self):
+        """RED→GREEN: 書込み途中(os.fdopen後のwritelines中)で例外が起きても、
+        dashboard.mdは一時ファイルへの書込み中であり本体は未着手のため空/破損に
+        ならないこと。是正前(open(dashboard_path, "w")で直接truncateして書く形)
+        であれば、この種の中断で本体が空になる——是正後はそれが起きないことを示す。
+        """
+        tmpdir = tempfile.mkdtemp(prefix="dashboard_atomic_write_fail_")
+        try:
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            original_content = "# 📊 戦況報告 (Battle Status Report)\n既存の内容\n"
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write(original_content)
+
+            boom = mock.MagicMock()
+            boom.__enter__ = mock.Mock(return_value=boom)
+            boom.__exit__ = mock.Mock(return_value=False)
+            boom.writelines = mock.Mock(
+                side_effect=OSError("simulated crash mid-write"))
+
+            def fake_fdopen(fd, *a, **kw):
+                os.close(fd)  # mkstempが開いた実fdをここで畳む(リーク防止)
+                return boom
+
+            with mock.patch("os.fdopen", side_effect=fake_fdopen):
+                with self.assertRaises(OSError):
+                    cr._append_dashboard_alerts(dashboard_path, ["- アラート"])
+
+            with open(dashboard_path, encoding="utf-8") as f:
+                content_after = f.read()
+            self.assertEqual(content_after, original_content)
+
+            leftover_tmp = [n for n in os.listdir(tmpdir) if n != "dashboard.md"]
+            self.assertEqual(leftover_tmp, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_replace_failure_does_not_corrupt_dashboard(self):
+        """os.replace自体が失敗した場合も本体は未変更のままであること。"""
+        tmpdir = tempfile.mkdtemp(prefix="dashboard_atomic_write_replacefail_")
+        try:
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            original_content = "# 📊 戦況報告 (Battle Status Report)\n既存の内容\n"
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write(original_content)
+
+            with mock.patch("os.replace", side_effect=OSError("simulated replace failure")):
+                with self.assertRaises(OSError):
+                    cr._append_dashboard_alerts(dashboard_path, ["- アラート"])
+
+            with open(dashboard_path, encoding="utf-8") as f:
+                content_after = f.read()
+            self.assertEqual(content_after, original_content)
+
+            leftover_tmp = [n for n in os.listdir(tmpdir) if n != "dashboard.md"]
+            self.assertEqual(leftover_tmp, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+
 if __name__ == "__main__":
     unittest.main()

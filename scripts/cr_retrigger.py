@@ -32,6 +32,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 # ── §1: allowlist・上流拒否 ──────────────────────────────────────────
@@ -1044,6 +1045,11 @@ def _format_cr_decide_error_streak_alert(streak, threshold):
 def _append_dashboard_alerts(dashboard_path, alert_lines):
     """dashboard.mdの先頭(タイトル行の直後)へ新規行を追記する。
     stall_watchdog.shのnotify_dashboard()と同じ『先頭近くに積む』流儀に合わせる。
+
+    cmd_928【四】やり直し(M1): 一時ファイルへ書いてからos.replace()で
+    置き換える(途中でプロセスが落ちてもdashboard.mdが空にならない)。
+    flockでの排他はここでは行わない(他の書き手全員が同じlockを使わねば
+    効かぬため、別途task化が要る所見——報告参照)。
     """
     if not alert_lines or not dashboard_path or not os.path.exists(dashboard_path):
         return
@@ -1052,8 +1058,18 @@ def _append_dashboard_alerts(dashboard_path, alert_lines):
     insert_at = 1 if lines else 0
     new_lines = [line + "\n" for line in alert_lines]
     lines[insert_at:insert_at] = new_lines
-    with open(dashboard_path, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+
+    dashboard_dir = os.path.dirname(dashboard_path) or "."
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".dashboard_tmp_", dir=dashboard_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+        os.replace(tmp_path, dashboard_path)
+    except BaseException:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def _check_cr_decide_error_streaks_and_notify(
