@@ -1391,5 +1391,178 @@ class Test33Q2LabelsDoNotCollideAcrossNotifications(unittest.TestCase):
         self.assertEqual(state["pay_ntfy_seq"], 2)
 
 
+class Test34CrDecideErrorStreakWatchdog(unittest.TestCase):
+    """cmd_928【四】: 当家側cr_decide_error連続検知の見張り。
+
+    RED→GREENの構造: まず「閾値未満」「途中で正常処理が挟まった」場合に
+    streakが検出されない(=鳴らない)ことを確かめ(RED対照)、次に閾値以上
+    連続した場合にのみ検出・dashboard.mdへの追記・重複抑制が働く(GREEN)
+    ことを確かめる。
+    """
+
+    def _write_jsonl(self, path, lines):
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+
+    def _error_decision(self, ts, repo="geolonia/geonicdb-docs", pr=226):
+        return {"ts": ts.isoformat(), "repo": repo, "pr": pr, "head_sha": "sha1",
+                "category": "rate_limited", "decision": "cr_decide_error_wait",
+                "cr_decide_action": "error"}
+
+    def _ok_decision(self, ts, repo="geolonia/geonicdb-docs", pr=226):
+        return {"ts": ts.isoformat(), "repo": repo, "pr": pr, "head_sha": "sha1",
+                "category": "reviewed", "decision": "reviewed"}
+
+    def test_red_below_threshold_not_detected(self):
+        """RED対照①: 5回連続(閾値6未満)では検知されない=鳴らない。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_red1_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            lines = [self._error_decision(NOW + timedelta(minutes=10 * i)) for i in range(5)]
+            self._write_jsonl(log_path, lines)
+            streaks = cr._detect_cr_decide_error_streaks(
+                log_path, NOW + timedelta(minutes=60), threshold=6)
+            self.assertEqual(streaks, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_red_normal_processing_interrupts_streak(self):
+        """RED対照②: 6回連続の手前で正常処理(cr_decide_error以外)が挟まれば
+        連続は途切れ、検知されない。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_red2_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            lines = [self._error_decision(NOW + timedelta(minutes=10 * i)) for i in range(5)]
+            lines.append(self._ok_decision(NOW + timedelta(minutes=50)))  # 正常処理が割込み
+            lines.append(self._error_decision(NOW + timedelta(minutes=60)))
+            self._write_jsonl(log_path, lines)
+            streaks = cr._detect_cr_decide_error_streaks(
+                log_path, NOW + timedelta(minutes=70), threshold=6)
+            self.assertEqual(streaks, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_green_six_consecutive_errors_detected(self):
+        """GREEN: 同一repo#prで6回連続cr_decide_errorが出れば検知される。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_green1_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            start = NOW
+            lines = [self._error_decision(start + timedelta(minutes=10 * i)) for i in range(6)]
+            self._write_jsonl(log_path, lines)
+            streaks = cr._detect_cr_decide_error_streaks(
+                log_path, start + timedelta(minutes=70), threshold=6)
+            self.assertEqual(len(streaks), 1)
+            s = streaks[0]
+            self.assertEqual(s["repo"], "geolonia/geonicdb-docs")
+            self.assertEqual(s["pr"], 226)
+            self.assertEqual(s["count"], 6)
+            self.assertEqual(s["first_ts"], start.isoformat())
+            self.assertEqual(s["last_ts"], (start + timedelta(minutes=50)).isoformat())
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_green_other_pr_not_mixed_in(self):
+        """GREEN: 別PRのcr_decide_errorは数え込まない(repo#pr単位で独立)。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_green2_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            start = NOW
+            lines = []
+            for i in range(5):
+                lines.append(self._error_decision(start + timedelta(minutes=10 * i), pr=226))
+            lines.append(self._error_decision(start + timedelta(minutes=50), pr=999))
+            self._write_jsonl(log_path, lines)
+            streaks = cr._detect_cr_decide_error_streaks(
+                log_path, start + timedelta(minutes=70), threshold=6)
+            self.assertEqual(streaks, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_green_dashboard_alert_appended_once(self):
+        """GREEN: 閾値到達でdashboard.mdへ追記され、同一streakでは再追記しない
+        (重複連投防止)。ntfyは一切呼ばない設計(関数シグネチャにntfy系の
+        引数・呼出が無いことはソース上も自明——本試験はdashboard挙動を見る)。
+        """
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_green3_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write("# 📊 戦況報告 (Battle Status Report)\n- 既存の1行目\n")
+
+            start = NOW
+            lines = [self._error_decision(start + timedelta(minutes=10 * i)) for i in range(6)]
+            self._write_jsonl(log_path, lines)
+
+            state = {}
+            now1 = start + timedelta(minutes=70)
+            new_alerts = cr._check_cr_decide_error_streaks_and_notify(
+                state, log_path, dashboard_path, now1, threshold=6)
+            self.assertEqual(len(new_alerts), 1)
+
+            with open(dashboard_path, encoding="utf-8") as f:
+                content_after_first = f.read()
+            self.assertIn("cr_decide_error", content_after_first)
+            self.assertIn("geolonia/geonicdb-docs#226", content_after_first)
+            self.assertIn("6回連続", content_after_first)
+            self.assertIn("ntfyは鳴らしていない", content_after_first)
+            # 見出し直後(タイトル行の次)に積まれ、既存1行目の上に来ること。
+            lines_after = content_after_first.splitlines()
+            self.assertEqual(lines_after[0], "# 📊 戦況報告 (Battle Status Report)")
+            self.assertIn("cr_decide_error", lines_after[1])
+
+            # 同一streak(first_ts不変)のまま再度呼んでも追記されない。
+            now2 = now1 + timedelta(minutes=10)
+            lines.append(self._error_decision(start + timedelta(minutes=60)))  # streak継続
+            self._write_jsonl(log_path, lines)
+            new_alerts2 = cr._check_cr_decide_error_streaks_and_notify(
+                state, log_path, dashboard_path, now2, threshold=6)
+            self.assertEqual(new_alerts2, [])
+            with open(dashboard_path, encoding="utf-8") as f:
+                content_after_second = f.read()
+            self.assertEqual(content_after_first, content_after_second)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_green_streak_renotifies_after_break_and_rethreshold(self):
+        """GREEN: streakが途切れた後、再度閾値を跨げば改めて通知される。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_decide_streak_green4_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            dashboard_path = os.path.join(tmpdir, "dashboard.md")
+            with open(dashboard_path, "w", encoding="utf-8") as f:
+                f.write("# 📊 戦況報告 (Battle Status Report)\n")
+
+            start = NOW
+            lines = [self._error_decision(start + timedelta(minutes=10 * i)) for i in range(6)]
+            self._write_jsonl(log_path, lines)
+            state = {}
+            first = cr._check_cr_decide_error_streaks_and_notify(
+                state, log_path, dashboard_path, start + timedelta(minutes=70), threshold=6)
+            self.assertEqual(len(first), 1)
+
+            # streakが途切れる(正常処理)→新しいstreakが別のfirst_tsで6回連続。
+            lines.append(self._ok_decision(start + timedelta(minutes=60)))
+            break_start = start + timedelta(minutes=70)
+            lines += [self._error_decision(break_start + timedelta(minutes=10 * i))
+                      for i in range(6)]
+            self._write_jsonl(log_path, lines)
+            second = cr._check_cr_decide_error_streaks_and_notify(
+                state, log_path, dashboard_path, break_start + timedelta(minutes=70),
+                threshold=6)
+            self.assertEqual(len(second), 1)
+            self.assertNotEqual(first[0]["first_ts"], second[0]["first_ts"])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+
 if __name__ == "__main__":
     unittest.main()
