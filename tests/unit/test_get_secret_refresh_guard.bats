@@ -12,20 +12,20 @@
 # fails while --refresh still prints the fresh value and returns 0 — callers
 # believe the Keychain is now in sync when it is not.
 #
-# Approach: mock the 'security' and 'op' binaries in a temp PATH directory.
+# Approach: mock the 'security', 'op' and 'uname' binaries in a temp PATH
+# directory.
 #   - 'op item get' always returns a mock fresh value (so the op-fetch half
 #     of --refresh always succeeds; only the Keychain-write half varies).
 #   - 'security add-generic-password' exit code is controlled per test via
 #     SECURITY_ADD_EXIT_CODE to simulate a locked Keychain (exit 36).
+#   - 'uname -s' always reports "Darwin" so get-secret.sh's
+#     _ks_get_platform() takes the macOS branch regardless of the actual CI
+#     runner OS (unlike test_sync_secrets_*.bats, get-secret.sh's --refresh
+#     Keychain-write path has no real macOS-only dependency beyond the
+#     uname check itself — every syscall it makes is through the mocked
+#     'security'/'op' binaries — so there is nothing left to skip).
 
 setup() {
-  # get-secret.sh's macOS branch is what --refresh exercises; on non-Darwin
-  # CI it would take the WSL/Linux branch instead, which doesn't touch
-  # Keychain at all — same skip rationale as test_sync_secrets_*.bats.
-  if [[ "$(uname -s)" != "Darwin" ]]; then
-    skip "get-secret.sh --refresh Keychain-write path is macOS-only (CI environment: uname=$(uname -s))"
-  fi
-
   export PROJECT_ROOT
   PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 
@@ -59,6 +59,18 @@ fi
 exit 1
 MOCK_SECURITY
   chmod +x "${MOCK_BIN}/security"
+
+  # uname: force get-secret.sh's _ks_get_platform() onto the macOS branch
+  # regardless of the CI runner's real OS (see approach note above).
+  cat > "${MOCK_BIN}/uname" << 'MOCK_UNAME'
+#!/usr/bin/env bash
+if [[ "$1" == "-s" ]]; then
+  echo "Darwin"
+  exit 0
+fi
+exit 1
+MOCK_UNAME
+  chmod +x "${MOCK_BIN}/uname"
 }
 
 teardown() {
