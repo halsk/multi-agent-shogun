@@ -163,15 +163,34 @@ get_secret() {
         echo "ERROR: Secret '$name' not found in 1Password (--refresh)" >&2
         return 1
       fi
-      # Update Keychain with fresh value so subsequent normal reads get the new secret
-      security add-generic-password \
+      # Update Keychain with fresh value so subsequent normal reads get the new secret.
+      # NOTE (cmd_899 K1 fix): the write's exit status MUST be checked — a locked
+      # login Keychain (e.g. exit 36) makes this write fail, and swallowing that
+      # failure makes --refresh report success while the Keychain still holds the
+      # stale value (silent failure: the exact "失敗が失敗として現れぬ" pattern).
+      #
+      # NOTE: -w is the only non-interactive way to pass the password. `security
+      # add-generic-password -h` documents -w as accepting no stdin form; omitting
+      # the argument after -w only triggers an interactive SecurityAgent prompt
+      # (requires a TTY/GUI session, not scriptable), and -X (hex password) is
+      # still a command-line argument with the same `ps`-visibility exposure, just
+      # hex-encoded. So the value remains visible in the process argument list for
+      # the duration of this call; no stdin-based alternative exists in this CLI.
+      local security_err
+      security_err=$(security add-generic-password \
         -s "$name" \
         -a "keychain-secrets" \
         -U \
         -w "$val" \
-        2>/dev/null
+        2>&1 >/dev/null)
+      local security_status=$?
+      if [[ "$security_status" -ne 0 ]]; then
+        echo "ERROR: Keychainを更新できなかった (security add-generic-password exit ${security_status}): ${security_err}" >&2
+        unset val security_err
+        return 1
+      fi
       printf '%s' "$val"
-      unset val
+      unset val security_err
       return 0
     fi
 
