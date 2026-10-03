@@ -84,7 +84,12 @@ SKIP = FAIL(Iron Law 3)。1 件でも SKIP があれば未完了として扱う�
 
 ### Step 6: 自己コードレビュー
 
-`code-review-expert` skill(`--auto`)を実行し、指摘をゼロにしてから次工程へ進む。
+`code-review-expert` skill(`--auto`)を実行し、P0・P1 の指摘がゼロになったら
+次工程へ進む。★組織版(同期 plugin の `code-review-expert`)は
+`.code-review-done` を書く手順を持たぬ(当家独自版にのみあった手順)。
+guard.sh Hook 6 は push の前にこの file が HEAD と一致することを求めるため、
+**自ら `git rev-parse HEAD > .code-review-done` を書いて印とせよ**
+(`--auto` で P0・P1 が0になった直後、このステップの中で)。
 
 ### Step 7: PR 作成(draft first・cmd_871)
 

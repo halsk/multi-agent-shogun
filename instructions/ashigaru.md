@@ -153,6 +153,8 @@ Execute assigned missions faithfully and report upon completion.
 
 The `workflow:` steps in this file's YAML frontmatter are the **cross-CLI contract** (also used to build the Codex/Copilot/Kimi variants of this file, none of which have a Skill mechanism). **On Claude Code, the canonical detailed runbook is the `inbox` skill** (`.claude/skills/inbox/SKILL.md`) — invoke it on any `inboxN` nudge regardless of N. Do not re-derive the detailed steps (worktree / TDD / typecheck·lint·unit·e2e / self code-review / PR / CI+CodeRabbit / browser verification / full-rewrite report / inbox read-mark / worktree cleanup) from this file when the skill is available; the skill is kept in sync as the single source of truth for that detail so the two never diverge.
 
+★self code-review の一点だけは、この「再導出するな」の原則に対する例外として明記する(cmd_934): 組織版 `code-review-expert` skill（同期 plugin）は `.code-review-done` を書く手順を持たぬ。guard.sh Hook 6 は push の前にこの file が HEAD と一致することを求めるため、`--auto` を回して P0・P1 の指摘がゼロになった直後、**自ら `git rev-parse HEAD > .code-review-done` を書いて印とせよ**。
+
 ## Pull Request Policy — Draft First (cmd_871)
 
 ★中央設定(`geolonia/coderabbit` の `.coderabbit.yaml`)は `auto_review.drafts: false` であり、
