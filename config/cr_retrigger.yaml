@@ -3,6 +3,11 @@
 # 設計: queue/reports/cmd908_ratelimit_retrigger_design.md
 #   §1(allowlist)・§3.2(予算)・§9.1(上限の件数を持たない)・
 #   §9.2(予備の問い合わせ)・§9.4(見直しの条件)
+# cmd_934 T1: queue/reports/cmd934_decompose.md「一」節。
+#   「決める」をreview-next(旧cr-decide)の答えそのものに一本化し、
+#   当家側の自前の判断(may_query・head_recent_push・
+#   stale_no_fresh_rate_limit)を捨てる。予備の問い合わせの下限だけは
+#   「安全の上限」(暴走を止める枷であって判断ではない)として残す。
 #
 # ★上限の件数はここにも一切置かない(§9.1)。budget は CodeRabbit の割当の
 # 推測ではなく、当家の試行の数を抑えるための自前の枷である。
@@ -22,37 +27,50 @@ budget:
   # 引き金(`[AI] @coderabbitai review`)の自前の予算(確定版§9.1・追補2の勧め)。
   trigger_per_hour: 1
   trigger_per_day: 8
-  # 予備の問い合わせ(`[AI] @coderabbitai rate limit`)の下限(確定版§9.2)。
-  query_min_interval_min: 30
-  query_per_day: 6
+  # cmd_934 T1: 予備の問い合わせ(`[AI] @coderabbitai rate limit`)の安全の
+  # 上限。同じ件(incident_key)への問い合わせは、この分数に1回まで
+  # (判断ではなく暴走を止める枷——query_fuse_ok()が守る)。
+  # ★旧の query_min_interval_min(全体30分に1回)・query_per_day(全体1日6回)
+  # は廃した。review-nextのcheckは費えを使わぬ問い合わせであり、件ごとの
+  # 冪等性さえ守れば、他のPRへの問い合わせを待たせる理由が無いため
+  # (queue/reports/cmd934_decompose.md §1-2)。
+  query_fuse_min: 60
 
-# 予備の問い合わせ(cr-decideのcheckが返すcommand)の投稿有効/無効。
+# 予備の問い合わせ(review-nextのcheckが返すcommand)の投稿有効/無効。
 # cmd_913 X1是正: cr-decideのcollect()は、通知の待ち時間が過ぎると予算を
 # 「古い」とみなしcheckを返し続ける(§9.2)。query.enabled=falseのままでは
-# 引き金が永久に投げられなくなるため有効化する。下限(may_query: 1件1回・
-# 30分に1回・1日6回)は既に台帳(cr_retrigger.py側)が守る(design §9.2)。
+# 引き金が永久に投げられなくなるため有効化する。下限(query_fuse_min)は
+# 既に台帳(cr_retrigger.py側)が守る。
 query:
   enabled: true
 
-# cmd_913: 「決める」部分(cr-decide)の設定。
-# geolonia/skillsのskills/coderabbit-pr-flow/scripts/cr-decide.mjsを
-# 読み取り専用cloneの中で子プロセスとして呼ぶ(queue/reports/
-# cmd913_crdecide_integration.md §5)。
+# cmd_913・cmd_934 T1: 「決める」部分の設定。
+# geolonia/skillsのskills/pr-review-flow/scripts/review-next.mjs
+# (旧名cr-decide.mjs。#128で改名)を読み取り専用cloneの中で子プロセスとして
+# 呼ぶ(queue/reports/cmd934_decompose.md §1-2)。
 cr_decide:
   enabled: true
-  # cr-decide.mjs・policy.jsonの実物を取ってくる元repo。
+  # review-next.mjs・policy.jsonの実物を取ってくる元repo。
   tool_repo: geolonia/skills
   # cmd_913 X2是正: origin/mainへのreset --hardによる自動追随を禁止し、
-  # 検めた特定commitへ固定する(pin)。この値は geolonia/skills#108
-  # (cr-decide prototype追加PR)のmerge commit SHA — 軍師が
-  # queue/reports/cmd913_crdecide_integration.md §1で実物を読んで
-  # 妥当性を確認したもの(merged_at 2026-09-28T05:34:28Z)。
+  # 検めた特定commitへ固定する(pin)。
+  # cmd_934 T1: 当家の足軽・家老の hook が使うものと同じ決める部品に揃える
+  # ため、この値を当機の同期(~/.claude/plugins/synced/…/geolonia-skills/
+  # skills/pr-review-flow/、lastUpdated 2026-10-01T15:33 JST)と
+  # 中身が一致する commit へ更新した——
+  # geolonia/skills a2113cd35c85f1668cae8d4b02ab54ec584a29fe
+  # (merged 2026-10-01T15:33:07+09:00、PR#141)。
+  # 検めた方法: state/cr_decide_clones/geolonia__skills を fetch し、
+  # 候補commitをgit worktreeへ取り出して、同期dirのskills/pr-review-flow/と
+  # `diff -r` した。SKILL.mdのYAML frontmatterの引用符・インデント差
+  # (マーケットプレース配布時の整形差、中身の変更ではない)のみで、
+  # scripts/・policy.jsonはbyte単位で一致(sha256照合済み)。
   # 更新する時は、家老がgeolonia/skillsの差分を検めてから、この1行を
   # 明示的に書き換えること(origin/mainのreset --hard等、自動追随の
   # 仕組みは作らない)。
-  tool_ref: d42738355cd994382f5fadf4febdf2089842ce83
-  script_relpath: skills/coderabbit-pr-flow/scripts/cr-decide.mjs
-  policy_relpath: skills/coderabbit-pr-flow/policy.json
+  tool_ref: a2113cd35c85f1668cae8d4b02ab54ec584a29fe
+  script_relpath: skills/pr-review-flow/scripts/review-next.mjs
+  policy_relpath: skills/pr-review-flow/policy.json
   # 読み取り専用cloneの置き場(allowlistの各repo + tool_repo自身の分)。
   clones_dir: state/cr_decide_clones
   node_bin: node

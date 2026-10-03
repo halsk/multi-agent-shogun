@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""cr_retrigger.py のテスト(cmd_908 T1 + cmd_913)。
+"""cr_retrigger.py のテスト(cmd_908 T1 + cmd_913 + cmd_934 T1)。
 実行: python3 -m unittest scripts.test_cr_retrigger -v
 
 設計文書§7の8項目 + 確定版の2項目、計10項目を固定する(SKIP 0)。
@@ -10,6 +10,13 @@
 parse_wait/next_attempt_at/_fetch_latest_wait_notice/_fetch_recent_review_starts
 はcr_retrigger.pyから削除したため、これらを直接叩いていた旧試験は削除・
 cr-decide経由の等価な試験へ置き換えた。
+★cmd_934 T1(queue/reports/cmd934_decompose.md「一」節): 「決める」を
+review-next(cr-decideの改名後)の言うとおりに動くだけへ格下げしたため、
+may_query・§3.3のhead_recent_push・確定版F2のstale_no_fresh_rate_limitを
+試験していたTest10・Test13・Test17の一部を削除/更新し、is_cr_decide_target
+のrate_limited/paused縛りが外れたことに伴いTest23の「skippedはcr-decideを
+呼ばぬ」を「呼ぶ」へ反転した。Test35〜Test37にcmd_934 T1のRED対照3件
+(問い合わせの安全弁・二重の依頼の防止・HOME明示)を追加する。
 """
 import json
 import os
@@ -28,11 +35,15 @@ NOW = datetime(2026, 9, 28, 12, 0, 0, tzinfo=timezone.utc)
 
 def make_pr(repo="geolonia/geonicdb-console", pr=1, head_sha="sha1",
             description="Review rate limited", draft=False, allowed=True,
-            next_attempt_at=None):
+            next_attempt_at=None, cr_decide_recommends_review=None):
     d = {"repo": repo, "pr": pr, "head_sha": head_sha, "description": description,
          "draft": draft, "allowed": allowed}
     if next_attempt_at is not None:
         d["next_attempt_at"] = next_attempt_at
+    # cmd_934 T1: 省略時は既定(未設定=_decision_reasonがTrue扱いする)のまま。
+    # 明示的に渡された時だけキーを立てる(Falseも含め、渡した値どおりにする)。
+    if cr_decide_recommends_review is not None:
+        d["cr_decide_recommends_review"] = cr_decide_recommends_review
     return d
 
 
@@ -40,7 +51,7 @@ def _cr_decide_cfg(allowlist, query_enabled=False, cr_decide_enabled=True):
     return {
         "allowlist": allowlist,
         "budget": {"trigger_per_hour": 10, "trigger_per_day": 10,
-                    "query_min_interval_min": 30, "query_per_day": 6},
+                    "query_fuse_min": 60},
         "query": {"enabled": query_enabled},
         "cr_decide": {"enabled": cr_decide_enabled},
     }
@@ -87,11 +98,16 @@ class Test2SameHeadMaxThreeAttempts(unittest.TestCase):
 
 
 class Test3SkippedNotSelected(unittest.TestCase):
-    """§7-3: skippedを投げぬ。"""
+    """§7-3: skippedを投げぬ(cmd_934 T1で、投げぬ理由はcategory自体の縛り
+    ではなくreview-nextがreviewを勧めなかったことに変わった——Test23参照。
+    ここはそのcr_decide_recommends_review=Falseの状態を、select_targetsの
+    純関数レベルで固定する)。"""
 
     def test_skipped_excluded(self):
-        prs = [make_pr(description="Review skipped: draft"),
-               make_pr(pr=2, head_sha="sha2", description="Review skipped: WIP title")]
+        prs = [make_pr(description="Review skipped: draft",
+                        cr_decide_recommends_review=False),
+               make_pr(pr=2, head_sha="sha2", description="Review skipped: WIP title",
+                        cr_decide_recommends_review=False)]
         state = {"heads": {}, "sent_log": []}
         budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
         targets = cr.select_targets(state, prs, budget, NOW)
@@ -123,11 +139,12 @@ class Test5KillSwitchBlocksAll(unittest.TestCase):
 
 
 class Test7UnknownDescriptionNotSelected(unittest.TestCase):
-    """§7-7: 未知のdescriptionで投げぬ。"""
+    """§7-7: 未知のdescriptionで投げぬ(cmd_934 T1: review-nextがreviewを
+    勧めなかった状態=cr_decide_recommends_review=Falseを固定する)。"""
 
     def test_unknown_description_classified_and_excluded(self):
         self.assertEqual(cr.classify("Review failed"), "unknown")
-        prs = [make_pr(description="Review failed")]
+        prs = [make_pr(description="Review failed", cr_decide_recommends_review=False)]
         state = {"heads": {}, "sent_log": []}
         budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
         targets = cr.select_targets(state, prs, budget, NOW)
@@ -188,36 +205,10 @@ class Test9PostCommentRejectsUnknownBody(unittest.TestCase):
             run.assert_called_once()
 
 
-class Test10QueryRespectsRateLimits(unittest.TestCase):
-    """確定版§9.2: 問い合わせが「一つの件につき1回だけ」
-    「全体30分に1回・1日6回まで」の下限を守る。"""
-
-    def test_first_query_for_incident_allowed(self):
-        state = {"query_log": [], "query_incidents": {}}
-        cfg = {"query_min_interval_min": 30, "query_per_day": 6}
-        self.assertTrue(cr.may_query("incident-1", state, NOW, cfg))
-
-    def test_same_incident_not_queried_twice(self):
-        state = {"query_log": [NOW - timedelta(minutes=45)],
-                 "query_incidents": {"incident-1": NOW - timedelta(minutes=45)}}
-        cfg = {"query_min_interval_min": 30, "query_per_day": 6}
-        self.assertFalse(cr.may_query("incident-1", state, NOW, cfg))
-
-    def test_global_thirty_minute_interval_enforced(self):
-        state = {"query_log": [NOW - timedelta(minutes=10)], "query_incidents": {}}
-        cfg = {"query_min_interval_min": 30, "query_per_day": 6}
-        self.assertFalse(cr.may_query("incident-2", state, NOW, cfg))
-
-    def test_thirty_minutes_elapsed_allows_new_incident(self):
-        state = {"query_log": [NOW - timedelta(minutes=31)], "query_incidents": {}}
-        cfg = {"query_min_interval_min": 30, "query_per_day": 6}
-        self.assertTrue(cr.may_query("incident-2", state, NOW, cfg))
-
-    def test_daily_cap_of_six_enforced(self):
-        query_log = [NOW - timedelta(hours=h) for h in range(1, 7)]
-        state = {"query_log": query_log, "query_incidents": {}}
-        cfg = {"query_min_interval_min": 30, "query_per_day": 6}
-        self.assertFalse(cr.may_query("incident-new", state, NOW, cfg))
+# Test10QueryRespectsRateLimits(確定版§9.2のmay_query試験)はcmd_934 T1で
+# may_query自体をcr_retrigger.pyから削除したため撤去した。後継の
+# query_fuse_ok()の試験はTest35RedControl1QueryFuseReplacesMayQueryに
+# 置いた(RED対照1)。
 
 
 class Test12F1PerPrFailureIsolation(unittest.TestCase):
@@ -253,41 +244,12 @@ class Test12F1PerPrFailureIsolation(unittest.TestCase):
         self.assertEqual(len(pr2_entries), 1)
 
 
-class Test13F2ReselectRequiresFreshRateLimit(unittest.TestCase):
-    """cmd_908やり直しF2(high): 同じheadへの再投げは、前回の投げの後に
-    CodeRabbitが改めてrate limitedを返した時だけ許される。"""
-
-    def test_no_reselect_when_status_unchanged_since_last_trigger(self):
-        # 軍師の実測条件の再現: attempts=1・61分前に投げた・statusはそのまま。
-        last_trigger_at = NOW - timedelta(minutes=61)
-        pr = make_pr(next_attempt_at=NOW - timedelta(minutes=1))
-        pr["status_updated_at"] = last_trigger_at - timedelta(minutes=5)
-        state = {"heads": {"geolonia/geonicdb-console#1#sha1":
-                            {"attempts": 1, "last_trigger_at": last_trigger_at}},
-                 "sent_log": []}
-        budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
-        targets = cr.select_targets(state, [pr], budget, NOW)
-        self.assertEqual(targets, [])
-
-    def test_reselect_allowed_when_status_updated_after_trigger(self):
-        last_trigger_at = NOW - timedelta(minutes=61)
-        pr = make_pr(next_attempt_at=NOW - timedelta(minutes=1))
-        pr["status_updated_at"] = last_trigger_at + timedelta(minutes=5)
-        state = {"heads": {"geolonia/geonicdb-console#1#sha1":
-                            {"attempts": 1, "last_trigger_at": last_trigger_at}},
-                 "sent_log": []}
-        budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
-        targets = cr.select_targets(state, [pr], budget, NOW)
-        self.assertEqual(len(targets), 1)
-
-    def test_legacy_state_without_last_trigger_at_is_permissive(self):
-        # last_trigger_atを持たぬ旧stateは、既存の3回未満チェックのみで判定する
-        # (Test2の既存回帰と整合させる・移行時に壊さない)。
-        pr = make_pr()
-        state = {"heads": {"geolonia/geonicdb-console#1#sha1": {"attempts": 1}}, "sent_log": []}
-        budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
-        targets = cr.select_targets(state, [pr], budget, NOW)
-        self.assertEqual(len(targets), 1)
+# Test13F2ReselectRequiresFreshRateLimit(確定版F2のstale_no_fresh_rate_limit
+# 試験)はcmd_934 T1で該当ロジックごと_decision_reason()から削除したため
+# 撤去した(queue/reports/cmd934_decompose.md §1-2 eの「捨てる」判断——
+# review-next自身がwait/queue等で適切に待たせるため、cr_retrigger側の
+# 二重の鮮度判定は不要になった)。同じheadへの最大試行回数(Test2)は
+# そのまま残る。
 
 
 class Test15F3LoggingAndStatusSummary(unittest.TestCase):
@@ -375,37 +337,33 @@ class Test15F3LoggingAndStatusSummary(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
-class Test17F6HeadRecentPushAndWarnings(unittest.TestCase):
-    """cmd_908やり直しF6(low): §3.3のheadが変わったPRは待つ・未知description・
-    2時間status無しの警告。"""
+# Test17F6HeadRecentPushAndWarnings の§3.3(head_pushed_at)試験2本は
+# cmd_934 T1でhead_recent_push判定ごと削除したため撤去した
+# (queue/reports/cmd934_decompose.md §1-2 fの「捨てる」判断——review-next
+# 自身のwait/in-progressに任せる)。未知description・2時間status無しの
+# 警告はF6是正の別項目として残す(下のTest17F6UnknownAndNoStatusWarnings)。
 
-    def test_head_pushed_within_10min_is_not_reselected(self):
-        pr = make_pr()
-        pr["head_pushed_at"] = NOW - timedelta(minutes=3)
-        state = {"heads": {}, "sent_log": []}
-        budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
-        targets = cr.select_targets(state, [pr], budget, NOW)
-        self.assertEqual(targets, [])
-        self.assertEqual(cr._decision_reason(pr, state, NOW), "head_recent_push")
 
-    def test_head_pushed_over_10min_ago_is_eligible(self):
-        pr = make_pr()
-        pr["head_pushed_at"] = NOW - timedelta(minutes=15)
-        state = {"heads": {}, "sent_log": []}
-        budget = {"trigger_per_hour": 10, "trigger_per_day": 10}
-        targets = cr.select_targets(state, [pr], budget, NOW)
-        self.assertEqual(len(targets), 1)
+class Test17F6UnknownAndNoStatusWarnings(unittest.TestCase):
+    """cmd_908やり直しF6(low): 未知description・2時間status無しの警告。"""
 
     def test_unknown_description_logged_as_warning(self):
-        cfg = {"allowlist": ["geolonia/geonicdb-console"], "budget": {}}
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
             return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
 
+        # cmd_934 T1: "unknown"もreviewed以外ゆえreview-nextを呼ぶ対象に
+        # なった(decision自体はこの試験の主眼ではないため、素通りする
+        # "wait"相当を返すだけにする)。
+        decisions = {1: {"action": "wait", "reason": "n/a",
+                          "retryAt": (NOW + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")}}
+        patches = _patch_cr_decide_wiring(decisions)
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review failed", NOW)):
+                                return_value=("Review failed", NOW)), \
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         warn_lines = [e for e in log_lines if e.get("level") == "warn" and e.get("pr") == 1]
@@ -459,7 +417,6 @@ def _patch_cr_decide_wiring(decision_by_pr):
                            return_value=("/fake/cr-decide.mjs", "/fake/policy.json")),
         mock.patch.object(cr, "_ensure_clone", return_value="/fake/clone"),
         mock.patch.object(cr, "call_cr_decide", side_effect=fake_call_cr_decide),
-        mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None),
     )
 
 
@@ -526,7 +483,7 @@ class Test19CrDecideReviewCommandPostsWithAiPrefix(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_called_once_with(
@@ -551,7 +508,7 @@ class Test20CrDecideErrorNeverPosted(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review paused", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
@@ -579,7 +536,7 @@ class Test21CrDecideApproveAndPayObservedNotPosted(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
@@ -602,7 +559,7 @@ class Test21CrDecideApproveAndPayObservedNotPosted(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
@@ -612,10 +569,18 @@ class Test21CrDecideApproveAndPayObservedNotPosted(unittest.TestCase):
 
 
 class Test22CrDecideCheckThrottledByLedger(unittest.TestCase):
-    """RED→GREEN①: cr-decideの答えがcheckでも、台帳(may_query・30分に1回)が
-    抑える(cr-decide自身は走りごとの記憶を持たないため)。"""
+    """RED→GREEN①(cmd_913時点): cr-decideの答えがcheckでも、台帳(may_query・
+    全体30分に1回)が抑えていた。
+    ★cmd_934 T1でmay_queryを削除し、台帳はincident_key(repo#pr#sha#action)
+    ごとのquery_fuse_min(安全の上限・暴走を止める枷であって判断ではない)
+    だけになった——review-nextのcheckは費えを使わぬ問い合わせであり、
+    他のPRへの問い合わせを待たせる理由が無いため(queue/reports/
+    cmd934_decompose.md §1-2)。ゆえに「別々のincidentは互いを待たせぬ」
+    ことを是正後の挙動として固定する(旧来の「全体で30分に1回」の横断的
+    throttleは撤去)。同一incidentの再問い合わせ抑制はTest35
+    (RED対照1)で固定する。"""
 
-    def test_second_check_within_30min_is_not_posted(self):
+    def test_two_different_incidents_both_posted_no_cross_incident_throttle(self):
         cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
@@ -638,16 +603,14 @@ class Test22CrDecideCheckThrottledByLedger(unittest.TestCase):
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
-        # 台帳の30分に1回の下限により、2件目は投じられない(1件目のみ)。
-        self.assertEqual(post_mock.call_count, 1)
-        post_mock.assert_called_once_with(
-            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+        # cmd_934 T1是正後: query_fuse_minはincident_key単位の枷ゆえ、
+        # 別のPR(=別のincident)はどちらも投じられる。
+        self.assertEqual(post_mock.call_count, 2)
         not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
-        self.assertEqual(len(not_posted), 1)
-        self.assertEqual(not_posted[0]["pr"], 2)
+        self.assertEqual(not_posted, [])
 
     def test_check_not_posted_when_query_disabled(self):
         cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=False)
@@ -663,16 +626,21 @@ class Test22CrDecideCheckThrottledByLedger(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
-        self.assertEqual(state.get("query_incidents", {}), {})
+        self.assertEqual(state.get("query_fuse", {}), {})
 
 
 class Test23CrDecidePausedVsSkippedRouting(unittest.TestCase):
-    """RED→GREEN⑤: 「見つける」でcr-decideへ渡すのはrate_limited・pausedのみ。
-    skipped(意図したskip)は渡さない(既存動作を変えない)。"""
+    """RED→GREEN⑤(cmd_913時点): 「見つける」でcr-decideへ渡すのはrate_limited・
+    pausedのみ・skippedは渡さない、だった。
+    ★cmd_934 T1でこの縛りを外した(queue/reports/cmd934_decompose.md
+    §1-2 g「広げる」)。reviewed以外は全てreview-nextに問う設計へ変えたため、
+    test_skipped_never_calls_cr_decideは逆向きのtest_skipped_now_calls_cr_decide
+    へ置き換える——これはcr_retrigger.py側の意図した仕様変更であり、
+    テストが古い仕様に追従しなかっただけではない。"""
 
     def test_paused_calls_cr_decide(self):
         cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
@@ -688,30 +656,36 @@ class Test23CrDecidePausedVsSkippedRouting(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review paused", NOW)), \
              mock.patch.object(cr, "post_comment"), \
-             patches[0], patches[1] as ensure_clone_mock, patches[2] as call_mock, patches[3]:
+             patches[0], patches[1] as ensure_clone_mock, patches[2] as call_mock:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
         call_mock.assert_called_once()
         ensure_clone_mock.assert_called()
 
-    def test_skipped_never_calls_cr_decide(self):
+    def test_skipped_now_calls_cr_decide(self):
+        """cmd_934 T1: skipped(意図したskip)もreview-nextへ問う対象になった
+        ——review-next自身がこのPRをどう扱うか(skip/human等)を判じる。"""
         cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
         state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
 
         def fake_open_prs(repo, gh_bin="gh", timeout=30):
             return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
 
-        patches = _patch_cr_decide_wiring({})
+        decisions = {1: {"action": "skip", "reason": "trivial change",
+                          "command": None}}
+        patches = _patch_cr_decide_wiring(decisions)
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review skipped: draft", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
              patches[0] as tool_mock, patches[1] as ensure_clone_mock, \
-             patches[2] as call_mock, patches[3]:
+             patches[2] as call_mock:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
 
-        call_mock.assert_not_called()
-        ensure_clone_mock.assert_not_called()
-        tool_mock.assert_not_called()
+        call_mock.assert_called_once()
+        ensure_clone_mock.assert_called()
+        tool_mock.assert_called()
+        post_mock.assert_not_called()
         pr_lines = [e for e in log_lines if e.get("pr") == 1 and "decision" in e]
         self.assertEqual(pr_lines[0]["category"], "skip")
 
@@ -729,7 +703,6 @@ class Test24CrDecideDisabledFallsBackSafely(unittest.TestCase):
         with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
-             mock.patch.object(cr, "_fetch_commit_pushed_at", return_value=None), \
              mock.patch.object(cr, "post_comment") as post_mock:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
@@ -762,12 +735,13 @@ class Test25QueryEnabledEndToEndFlow(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", NOW)), \
              mock.patch.object(cr, "post_comment") as post_mock1, \
-             patches1[0], patches1[1], patches1[2], patches1[3]:
+             patches1[0], patches1[1], patches1[2]:
             state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock1.assert_called_once_with(
             "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
-        self.assertIn("geolonia/geonicdb-console#1#sha1#check", state["query_incidents"])
+        # cmd_934 T1: 台帳はquery_incidentsからquery_fuseへ変わった。
+        self.assertIn("geolonia/geonicdb-console#1#sha1#check", state["query_fuse"])
 
         # 2周回め(10分後): 問い合わせの答えをcr-decide自身が読んだ想定
         # (答えの読み取り自体はcr-decideの役目・cmd913_crdecide_integration.md
@@ -780,36 +754,17 @@ class Test25QueryEnabledEndToEndFlow(unittest.TestCase):
              mock.patch.object(cr, "_fetch_coderabbit_status",
                                 return_value=("Review rate limited", now2)), \
              mock.patch.object(cr, "post_comment") as post_mock2, \
-             patches2[0], patches2[1], patches2[2], patches2[3]:
+             patches2[0], patches2[1], patches2[2]:
             state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
 
         post_mock2.assert_called_once_with(
             "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
 
-    def test_second_incident_query_within_30min_stays_throttled_by_ledger(self):
-        # X1の下限(design §9.2)がquery.enabled=true下でも守られることの回帰
-        # (Test22と同型だが、query_enabled=trueが既定になった後の固定として
-        # ここにも残す)。
-        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
-        state = {"heads": {}, "sent_log": [], "query_log": [NOW - timedelta(minutes=5)],
-                  "query_incidents": {}}
-
-        def fake_open_prs(repo, gh_bin="gh", timeout=30):
-            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-        decisions = {1: {"action": "check", "reason": "budget unknown",
-                          "command": "@coderabbitai rate limit"}}
-        patches = _patch_cr_decide_wiring(decisions)
-        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-             mock.patch.object(cr, "_fetch_coderabbit_status",
-                                return_value=("Review rate limited", NOW)), \
-             mock.patch.object(cr, "post_comment") as post_mock, \
-             patches[0], patches[1], patches[2], patches[3]:
-            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
-
-        post_mock.assert_not_called()
-        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
-        self.assertEqual(len(not_posted), 1)
+    # test_second_incident_query_within_30min_stays_throttled_by_ledgerは
+    # cmd_934 T1でmay_queryの全体30分に1回の横断throttleを撤去したため撤去
+    # した(query_logに古いエントリが残っていても別incidentには影響しない
+    # ——Test22.test_two_different_incidents_both_posted_no_cross_incident_throttle
+    # が後継)。同一incidentの再問い合わせ抑制はTest35(RED対照1)で固定する。
 
 
 class Test26CrDecideToolPinnedShaNotAutoTracked(unittest.TestCase):
@@ -887,7 +842,7 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
@@ -917,7 +872,7 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         ntfy_mock.assert_called_once()
@@ -942,7 +897,7 @@ class Test27PayGateSendsNtfyInsteadOfPosting(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         ntfy_mock.assert_not_called()
@@ -968,7 +923,7 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches1[0], patches1[1], patches1[2], patches1[3]:
+             patches1[0], patches1[1], patches1[2]:
             state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
         ntfy_mock1.assert_called_once()
 
@@ -981,7 +936,7 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches2[0], patches2[1], patches2[2], patches2[3]:
+             patches2[0], patches2[1], patches2[2]:
             state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
 
         ntfy_mock2.assert_not_called()
@@ -1006,7 +961,7 @@ class Test28PayNtfyNotResentUntilLordAnswers(unittest.TestCase):
                                 side_effect=OSError("ntfy.sh not found")) as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         ntfy_mock.assert_called_once()
@@ -1042,7 +997,7 @@ class Test29MultiplePayDecisionsBatchedIntoOneNtfy(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         post_mock.assert_not_called()
@@ -1178,7 +1133,7 @@ class Test30P1BlockedScopeReflectsActualState(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[7, 9]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         body = ntfy_mock.call_args.args[0]
@@ -1210,7 +1165,7 @@ class Test31P2KeyIsRepoPrNotHead(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches1[0], patches1[1], patches1[2], patches1[3]:
+             patches1[0], patches1[1], patches1[2]:
             state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
         ntfy_mock1.assert_called_once()
         self.assertEqual(state["pay_ntfy_heads"]["geolonia/geonicdb-console#1"], "sha1")
@@ -1229,7 +1184,7 @@ class Test31P2KeyIsRepoPrNotHead(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches2[0], patches2[1], patches2[2], patches2[3]:
+             patches2[0], patches2[1], patches2[2]:
             state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
 
         # P2是正の核心: headが変わっても再送しない。
@@ -1280,7 +1235,7 @@ class Test32P3LabelsAndReplyFormatForMultiplePrs(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         body = ntfy_mock.call_args.args[0]
@@ -1314,7 +1269,7 @@ class Test32P3LabelsAndReplyFormatForMultiplePrs(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches[0], patches[1], patches[2], patches[3]:
+             patches[0], patches[1], patches[2]:
             cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
 
         body = ntfy_mock.call_args.args[0]
@@ -1349,7 +1304,7 @@ class Test33Q2LabelsDoNotCollideAcrossNotifications(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock1, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches1[0], patches1[1], patches1[2], patches1[3]:
+             patches1[0], patches1[1], patches1[2]:
             state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
         ntfy_mock1.assert_called_once()
         sent1 = [e for e in log_lines1 if e.get("event") == "pay_ntfy_sent"][0]
@@ -1375,7 +1330,7 @@ class Test33Q2LabelsDoNotCollideAcrossNotifications(unittest.TestCase):
              mock.patch.object(cr, "_post_pay_ntfy") as ntfy_mock2, \
              mock.patch.object(cr, "_count_blocked_drafts", return_value=[]), \
              mock.patch.object(cr, "_fetch_main_ci_status", return_value="success"), \
-             patches2[0], patches2[1], patches2[2], patches2[3]:
+             patches2[0], patches2[1], patches2[2]:
             state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
 
         # PR#1は「返答待ち」で再送されないので、二通めはPR#2のみを含む。
@@ -1652,6 +1607,264 @@ class TestAppendDashboardAlertsAtomicWrite(unittest.TestCase):
 
             leftover_tmp = [n for n in os.listdir(tmpdir) if n != "dashboard.md"]
             self.assertEqual(leftover_tmp, [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+
+# ── cmd_934 T1: RED対照3件(queue/reports/cmd934_decompose.md
+#    acceptance_criteria)。いずれも「是正前はこう壊れていた」を実行可能な
+#    形で示した上で、是正後の正しい挙動を確かめる。
+
+class Test35RedControl1QueryFuseReplacesMayQuery(unittest.TestCase):
+    """RED対照1(今の詰まり): 旧may_query(一つの件につき一生に1回)は、
+    query_incidentsに既存headが一度でも載れば、そのheadへは二度と
+    問い合わせが出ない——headが変わらぬ限り永久に止まる
+    (queue/reports/cmd933_review_next_vs_cr_retrigger.md 結論1の実況)。
+    是正後のquery_fuse_ok()は、同じ件でもfuse_min分を過ぎれば再び許す。
+    """
+
+    def test_red_old_once_per_incident_rule_blocks_forever(self):
+        # 旧may_queryの核(cr_retrigger.pyから削除済み)をここに再現する:
+        # 「incident_keyがquery_incidentsに一度でも載れば、以後は常にFalse」。
+        def old_may_query_once_per_incident(incident_key, state, now):
+            return incident_key not in state.get("query_incidents", {})
+
+        incident_key = "geolonia/geonicdb-console#1#sha1#check"
+        # 10/01の実況の再現: 7時間前に一度問い合わせ済み。
+        state = {"query_incidents": {incident_key: NOW - timedelta(hours=7)}}
+        # 7時間経っても、headが変わらぬ限り旧ルールは永久にFalseを返す。
+        self.assertFalse(old_may_query_once_per_incident(incident_key, state, NOW))
+        self.assertFalse(old_may_query_once_per_incident(
+            incident_key, state, NOW + timedelta(days=30)))  # 30日後でも変わらぬ
+
+    def test_green_query_fuse_ok_allows_again_after_fuse_window(self):
+        incident_key = "geolonia/geonicdb-console#1#sha1#check"
+        last_queried = NOW - timedelta(minutes=61)
+        state = {"query_fuse": {incident_key: last_queried}}
+        # 是正後: 61分経っていればfuse_min(60分)を過ぎており再び許される。
+        self.assertTrue(cr.query_fuse_ok(incident_key, state, NOW, fuse_min=60))
+
+    def test_green_query_fuse_still_blocks_within_fuse_window(self):
+        incident_key = "geolonia/geonicdb-console#1#sha1#check"
+        last_queried = NOW - timedelta(minutes=30)
+        state = {"query_fuse": {incident_key: last_queried}}
+        self.assertFalse(cr.query_fuse_ok(incident_key, state, NOW, fuse_min=60))
+
+    def test_green_end_to_end_second_query_for_same_incident_after_fuse_expires(self):
+        """run()を通して、同一incidentへの再問い合わせが60分を過ぎれば
+        実際に投じられることを固定する(query_fuse_ok単体でなく配線も含む)。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        incident_key = "geolonia/geonicdb-console#1#sha1#check"
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "query_fuse": {incident_key: NOW - timedelta(minutes=61)}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+        self.assertEqual(state["query_fuse"][incident_key], NOW)
+
+
+class Test36RedControl2DoubleTriggerPreventedByQueueAwareDecision(unittest.TestCase):
+    """RED対照2(二重の依頼): review-nextはPRごとのqueueのclaim
+    (`~/.claude/cr-decide/queue/queue-<owner>_<repo>_<pr>.json`の
+    `claimedAt`、queue.mjsの仕様どおり60分以内なら有効)を見て判断する。
+    決める部品がqueueを見ぬ(旧cr-decide相当)なら、他sessionが既に
+    claimを取っていても構わずreviewを返し二重の依頼の種になる。
+    cr_retrigger.py側のrun()は、command=="@coderabbitai review"の時だけ
+    cr_decide_recommends_reviewをTrueにする配線は変えていない——変わるのは
+    決める部品(tool_ref)がqueueを見るかどうかである。"""
+
+    @staticmethod
+    def _queue_path(home_dir, repo, pr_number):
+        queue_dir = os.path.join(home_dir, ".claude", "cr-decide", "queue")
+        os.makedirs(queue_dir, exist_ok=True)
+        name = f"queue-{repo.lower().replace('/', '_')}_{pr_number}.json"
+        return os.path.join(queue_dir, name)
+
+    def _write_queue_claim(self, home_dir, repo, pr_number, claimed_minutes_ago):
+        claimed_at = (NOW - timedelta(minutes=claimed_minutes_ago)).isoformat().replace(
+            "+00:00", "Z")
+        with open(self._queue_path(home_dir, repo, pr_number), "w", encoding="utf-8") as f:
+            json.dump({"repo": repo, "pr": pr_number, "priority": "normal", "usd": 0.5,
+                       "since": claimed_at, "heartbeat": claimed_at,
+                       "claimedAt": claimed_at, "updatedAt": claimed_at}, f)
+
+    def _claim_is_fresh(self, home_dir, repo, pr_number, now, claim_window_min=60):
+        """queue.mjsのwithin(claimedAt, CLAIM_MIN=60, now)と同じ判定
+        (他sessionの取った自由レビューがまだ有効か)。"""
+        path_ = self._queue_path(home_dir, repo, pr_number)
+        if not os.path.exists(path_):
+            return False
+        with open(path_, encoding="utf-8") as f:
+            entry = json.load(f)
+        claimed_at_str = entry.get("claimedAt")
+        if not claimed_at_str:
+            return False
+        claimed_at = datetime.fromisoformat(claimed_at_str.replace("Z", "+00:00"))
+        return (now - claimed_at) <= timedelta(minutes=claim_window_min)
+
+    def test_red_queue_unaware_decision_ignores_fresh_claim(self):
+        """是正前相当: queueを見ぬ決める部品は、claimが有っても構わずreviewを
+        返す——これが二重の依頼の種である。"""
+        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_red_")
+        try:
+            self._write_queue_claim(
+                home_dir, "geolonia/geonicdb-console", 1, claimed_minutes_ago=2)
+            self.assertTrue(
+                self._claim_is_fresh(home_dir, "geolonia/geonicdb-console", 1, NOW))
+            # 旧cr-decide相当(queueを一切読まぬ決める部品)の再現。
+            old_decision = {"action": "review", "command": "@coderabbitai review",
+                             "reason": "rate limited, no queue awareness"}
+            # claimが新しいにもかかわらずreviewを返す=二重の依頼の種。
+            self.assertEqual(old_decision["action"], "review")
+        finally:
+            import shutil
+            shutil.rmtree(home_dir)
+
+    def test_green_cr_retrigger_does_not_post_when_decision_says_wait_due_to_claim(self):
+        """是正後: 決める部品(review-next)がqueueのclaimを見てwaitを返せば、
+        cr_retriggerはcr_decide_recommends_reviewをTrueにせず、投じない。"""
+        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_green_")
+        try:
+            self._write_queue_claim(
+                home_dir, "geolonia/geonicdb-console", 1, claimed_minutes_ago=2)
+            claim_fresh = self._claim_is_fresh(
+                home_dir, "geolonia/geonicdb-console", 1, NOW)
+            self.assertTrue(claim_fresh)  # 前提: claimはまだ新しい(60分以内)
+
+            cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+            def fake_open_prs(repo, gh_bin="gh", timeout=30):
+                return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+            # review-next相当: queueのclaimが新しければwaitを返す
+            # (queue.mjsのclaimedAt鮮度判定と同じ60分窓)。
+            decision = ({"action": "wait", "reason": "another session already claimed it",
+                         "retryAt": (NOW + timedelta(minutes=10)).isoformat().replace(
+                             "+00:00", "Z")}
+                        if claim_fresh else
+                        {"action": "review", "command": "@coderabbitai review"})
+            decisions = {1: decision}
+            patches = _patch_cr_decide_wiring(decisions)
+            with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+                 mock.patch.object(cr, "_fetch_coderabbit_status",
+                                    return_value=("Review rate limited", NOW)), \
+                 mock.patch.object(cr, "post_comment") as post_mock, \
+                 patches[0], patches[1], patches[2]:
+                cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+            post_mock.assert_not_called()
+        finally:
+            import shutil
+            shutil.rmtree(home_dir)
+
+    def test_green_cr_retrigger_posts_when_no_claim_exists(self):
+        """対照: claimが無ければ(=他sessionが待っていなければ)、決める部品
+        がreviewを返し、cr_retriggerは投じる。"""
+        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_green_noclaim_")
+        try:
+            claim_fresh = self._claim_is_fresh(
+                home_dir, "geolonia/geonicdb-console", 1, NOW)
+            self.assertFalse(claim_fresh)  # queueファイル自体が無い
+
+            cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+            def fake_open_prs(repo, gh_bin="gh", timeout=30):
+                return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+            decisions = {1: {"action": "review", "command": "@coderabbitai review"}}
+            patches = _patch_cr_decide_wiring(decisions)
+            with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+                 mock.patch.object(cr, "_fetch_coderabbit_status",
+                                    return_value=("Review rate limited", NOW)), \
+                 mock.patch.object(cr, "post_comment") as post_mock, \
+                 patches[0], patches[1], patches[2]:
+                cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+            post_mock.assert_called_once_with(
+                "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+        finally:
+            import shutil
+            shutil.rmtree(home_dir)
+
+
+class Test37RedControl3ChildEnvHasHome(unittest.TestCase):
+    """RED対照3(HOME): launchdのplistはHOMEを設定せぬ。親envからHOMEが
+    無くとも、子プロセス(review-next.mjs等)へは利用者の家が渡ること。
+    是正前(_clean_git_env()のみ)は、親にHOMEが無ければ子にも無い
+    ——review-nextのqueueが`os.homedir()`の推測(root等)に化けうる。
+    是正後(_child_env())は常にpwd経由で明示する。"""
+
+    def test_red_clean_git_env_alone_does_not_guarantee_home(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HOME", None)
+            env = cr._clean_git_env()
+        self.assertNotIn("HOME", env)
+
+    def test_green_child_env_sets_home_even_when_parent_lacks_it(self):
+        import pwd
+        expected_home = pwd.getpwuid(os.getuid()).pw_dir
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HOME", None)
+            env = cr._child_env()
+        self.assertEqual(env["HOME"], expected_home)
+
+    def test_green_child_env_strips_git_vars_too(self):
+        # _child_env()は_clean_git_env()の上に成り立つ——GIT_*除去の回帰。
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/some/other/repo/.git"}):
+            env = cr._child_env()
+        self.assertFalse(any(k.startswith("GIT_") for k in env))
+
+    def test_green_call_cr_decide_passes_child_env_with_home(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock.Mock(stdout=json.dumps(
+                {"action": "check", "command": "@coderabbitai rate limit"}))
+
+        import pwd
+        expected_home = pwd.getpwuid(os.getuid()).pw_dir
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HOME", None)
+            with mock.patch("subprocess.run", side_effect=fake_run):
+                cr.call_cr_decide(
+                    "geolonia/geonicdb-console", 1, "/fake/clone",
+                    "/fake/review-next.mjs")
+
+        self.assertEqual(captured["env"]["HOME"], expected_home)
+
+    def test_green_ensure_clone_passes_child_env_with_home(self):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["env"] = kwargs.get("env")
+            return mock.Mock(returncode=0)
+
+        import pwd
+        expected_home = pwd.getpwuid(os.getuid()).pw_dir
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_ensure_clone_")
+        try:
+            with mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("HOME", None)
+                with mock.patch("subprocess.run", side_effect=fake_run):
+                    cr._ensure_clone("geolonia/geonicdb-console", tmpdir)
+            self.assertEqual(captured["env"]["HOME"], expected_home)
         finally:
             import shutil
             shutil.rmtree(tmpdir)
