@@ -1678,129 +1678,92 @@ class Test35RedControl1QueryFuseReplacesMayQuery(unittest.TestCase):
 
 
 class Test36RedControl2DoubleTriggerPreventedByQueueAwareDecision(unittest.TestCase):
-    """RED対照2(二重の依頼): review-nextはPRごとのqueueのclaim
-    (`~/.claude/cr-decide/queue/queue-<owner>_<repo>_<pr>.json`の
-    `claimedAt`、queue.mjsの仕様どおり60分以内なら有効)を見て判断する。
-    決める部品がqueueを見ぬ(旧cr-decide相当)なら、他sessionが既に
-    claimを取っていても構わずreviewを返し二重の依頼の種になる。
-    cr_retrigger.py側のrun()は、command=="@coderabbitai review"の時だけ
-    cr_decide_recommends_reviewをTrueにする配線は変えていない——変わるのは
-    決める部品(tool_ref)がqueueを見るかどうかである。"""
+    """RED対照2(二重の依頼・cmd934やり直し=軍師QC H1是正): 二重の依頼を
+    防ぐ要は、決める部品(review-next)がcall_cr_decideから渡されるHOMEの下の
+    本物のqueue(`.claude/cr-decide/queue/`)を読めることにある。queueの
+    claimの有無そのものはreview-next.mjs(組織skill・改変禁止)の領分であり
+    ここでは変えようがない——cr_retrigger.py側が握るのは「決める部品へ
+    どのHOMEを渡すか」だけである。渡すHOMEが利用者の家(pwdの家)でなく
+    親envのHOMEのままだと、queueに本物のclaimが実在してもreview-nextからは
+    見えず、意味なく'review'を返し二重の依頼の種になる(=cmd934_decompose.md
+    の想定どおり、二重防止の実効はHOME明示(_child_env)に懸かっている)。
 
-    @staticmethod
-    def _queue_path(home_dir, repo, pr_number):
-        queue_dir = os.path.join(home_dir, ".claude", "cr-decide", "queue")
+    ★前回(PR#184・head 82acafd)のtest_red_queue_unaware_decision_ignores_
+    fresh_claimは、自分で書いた辞書のキーを確かめるだけで本物のコードを
+    一行も通していなかった(空虚なRED・軍師QC H1)。ここでは偽のnode
+    (review-nextの代わり)を本物の子プロセスとして立て、本物の
+    call_cr_decide()を回して証す。"""
+
+    _FAKE_REVIEW_NEXT_JS = (
+        "const fs = require('fs');\n"
+        "const path = require('path');\n"
+        "const args = process.argv.slice(2);\n"
+        "const prNumber = args[0];\n"
+        "const repoIdx = args.indexOf('--repo');\n"
+        "const repo = repoIdx >= 0 ? args[repoIdx + 1] : 'unknown';\n"
+        "const home = process.env.HOME || '';\n"
+        "const queueName = 'queue-' + repo.toLowerCase().split('/').join('_')"
+        " + '_' + prNumber + '.json';\n"
+        "const queuePath = path.join(home, '.claude', 'cr-decide', 'queue', queueName);\n"
+        "if (home && fs.existsSync(queuePath)) {\n"
+        "  process.stdout.write(JSON.stringify({action: 'wait',"
+        " reason: 'queue claim found (fake review-next)'}));\n"
+        "} else {\n"
+        "  process.stdout.write(JSON.stringify({action: 'review',"
+        " command: '@coderabbitai review'}));\n"
+        "}\n"
+    )
+
+    def setUp(self):
+        self.script_dir = tempfile.mkdtemp(prefix="cr_retrigger_fake_reviewnext_")
+        self.script_path = os.path.join(self.script_dir, "fake-review-next.js")
+        with open(self.script_path, "w", encoding="utf-8") as f:
+            f.write(self._FAKE_REVIEW_NEXT_JS)
+        # 親env側のHOME(claim無し)——launchd等でHOMEが利用者の家と違う場所に
+        # なりうることの再現。
+        self.no_claim_home = tempfile.mkdtemp(prefix="cr_retrigger_home_noclaim_")
+        # 利用者の本物の家(pwdの家)相当——本物のqueueのclaimはここにある。
+        self.claim_home = tempfile.mkdtemp(prefix="cr_retrigger_home_claim_")
+        queue_dir = os.path.join(self.claim_home, ".claude", "cr-decide", "queue")
         os.makedirs(queue_dir, exist_ok=True)
-        name = f"queue-{repo.lower().replace('/', '_')}_{pr_number}.json"
-        return os.path.join(queue_dir, name)
+        with open(os.path.join(queue_dir, "queue-geolonia_geonicdb-console_1.json"),
+                  "w", encoding="utf-8") as f:
+            json.dump({"claimedAt": NOW.isoformat().replace("+00:00", "Z")}, f)
 
-    def _write_queue_claim(self, home_dir, repo, pr_number, claimed_minutes_ago):
-        claimed_at = (NOW - timedelta(minutes=claimed_minutes_ago)).isoformat().replace(
-            "+00:00", "Z")
-        with open(self._queue_path(home_dir, repo, pr_number), "w", encoding="utf-8") as f:
-            json.dump({"repo": repo, "pr": pr_number, "priority": "normal", "usd": 0.5,
-                       "since": claimed_at, "heartbeat": claimed_at,
-                       "claimedAt": claimed_at, "updatedAt": claimed_at}, f)
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.script_dir, ignore_errors=True)
+        shutil.rmtree(self.no_claim_home, ignore_errors=True)
+        shutil.rmtree(self.claim_home, ignore_errors=True)
 
-    def _claim_is_fresh(self, home_dir, repo, pr_number, now, claim_window_min=60):
-        """queue.mjsのwithin(claimedAt, CLAIM_MIN=60, now)と同じ判定
-        (他sessionの取った自由レビューがまだ有効か)。"""
-        path_ = self._queue_path(home_dir, repo, pr_number)
-        if not os.path.exists(path_):
-            return False
-        with open(path_, encoding="utf-8") as f:
-            entry = json.load(f)
-        claimed_at_str = entry.get("claimedAt")
-        if not claimed_at_str:
-            return False
-        claimed_at = datetime.fromisoformat(claimed_at_str.replace("Z", "+00:00"))
-        return (now - claimed_at) <= timedelta(minutes=claim_window_min)
+    def test_red_env_without_home_override_misses_real_queue_and_double_reviews(self):
+        """是正前相当: call_cr_decideへ渡すenvがHOMEを明示しない
+        (_clean_git_env()のみ、main版call_cr_decideの実際の経路)だと、
+        親のHOME(claim無しの場所)がそのまま子へ渡り、利用者の家にある
+        本物のqueueが見えず'review'を返す=二重の依頼の種。"""
+        with mock.patch.object(cr, "_child_env", side_effect=cr._clean_git_env), \
+             mock.patch.dict(os.environ, {"HOME": self.no_claim_home}):
+            decision = cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, self.script_dir, self.script_path,
+                node_bin="node")
+        self.assertEqual(decision["action"], "review")
 
-    def test_red_queue_unaware_decision_ignores_fresh_claim(self):
-        """是正前相当: queueを見ぬ決める部品は、claimが有っても構わずreviewを
-        返す——これが二重の依頼の種である。"""
-        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_red_")
-        try:
-            self._write_queue_claim(
-                home_dir, "geolonia/geonicdb-console", 1, claimed_minutes_ago=2)
-            self.assertTrue(
-                self._claim_is_fresh(home_dir, "geolonia/geonicdb-console", 1, NOW))
-            # 旧cr-decide相当(queueを一切読まぬ決める部品)の再現。
-            old_decision = {"action": "review", "command": "@coderabbitai review",
-                             "reason": "rate limited, no queue awareness"}
-            # claimが新しいにもかかわらずreviewを返す=二重の依頼の種。
-            self.assertEqual(old_decision["action"], "review")
-        finally:
-            import shutil
-            shutil.rmtree(home_dir)
+    def test_green_child_env_sees_real_queue_claim_and_waits(self):
+        """是正後: _child_env()がpwdの家(利用者の本物の家)を明示して子へ
+        渡すため、親のHOMEが別の場所を指していても、そこにある本物のqueueの
+        claimが見え'wait'を返し投じない=二重の依頼を防ぐ。
 
-    def test_green_cr_retrigger_does_not_post_when_decision_says_wait_due_to_claim(self):
-        """是正後: 決める部品(review-next)がqueueのclaimを見てwaitを返せば、
-        cr_retriggerはcr_decide_recommends_reviewをTrueにせず、投じない。"""
-        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_green_")
-        try:
-            self._write_queue_claim(
-                home_dir, "geolonia/geonicdb-console", 1, claimed_minutes_ago=2)
-            claim_fresh = self._claim_is_fresh(
-                home_dir, "geolonia/geonicdb-console", 1, NOW)
-            self.assertTrue(claim_fresh)  # 前提: claimはまだ新しい(60分以内)
-
-            cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
-            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
-
-            def fake_open_prs(repo, gh_bin="gh", timeout=30):
-                return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-            # review-next相当: queueのclaimが新しければwaitを返す
-            # (queue.mjsのclaimedAt鮮度判定と同じ60分窓)。
-            decision = ({"action": "wait", "reason": "another session already claimed it",
-                         "retryAt": (NOW + timedelta(minutes=10)).isoformat().replace(
-                             "+00:00", "Z")}
-                        if claim_fresh else
-                        {"action": "review", "command": "@coderabbitai review"})
-            decisions = {1: decision}
-            patches = _patch_cr_decide_wiring(decisions)
-            with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-                 mock.patch.object(cr, "_fetch_coderabbit_status",
-                                    return_value=("Review rate limited", NOW)), \
-                 mock.patch.object(cr, "post_comment") as post_mock, \
-                 patches[0], patches[1], patches[2]:
-                cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
-
-            post_mock.assert_not_called()
-        finally:
-            import shutil
-            shutil.rmtree(home_dir)
-
-    def test_green_cr_retrigger_posts_when_no_claim_exists(self):
-        """対照: claimが無ければ(=他sessionが待っていなければ)、決める部品
-        がreviewを返し、cr_retriggerは投じる。"""
-        home_dir = tempfile.mkdtemp(prefix="cr_retrigger_queue_green_noclaim_")
-        try:
-            claim_fresh = self._claim_is_fresh(
-                home_dir, "geolonia/geonicdb-console", 1, NOW)
-            self.assertFalse(claim_fresh)  # queueファイル自体が無い
-
-            cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
-            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
-
-            def fake_open_prs(repo, gh_bin="gh", timeout=30):
-                return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
-
-            decisions = {1: {"action": "review", "command": "@coderabbitai review"}}
-            patches = _patch_cr_decide_wiring(decisions)
-            with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
-                 mock.patch.object(cr, "_fetch_coderabbit_status",
-                                    return_value=("Review rate limited", NOW)), \
-                 mock.patch.object(cr, "post_comment") as post_mock, \
-                 patches[0], patches[1], patches[2]:
-                cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
-
-            post_mock.assert_called_once_with(
-                "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
-        finally:
-            import shutil
-            shutil.rmtree(home_dir)
+        ★main版のcall_cr_decideは_clean_git_env()しか使わずpwdを一切見ない
+        ため、pwdをここでmockしても親envのHOMEがそのまま子へ伝わり'review'の
+        ままとなる——このtestはPRの試験一式をmain版に当てればFAIL
+        (action=='review'のまま)で落ちる。"""
+        with mock.patch("pwd.getpwuid",
+                         return_value=mock.Mock(pw_dir=self.claim_home)), \
+             mock.patch.dict(os.environ, {"HOME": self.no_claim_home}):
+            decision = cr.call_cr_decide(
+                "geolonia/geonicdb-console", 1, self.script_dir, self.script_path,
+                node_bin="node")
+        self.assertEqual(decision["action"], "wait")
 
 
 class Test37RedControl3ChildEnvHasHome(unittest.TestCase):
