@@ -275,6 +275,9 @@ When ashigaru completes work, gunshi receives report via inbox and performs qual
 - Gunshi updates dashboard.md with results
 - Gunshi reports to Karo: "Quality check PASS" or "Quality check FAIL + concerns"
 - Karo makes final OK/NG decision
+- ★PR を伴う task の場合、**QC PASS が ready の合図である**(cmd_934【四】)。
+  足軽は PR を draft のまま報告しており、QC PASS を受けて家老が
+  `gh pr ready` を一度だけ打つ。QC FAIL の間は ready にしてはならない。
 
 **Quality Check Task YAML (written by Karo):**
 ```yaml
