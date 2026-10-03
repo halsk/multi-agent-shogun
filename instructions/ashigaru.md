@@ -164,8 +164,12 @@ draft 中は CodeRabbit がレビューしない。CodeRabbit の Adaptive Fair 
 
 - PR は必ず **draft で開く**(`gh pr create --draft`)。
 - 是正の push は draft のまま済ませる。
-- 仕上がってから **一度だけ ready にする**(`gh pr ready`)。ready にした時点で
-  初めて CodeRabbit のレビューが走る。
+- ★足軽は **自ら ready にせぬ**(`gh pr ready` を足軽の手順から除く)。draft の
+  まま軍師へ報告せよ。ready は**軍師の QC の PASS の後に、家老が一度だけ**行う
+  (cmd_934【四】)。ready にした時点で初めて CodeRabbit のレビューが走る。
+- ★`@coderabbitai review`・`@coderabbitai rate limit` も足軽は自ら投じぬ。
+  投じるのは `cr_retrigger`(review-next の判断に従う自動化)だけである
+  (cmd_934【一】)。
 - ★取り違え禁物: これは「レビューを避ける」ためではなく「仕上がる前の
   未完成物を何度もレビューさせない」ため。1本の PR につき、レビューを
   受ける回数は確実に1回以上残る。

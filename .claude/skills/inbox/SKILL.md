@@ -104,10 +104,14 @@ gh pr create --draft --repo <owner>/<repo> --title "..." --body "..."
   CodeRabbit がレビューしない。Adaptive Fair Usage は直近7日のレビュー数で
   毎時枠自体を引き下げる仕組みのため、未完成な差分への重ねレビューで枠を
   浪費してはならない。
-- 是正の push は draft のまま済ませ、仕上がってから **一度だけ**
-  `gh pr ready <N> --repo <owner>/<repo>` で ready にする。ready 化した時点で
+- ★足軽は **自ら ready にせぬ**(`gh pr ready` を打たぬ)。是正の push は
+  draft のまま済ませ、**draft のまま報告せよ**。ready は**軍師の QC の PASS
+  の後に、家老が一度だけ**行う(cmd_934【四】)。ready 化した時点で
   初めてレビューが走る(レビューを避けるのではなく、未完成物への重複
   レビューを避けるための運用)。
+- ★`@coderabbitai review`・`@coderabbitai rate limit` も足軽は自ら投じぬ。
+  投じる引き金は `cr_retrigger`(review-next の判断に従う自動化)だけが
+  持つ(cmd_934【一】)。
 
 ### Step 8: CI + CodeRabbit 解消
 

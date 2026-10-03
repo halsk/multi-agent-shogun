@@ -57,7 +57,7 @@ instructions:
   - "/code-review-expert --auto で P0/P1: 0"
 
   # PR
-  - "PR 作成 (Issue First: PR body に Closes #N or Part of #N 必須)"
+  - "PR 作成 (Issue First: PR body に Closes #N or Part of #N 必須)。draft のまま報告せよ——gh pr ready は打つな"
   - "CR Actionable 0、CI PASS まで自律対応 (CodeRabbit Actionable は Minor も対応必須、修正後コメント返信して re-review トリガー)"
   - "【CR 完了確認必須】statusCheckRollup=SUCCESS は CodeRabbit 完了の証拠にならない。完了報告前に必ず以下を実行して reviewThreads(unresolved=0) を実証すること: gh api graphql -f query='{ repository(owner:\"<owner>\",name:\"<repo>\") { pullRequest(number:<PR_NUMBER>) { reviewThreads(first:50) { nodes { isResolved } } } } }' | python3 -c \"import json,sys; d=json.load(sys.stdin); threads=d['data']['repository']['pullRequest']['reviewThreads']['nodes']; unresolved=sum(1 for t in threads if not t['isResolved']); print(f'Unresolved: {unresolved}'); assert unresolved==0,'FAIL'\""
 
@@ -84,6 +84,8 @@ forbidden:
   - git reset --hard / git clean -f / git push --force 等の破壊操作禁止
   - SKIP テスト導入禁止 (Iron Law #3)
   - 上流 OSS リポへの Issue / PR 作成 禁止 (殿明示指示要)
+  - gh pr ready を自ら打つこと禁止 (ready は軍師 QC PASS 後に家老が一度だけ・cmd_934【四】)
+  - "@coderabbitai review"・"@coderabbitai rate limit" を自ら投稿すること禁止 (投じるのは cr_retrigger だけ・cmd_934【一】)
 
 completion_report:
   format: queue/reports/ashigaru<N>_report.yaml
@@ -234,6 +236,19 @@ acceptance_criteria:
   してはならない。指定漏れは足軽が main 作業木を直接編集する事故に直結する。
 - **例外**: ファイル編集を伴わない純粋な分析・調査 task は `target_path: null` のままで
   よい(touches_files が `[]` でよい場合と同じ扱い)。
+
+### ready・CodeRabbit 投稿は足軽へ指示するな(cmd_934【四】)
+
+- **ready(`gh pr ready`)を打たせる指示を足軽向け task YAML に書いてはならない**。
+  PR は draft のまま報告させよ。ready は軍師の QC が PASS した後に、家老が一度だけ
+  `gh pr ready <N> --repo <owner>/<repo>` を打つ。QC 前に ready にすると、
+  仕上がる前の差分へ CodeRabbit のレビューが走り、枠を浪費する。
+- **`@coderabbitai review`・`@coderabbitai rate limit` を投稿させる指示も足軽向け
+  task YAML に書いてはならない**。これらを投じるのは `cr_retrigger`(review-next
+  の判断に従う自動化)だけである。家老が手で投じるのは cr_retrigger が機能しない
+  場合の最終手段に限る。
+- 根拠: PR#250 の rebase task・PR#251 の足軽5報告で、足軽に review 投稿・rate limit
+  照会をさせる指示が実際に紛れ込んでいた(cmd_934 分解で発覚)。
 
 ### Issue First ルール（殿確定 2026-02-24）
 
@@ -403,6 +418,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | statusCheckRollup=SUCCESS を CR 完了と誤認する | 2度連続違反事例あり (subtask_497a + 497a3)。必ず reviewThreads を gh api graphql で実証せよ |
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
 | staging 検証 task に `staging_tenant:` を埋めず dispatch | どのテナントを見ているか取り違え、殿確認と足軽実測が食い違って見える(cmd_826) |
+| 足軽向け task YAML に `gh pr ready`・`@coderabbitai review`/`rate limit` 投稿を指示する | ready は軍師 QC PASS 後に家老が一度だけ・review/rate limit 投稿は cr_retrigger だけの仕事(cmd_934【四】・PR#250/#251 で実際に紛れ込んだ) |
 
 ## 関連
 

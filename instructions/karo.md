@@ -1035,6 +1035,16 @@ After Gunshi's QC report arrives, Karo may run fast mechanical checks before mar
     (Iron Law 7)。投稿する場合は必ず①事前に殿/家老の確認を取り、
     ②冒頭に `[AI]` を付すこと。本節はあくまで手順の明記であり、
     無断で投稿してよいという意味ではない。
+  - ★`@coderabbitai review`・`@coderabbitai rate limit` を**投じるのは
+    `cr_retrigger`(review-next の判断に従う自動化)だけ**である
+    (cmd_934【一】)。家老は足軽へこれらの投稿を task YAML の手順として
+    指示してはならない——家老自身も手で投じるのは cr_retrigger が機能
+    しない場合の最終手段に限り、その場合も上記①②を守ること。
+  - ★**ready(`gh pr ready <N> --repo <owner>/<repo>`)を打つのは家老**で
+    あり、**軍師の QC が PASS した後に一度だけ**行う(cmd_934【四】)。
+    足軽は draft のまま報告し、ready にはせぬ。QC PASS 前に ready に
+    してはならない(CodeRabbit のレビューが仕上がる前の差分に対して
+    走ってしまい、枠を浪費する)。
 - CR Actionable = 0 (reviewThreads で実証・上記でレビュー実施を確認した後に見る)
 - テスト緑 (全件 PASS · SKIP=0)
 - CI 緑 (GitHub Actions 全 job green)
