@@ -58,7 +58,7 @@ instructions:
   # 検証 — verification-before-completion skill に従う
   - "テスト追加 / 既存テスト regress なし確認 (SKIP は FAIL 扱い)"
   - "ビルド成功確認"
-  - "/code-review-expert --auto で P0/P1: 0"
+  - "/geolonia-skills:code-review-expert --auto で P0/P1: 0"
 
   # PR
   - "PR 作成 (Issue First: PR body に Closes #N or Part of #N 必須)"
@@ -80,7 +80,7 @@ acceptance_criteria:
   - "<検証可能な条件 1>"
   - "<検証可能な条件 2>"
   - "テスト全 PASS (SKIP テスト導入禁止)"
-  - "/code-review-expert --auto P0/P1: 0"
+  - "/geolonia-skills:code-review-expert --auto P0/P1: 0"
   - "PR の CR Actionable 0 — gh api graphql で reviewThreads(unresolved=0) を実証 + latestReviews body の 'Outside diff range comments' / 'Additional comments' セクションが空であることを実証"
   - "CI PASS"
   # ★deploy を伴う task は必ず最終条件として以下を追加せよ(殿確定 2026-08-13・cmd_717。

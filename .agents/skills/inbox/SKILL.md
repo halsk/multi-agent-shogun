@@ -73,7 +73,7 @@ SKIP = FAIL(Iron Law 3)。1 件でも SKIP があれば未完了として扱う�
 
 ### Step 6: 自己コードレビュー
 
-`code-review-expert` skill(`--auto`)を実行し、指摘をゼロにしてから次工程へ進む。
+`geolonia-skills:code-review-expert` skill(`--auto`)を実行し、指摘をゼロにしてから次工程へ進む。
 
 ### Step 7: PR 作成
 
