@@ -187,6 +187,7 @@
 !scripts/finish_task.sh
 !scripts/finish_task_validate.py
 !scripts/lib/task_yaml_lock.sh
+!scripts/check_skills_dir_sync.sh
 
 # cmd_908 T1: config/cr_retrigger.yaml(secretsを含まない設定の正典)
 !config/cr_retrigger.yaml
