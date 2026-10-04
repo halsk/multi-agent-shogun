@@ -84,12 +84,14 @@ SKIP = FAIL(Iron Law 3)。1 件でも SKIP があれば未完了として扱う�
 
 ### Step 6: 自己コードレビュー
 
-`code-review-expert` skill(`--auto`)を実行し、P0・P1 の指摘がゼロになったら
+`geolonia-skills:code-review-expert` skill(`--auto`)を実行し、P0・P1 の指摘がゼロになったら
 次工程へ進む。★組織版(同期 plugin の `code-review-expert`)は
 `.code-review-done` を書く手順を持たぬ(当家独自版にのみあった手順)。
 guard.sh Hook 6 は push の前にこの file が HEAD と一致することを求めるため、
 **自ら `git rev-parse HEAD > .code-review-done` を書いて印とせよ**
-(`--auto` で P0・P1 が0になった直後、このステップの中で)。
+(`--auto` で P0・P1 が0になり、かつ★全ての変更を commit した後の HEAD で。
+レビューの直しを commit する前に印を書くと、HEAD がずれて Hook 6 が push を
+止める)。
 
 ### Step 7: PR 作成(draft first・cmd_871)
 
@@ -113,18 +115,18 @@ gh pr create --draft --repo <owner>/<repo> --title "..." --body "..."
   投じる引き金は `cr_retrigger`(review-next の判断に従う自動化)だけが
   持つ(cmd_934【一】)。
 
-### Step 8: CI + CodeRabbit 解消
+### Step 8: CI 確認(CodeRabbit の確かめは ready 後)
 
 ```bash
 gh pr checks <N>
 ```
 
-CI green を確認。CodeRabbit 導入 repo では reviewThreads(unresolved)がゼロであることを確認してからマージ可能状態とする。
-★確認は reviewThreads だけでは不十分——CodeRabbit の commit status は
-未レビュー(`Review skipped` / `Review rate limited` / `Reviews paused`)でも
-`state=success` を返す(draft→ready 直後は特にこの状態になりやすい)。
-`bash scripts/coderabbit_review_gate.sh <owner/repo> <PR番号>` で description まで
-見た判定を行い、`UNREVIEWED: ...` が返る間はマージ可能状態と見なさない。
+CI green を確認する。★PR は draft のまま報告する決まり(Step 7・cmd_934)の下では、
+この時点で CodeRabbit はまだ走っていない(`auto_review.drafts: false`)。
+CodeRabbit の reviewThreads・commit status の確認は、ready にした後の家老
+(または家老が出す直しの task)が担う(`instructions/karo.md`「コード変更 PR
+のマージ必須条件」節)。足軽は CI の緑を確かめたら、CodeRabbit のレビューを
+待たずに次工程(報告)へ進んでよい。
 
 ### Step 9: ブラウザ検証(UI 変更を伴う場合)
 
