@@ -248,6 +248,23 @@ jobs:
           echo "::warning::scripts/build_instructions.sh not found. Skipping build check."
           echo "This check will be enabled once template generation is implemented (Phase 2)"
 
+  skills-dir-sync:
+    name: Skills Directory Sync (.claude vs .agents)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check .claude/skills and .agents/skills SKILL.md consistency
+        run: |
+          # cmd_934 D1: skillの写しが.claude/skillsと.agents/skillsの二か所に
+          # 別fileとして存在し、symlinkでないまま食い違う事故が実際に起きた
+          # (inbox・writing-task-yamlの2件、PR#188軍師QC発見)。symlink化済み
+          # (whole-vault-deadlink-scan等)なら diff は常に一致、実体が2つの
+          # ままの場合は diff で内容一致を確認する。
+          bash scripts/check_skills_dir_sync.sh .
+
   shellcheck:
     name: Shell Script Linting
     runs-on: ubuntu-latest

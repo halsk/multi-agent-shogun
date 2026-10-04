@@ -22,6 +22,10 @@ project: <project-id>
 assigned_to: ashigaru<N>
 status: assigned          # assigned → work → done / blocked / failed
 
+# RACE-001機械検知の必須フィールド(cmd_778)— worktree外の共有/gitignoreファイル
+# (queue/・config/・projects/配下等)へ書き込む場合はそのパスを列挙。無ければ []
+touches_files: []
+
 # staging検証テナント必須フィールド(cmd_826)— ステージングで実ブラウザ確認を伴う
 # taskは必ずどのテナントで確認するかを明記せよ。「テナントアドミンで確認せよ」
 # だけでは不十分(cmd_821/cmd_826で殿確認と足軽実測が食い違って見えた事故の因)。
@@ -63,14 +67,22 @@ instructions:
 
   # 完了報告
   - "完了報告 YAML を queue/reports/ashigaru<N>_report.yaml に出力"
-  - "家老に inbox_write で報告 (戦国口調)"
+  - "bash scripts/finish_task.sh --status done で終える (report検め→task YAML status書換→家老/軍師へinbox_writeを一括で行う。cmd_914)"
+
+# 完了報告コマンド(cmd_914: 旧inbox_write.sh直呼びから移行。finish_task.shが
+# report YAMLの検め(task_id一致・重複キー無し・必須欄そろう・statusが
+# --statusと一致・reportのmtimeがtaskより新しい)→task YAMLのstatus書換→
+# report_toへのinbox_writeを一つの呼出で行う。一つでも条件を欠けば非0で
+# 止まり何も書き換えない)
+report_command: |
+  bash scripts/finish_task.sh --status done
 
 acceptance_criteria:
   - "<検証可能な条件 1>"
   - "<検証可能な条件 2>"
   - "テスト全 PASS (SKIP テスト導入禁止)"
   - "/geolonia-skills:code-review-expert --auto P0/P1: 0"
-  - "PR の CR Actionable 0 — gh api graphql で reviewThreads(unresolved=0) を実証済み (statusCheckRollup のみでは不可)"
+  - "PR の CR Actionable 0 — gh api graphql で reviewThreads(unresolved=0) を実証済み (statusCheckRollup のみでは不可) + latestReviews body の 'Outside diff range comments' / 'Additional comments' セクションが空であることを実証"
   - "CI PASS"
   # ★deploy を伴う task は必ず最終条件として以下を追加せよ(殿確定 2026-08-13・cmd_717。
   #   JS の grep・HTTP ヘッダ・workflow success はいずれも中間確認であり完了条件にしてはならない)
@@ -284,7 +296,8 @@ acceptance_criteria:
   規律」と両輪)。
 - **人の記憶に頼るな**: 上記テンプレートの `staging_tenant:` フィールド(cmd_826 で追加)を
   必須で埋めよ。staging でのブラウザ確認を伴う task にこのフィールドが `null` のまま
-  dispatch してはならない。
+  dispatch してはならない。touches_files(RACE-001)と同じく、テンプレートに固定欄として
+  組み込むことで「書き忘れ」を構造的に防ぐ。
 - テナント名と認証情報の対応表は `context/geonicdb-console-issue-order.md` の
   「staging検証の認証情報」節を正典とする(project 固有の対応表がある場合はそちらも参照)。
 
@@ -401,6 +414,20 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
   ```
 - unresolved が残る場合は 1 件ずつ対応: (a) CR 期待通り修正 または (b) `「Resolved as Designed: <理由>」` reply + 手動 Resolve conversation
 - 証拠を報告に含める: `total=N unresolved=0`
+- 加えて latestReviews body の "Outside diff range comments" セクションも確認すること（reviewThreads=0 でも残置される場合あり — cmd_499 subtask_499a で Critical 見落とし発覚）
+  ```bash
+  gh api graphql -f query='{repository(owner:"OWNER",name:"REPO"){pullRequest(number:N){latestReviews(first:10){nodes{author{login},state,body}}}}}' | python3 -c "
+  import json,sys
+  d=json.load(sys.stdin)
+  reviews=d['data']['repository']['pullRequest']['latestReviews']['nodes']
+  for r in reviews:
+    if r['author']['login'] == 'coderabbitai':
+      body=r.get('body','')
+      if 'Outside diff range' in body or 'outside diff' in body.lower():
+        print('⚠️ Outside diff range comments あり → 要対応'); sys.exit(1)
+  print('OK: latestReviews body に Outside diff range なし')
+  "
+  ```
 - dashboard 表記は「CR Actionable 0」と書く前に GraphQL で確認
 
 ## アンチパターン（家老が避けるべき）
@@ -416,6 +443,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | target_path を書き忘れる(null/未指定のまま dispatch) | 足軽が main 作業木を直接編集する事故に直結(cmd_820・cmd_830・cmd_836で3度発生)。純粋分析task以外は必須欄 |
 | 殿への報告で dashboard を二次情報として信用する | YAML が真実 (Iron Law #4)、dashboard は家老の要約 |
 | statusCheckRollup=SUCCESS を CR 完了と誤認する | 2度連続違反事例あり (subtask_497a + 497a3)。必ず reviewThreads を gh api graphql で実証せよ |
+| `reviewThreads(unresolved=0)` のみ確認して完了と報告 | latestReviews body の Outside diff range comments も確認必須 (cmd_499 subtask_499a で Critical 見落とし事例) |
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
 | staging 検証 task に `staging_tenant:` を埋めず dispatch | どのテナントを見ているか取り違え、殿確認と足軽実測が食い違って見える(cmd_826) |
 | 足軽向け task YAML に `gh pr ready`・`@coderabbitai review`/`rate limit` 投稿を指示する | ready は軍師 QC PASS 後に家老が一度だけ・review/rate limit 投稿は cr_retrigger だけの仕事(cmd_934【四】・PR#250/#251 で実際に紛れ込んだ) |
