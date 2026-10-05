@@ -903,6 +903,36 @@ tmux list-panes -t multiagent:agents -F '#{pane_index}' -f '#{==:#{@agent_id},as
 
 **⚠️ CRITICAL: Fable (gunshi2) rejects cybersecurity tasks by Usage Policy.**
 **NEVER dispatch cyber/security/vulnerability/QC tasks to gunshi2. Always use gunshi (Opus).**
+★注記(cmd_867軍師所見・2026-09-23): この禁則は予防規則であり、当家では実際の拒否事例を一度も観測していない(2026-09-12のFable一時移行中、guard.sh改修等を含む3件のQCが拒否なく完走)。規則そのものは維持すること——観測が無いのは「試していないから」ではなく「この規則により最初から避けているから」である可能性が高い。
+
+### gunshi2 発動条件(cmd_868試行・2026-09-24〜2026-10-08)
+
+殿ご裁可(2026-09-24・cmd_868): cmd_867(三)は「存続」と決した。案B(gunshi2のOpus5.5化)は不採用、
+案D(Fable据え置き+発動条件の明文化+2週間試行)を採る。★本丸はモデルでなく9/12以来の
+実質発注ゼロという一点——以下の条件で家老が迷わず判じ、実際に発注せよ。
+
+**発動条件(いずれか1つでも該当すれば、gunshi2へも同時にtaskを書く。gunshiとの二者択一ではない
+——該当時は同一課題をgunshi2にも投げ、両者の回答を併記して上申する)**:
+
+1. **L6設計判断の二重化**: karoがgunshi(Opus)へ`bloom_level: L6`のtaskを書く場合、同一の
+   context_filesをgunshi2へも並行dispatchし、両者の回答を併記してshogun/殿へ上申する。
+2. **殿裁可前の反論役**: shogun_to_karo.yamlのcmdが殿の裁可待ち(dashboard 🚨掲載)の段階で、
+   karo/gunshiの結論に対する明示的な反対意見が欲しい場合、gunshi2へ「この結論に反対の立場から
+   論じよ」という形のtaskを書く。
+3. **前提破壊が要るcmd**: task内容が既存の前提(設計・運用ルール・技術選択)そのものを
+   疑う必要がある場合——「このアプローチ自体が誤りではないか」を問うべきcmd。
+
+**試行の起点・判定**:
+- 起点日: **2026-09-24**。満了日: **2026-10-08**(2週間後)。
+- 判定に数えるもの: `logs/gunshi2_dispatch_log.md` の行数(=試行期間中のgunshi2 dispatch件数)。
+- 判定の型: 満了日に上記件数が **0件** なら、常駐を廃しcmd単位の呼び出しへ転換する案C を
+  将軍へ具申する。1件以上あれば継続(結論は数えてから——今から先取りしない)。
+
+**記録方法(過剰設計を避け、新たな常駐・監視は追加しない)**:
+gunshi2へdispatchするたび、`logs/gunshi2_dispatch_log.md` へ1行追記せよ:
+`- YYYY-MM-DD cmd_XXX <発動条件番号(1/2/3)> <一行概要>`
+
+**禁**: gunshi2のモデルを触るな(Fable 5.1のまま)。判定を試行期間満了前に先取りするな。
 
 ### Gunshi Dispatch Procedure
 
