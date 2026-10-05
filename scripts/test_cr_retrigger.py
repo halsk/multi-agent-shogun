@@ -1833,5 +1833,67 @@ class Test37RedControl3ChildEnvHasHome(unittest.TestCase):
             shutil.rmtree(tmpdir)
 
 
+class Test38AssertAllowedBodyRejectsPayAndApproveBodies(unittest.TestCase):
+    """cmd_934 T2 acceptance④: assert_allowed_body()は、cr-decideのpay・
+    approve相当の本文(review-nextがそのまま返す文面の形)を名指しで拒む。
+    Test9は汎用の自由文を拒むことしか固めていなかったため、ここで
+    pay・approveそれぞれの実際の文面を明示して固定する。"""
+
+    def test_rejects_pay_use_credits_body(self):
+        with self.assertRaises(ValueError):
+            cr.assert_allowed_body("[AI] @coderabbitai review --use-credits")
+
+    def test_rejects_approve_body(self):
+        with self.assertRaises(ValueError):
+            cr.assert_allowed_body("[AI] @coderabbitai approve")
+
+
+class Test39RedControlLoosenedAssertAllowedBodyWouldPostPay(unittest.TestCase):
+    """RED対照(cmd_934 T2 acceptance⑤): assert_allowed_body()が最後の砦
+    であることを、素通しにした偽版との対比で示す。
+
+    是正前相当(素通し版に差し替えた状態): pay相当の本文でpost_comment()を
+    呼ぶと、例外にならずgh呼出(subprocess.run)まで進んでしまう
+    ——これは「投じてはならない本文が投じられる」事故そのものである。
+
+    現行コード(assert_allowed_bodyを差し替えない): 同じ呼び出しが
+    ValueErrorで止まり、gh呼出(subprocess.run)は一度も起きない。
+    """
+
+    PAY_BODY = "[AI] @coderabbitai review --use-credits"
+    APPROVE_BODY = "[AI] @coderabbitai approve"
+
+    @staticmethod
+    def _loosened_assert_allowed_body(body):
+        """素通し版(RED対照専用)。本物のALLOWED_BODIES判定を行わない。"""
+        return None
+
+    def test_red_loosened_guard_lets_pay_body_reach_gh(self):
+        with mock.patch.object(cr, "assert_allowed_body",
+                                side_effect=self._loosened_assert_allowed_body), \
+             mock.patch("subprocess.run") as run_mock:
+            cr.post_comment("geolonia/geonicdb-console", 1, self.PAY_BODY)
+        run_mock.assert_called_once()
+
+    def test_red_loosened_guard_lets_approve_body_reach_gh(self):
+        with mock.patch.object(cr, "assert_allowed_body",
+                                side_effect=self._loosened_assert_allowed_body), \
+             mock.patch("subprocess.run") as run_mock:
+            cr.post_comment("geolonia/geonicdb-console", 1, self.APPROVE_BODY)
+        run_mock.assert_called_once()
+
+    def test_green_current_guard_blocks_pay_body_before_gh(self):
+        with mock.patch("subprocess.run") as run_mock:
+            with self.assertRaises(ValueError):
+                cr.post_comment("geolonia/geonicdb-console", 1, self.PAY_BODY)
+        run_mock.assert_not_called()
+
+    def test_green_current_guard_blocks_approve_body_before_gh(self):
+        with mock.patch("subprocess.run") as run_mock:
+            with self.assertRaises(ValueError):
+                cr.post_comment("geolonia/geonicdb-console", 1, self.APPROVE_BODY)
+        run_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
