@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""cmd_908 T1 + cmd_913 + cmd_934 T1: CodeRabbit rate-limited PR 自動再引き金 — 実装。
+"""cmd_908 T1 + cmd_913 + cmd_934 T1 + cmd_934続き: CodeRabbit rate-limited PR
+自動再引き金 — 実装。
 
 設計: queue/reports/cmd908_ratelimit_retrigger_design.md
   (§1〜§7が基本設計、末尾「確定版(cmd_909【D】)」§8〜§11が最終版。
@@ -11,6 +12,14 @@
   係へ格下げする。当家の自前の判断(may_query・head_recent_push・
   stale_no_fresh_rate_limit・rate_limited/pausedのみを見る足切り)を捨て、
   足軽・家老のhookと同じ決める部品(review-next.mjs)に揃える。
+  cmd_934続き: queue/reports/cmd934_trigger_per_day_judgment.md §6(案B) —
+  trigger_per_hour・trigger_per_day(数の枷)を除く。review-nextは既に
+  CodeRabbit自身の空きを測った上でreviewを返しており、当家の数の枷は
+  その判断を盲目に上書きして正しい依頼を握りつぶしていた(PR#246が
+  41周回reviewを勧められながら一度も依頼されなかった実例)。代わりに
+  「壊れた徴」(投じた直後にその同じheadのCodeRabbit statusがrate
+  limitedへ戻る=review-nextの見立てが外れた徴)で止める
+  (trigger_breaker_open)。同じheadへの最大試行回数(max_attempts)は残す。
 
 ★このモジュールは決定論的な純関数群(classify/query_fuse_ok/select_targets/
 assert_allowed_body)と、それらを束ねる薄いrun()/main()のみで構成する。
@@ -60,6 +69,35 @@ CR_DECIDE_POSTABLE_COMMANDS = {
 _REVIEWED_EXACT = {"Review completed", "Review approved"}
 _WAITING_EXACT = {"Review in progress", "Review queued"}
 
+# §3.2: 同じheadへの試行は最大3回まで。_decision_reason()と、run()の
+# trigger_breaker古い印消し(自己レビュー是正)の双方が同じ値を参照するため、
+# 定数へ出す(値が将来ずれて食い違う事故を防ぐ)。
+MAX_ATTEMPTS_PER_HEAD = 3
+
+
+def _head_key(repo, pr_number, head_sha):
+    """state["heads"]の鍵(`repo#pr#sha`)を組み立てる(自己レビュー是正・PR#188)。
+    以前は`_decision_reason`・run()本体の2箇所(計3呼出)で個別に文字列を
+    組み立てており、区切り・順序を変える時に直し漏れる危険があった。"""
+    return f"{repo}#{pr_number}#{head_sha}"
+
+
+def _misses_reach_threshold(state, this_cycle_misses, now, threshold, window_hours):
+    """既に閉じているtrigger_breakerが、永続化済みの外れ(state["trigger_misses"]・
+    24時間窓等で刈り込み済み)とこの周回でここまでに検知した外れ
+    (this_cycle_misses)を合わせて閾値に達するかを返す(自己レビュー是正・6回目)。
+
+    ★per-PRループの途中(query投稿の可否判定)と、ループ完了後(select_targets
+    への『この周回のbreaker状態』受け渡し)の★両方から同じ式で呼ぶ——
+    是正前は後者でしか計算しておらず、まさにこの周回でbreakerが開くに
+    至った外れを検知したPR自身や、ループ内でそれより後に処理される別PRの
+    問い合わせ(`[AI] @coderabbitai rate limit`)が、同じ周回のうちに
+    投稿されてしまっていた(実測で確認された欠陥)。
+    """
+    recent = [t for t in state.get("trigger_misses", []) if now - t < timedelta(hours=window_hours)]
+    recent.extend(this_cycle_misses)
+    return len(recent) >= threshold
+
 
 def classify(desc):
     """commit status の description を分類する(§1の表)。state は見ない。
@@ -108,6 +146,25 @@ def post_comment(repo, pr, body, gh_bin="gh", timeout=30):
 def is_killed(stop_path):
     """logs/cr_retrigger.stopが有れば一切投じない(§5)。周回・ログ・pingは続く。"""
     return os.path.exists(stop_path)
+
+
+def _project_root():
+    """このscriptファイルからの相対で、project rootの実pathを返す。"""
+    return os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _is_within_project_tree(path):
+    """pathがproject tree配下に実際に解決されるかを確かめる(自己レビュー是正)。
+
+    CLAUDE.md「Destructive Operation Safety」Tier3の『rm -rf <dir> →
+    project tree内のみ、realpathで確認してから』に倣う。trigger_breaker_reset_path
+    は既定値こそproject tree内(logs/)だが、CLIの--trigger-breaker-reset-fileで
+    任意のpathを渡せる以上、os.remove()の直前に実pathで確かめる
+    (シンボリックリンクや`..`を含む相対pathをそのまま信じない)。
+    """
+    root = _project_root()
+    resolved = os.path.realpath(path)
+    return resolved == root or resolved.startswith(root + os.sep)
 
 
 def query_fuse_ok(incident_key, state, now, fuse_min):
@@ -161,11 +218,10 @@ def _decision_reason(pr, state, now):
     if not pr.get("cr_decide_recommends_review", True):
         return "cr_decide_not_review"
 
-    key = f"{pr['repo']}#{pr['pr']}#{pr['head_sha']}"
+    key = _head_key(pr['repo'], pr['pr'], pr['head_sha'])
     head_state = state.get("heads", {}).get(key, {})
     attempts = head_state.get("attempts", 0)
-    # §3.2: 同じheadへの試行は最大3回まで。
-    if attempts >= 3:
+    if attempts >= MAX_ATTEMPTS_PER_HEAD:
         return "max_attempts"
 
     # cmd_913: next_attempt_atはもはや自前の移動窓計算では埋めない。
@@ -177,32 +233,46 @@ def _decision_reason(pr, state, now):
     return "candidate"
 
 
-def select_targets(state, prs, budget, now, killed=False):
-    """投げ直す候補を選ぶ(§3.2の冪等性・上限、確定版§9.1の毎時/毎日の予算)。
+def select_targets(state, prs, _budget, now, killed=False, breaker_open=None):
+    """投げ直す候補を選ぶ(§3.2の冪等性・同一head最大試行回数)。
+
+    cmd_934続き(queue/reports/cmd934_trigger_per_day_judgment.md §6・案B):
+    毎時/毎日の数の枷(trigger_per_hour・trigger_per_day)はここから除いた。
+    review-nextが既に空きを測った上でreviewを返す以上、当家が数でさらに
+    絞るのはその判断の盲目な上書きであり、正しい依頼を握りつぶす
+    (PR#246が41周回reviewを勧められながら一度も依頼されなかった実例)。
+    止めるのは「壊れた徴」(state["trigger_breaker_open"]・run()が検知して
+    立てる)であり、killed(§5の停止スイッチ)と同様に全面停止の枷として
+    働く——正しく動いている時には一度も口を挟まない。
 
     prs: [{repo, pr, head_sha, description, draft, allowed,
            next_attempt_at(省略可・省略時はnowとみなし即時候補),
            cr_decide_recommends_review(省略可・既定True・cmd_934 T1で
            review-nextが"review"を勧めた時だけTrueになる)}]
     state: {"heads": {"repo#pr#sha": {"attempts": int, "last_trigger_at": datetime(省略可)}},
-            "sent_log": [datetime,...]}
-    budget: {"trigger_per_hour": int, "trigger_per_day": int}
+            "sent_log": [datetime,...], "trigger_breaker_open": bool(省略可)}
+    _budget: ★自己レビュー是正: hour/day予算を除いたことで本関数の中では一切
+        参照しない(先頭の`_`は意図的に未使用である印)。呼び出し側
+        (run())・既存の試験群が引き続き同じ位置引数で`budget`相当の
+        dict(query_fuse_min等を含む)を渡しているため、無用な引数削除で
+        呼び出し元を総入れ替えするより、ここで「使わない」と明示する方を
+        選んだ。
     killed: kill switch(§5)が有るか
+    breaker_open: ★自己レビュー是正(4回目): 省略時(None)はstate["trigger_breaker_open"]
+        をそのまま見る(既定の挙動・既存呼出への非回帰)。run()はdry_runの
+        間、この周回で新たに閾値へ達した事実をstateへ書かずに計算だけ
+        行うため、「実際に投じれば止まるはずの周回」を明示的にここへ渡す
+        ことで、--dry-runのプレビューが本番の挙動と食い違わないようにする。
     """
-    if killed:
+    effective_breaker_open = (
+        state.get("trigger_breaker_open") if breaker_open is None else breaker_open)
+    if killed or effective_breaker_open:
         return []
 
     candidates = [pr for pr in prs if _decision_reason(pr, state, now) == "candidate"]
     candidates.sort(key=lambda p: p.get("next_attempt_at", now))
 
-    sent_log = state.get("sent_log", [])
-    hour_count = sum(1 for t in sent_log if now - t < timedelta(hours=1))
-    day_count = sum(1 for t in sent_log if now - t < timedelta(days=1))
-    hour_remaining = budget.get("trigger_per_hour", 1) - hour_count
-    day_remaining = budget.get("trigger_per_day", 8) - day_count
-    remaining = max(0, min(hour_remaining, day_remaining))
-
-    return candidates[:remaining]
+    return candidates
 
 
 # ── cmd_913 §5: cr-decideへの「呼ぶ」統合 ────────────────────────────
@@ -519,15 +589,32 @@ def _build_pay_ntfy_body(pending_pays, seq, now, gh_bin="gh", timeout=30):
     return header + "\n" + "\n".join(lines) + "\n" + footer, labels
 
 
-def _post_pay_ntfy(body, ntfy_bin=None, cmd_id="cmd_913", timeout=30):
-    """殿へpay裁可要求のntfyを送る(scripts/ntfy.shの`--kind 要承認`型を使う。
-    新しい流儀は作らない——cmd_913至急の指示どおり既存経路に乗せる)。"""
+def _run_ntfy(body, kind, eta, ntfy_bin=None, cmd_id="cmd_908", timeout=30):
+    """scripts/ntfy.shを呼ぶ共通部分(自己レビュー是正・4回目: _post_pay_ntfy・
+    _post_trigger_breaker_ntfyがほぼ同じ形を個別に持っていたのを一本化)。"""
     if ntfy_bin is None:
         ntfy_bin = os.path.join(os.path.dirname(__file__), "ntfy.sh")
     subprocess.run(
-        [ntfy_bin, "--cmd", cmd_id, "--kind", "要承認", "--eta", "殿のご返答まで", "--body", body],
+        [ntfy_bin, "--cmd", cmd_id, "--kind", kind, "--eta", eta, "--body", body],
         check=True, timeout=timeout,
     )
+
+
+def _post_pay_ntfy(body, ntfy_bin=None, cmd_id="cmd_913", timeout=30):
+    """殿へpay裁可要求のntfyを送る(scripts/ntfy.shの`--kind 要承認`型を使う。
+    新しい流儀は作らない——cmd_913至急の指示どおり既存経路に乗せる)。"""
+    _run_ntfy(body, "要承認", "殿のご返答まで", ntfy_bin=ntfy_bin, cmd_id=cmd_id, timeout=timeout)
+
+
+def _post_trigger_breaker_ntfy(body, ntfy_bin=None, cmd_id="cmd_934", timeout=30):
+    """壊れた徴(trigger_breaker_open)を殿へ知らせるntfy。
+
+    cmd_934続きの下命(task YAML)は「種別は要承認でなく通知」——ご裁可を
+    求めるものではなく知らせるだけであるため、scripts/ntfy.shの4種
+    (要承認・要操作・要確認・報告)のうち、承認を求めない「報告」を使う
+    (4種に「通知」は無い——最も近い既存の型として選んだ判断)。
+    """
+    _run_ntfy(body, "報告", "-", ntfy_bin=ntfy_bin, cmd_id=cmd_id, timeout=timeout)
 
 
 # ── main(): T1の範囲では実配線のみ。本番のgh呼び出しはCI/ローカルでは
@@ -546,7 +633,8 @@ def _load_state(path):
         return {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
                  "query_fuse": {},
                  "pay_ntfy_sent": {}, "pay_ntfy_heads": {}, "pay_ntfy_labels": {},
-                 "pay_ntfy_seq": 0}
+                 "pay_ntfy_seq": 0,
+                 "trigger_misses": [], "trigger_breaker_open": False}
     with open(path, encoding="utf-8") as f:
         raw = json.load(f)
     raw["sent_log"] = [datetime.fromisoformat(t) for t in raw.get("sent_log", [])]
@@ -562,11 +650,20 @@ def _load_state(path):
     raw["pay_ntfy_sent"] = {
         k: datetime.fromisoformat(v) for k, v in raw.get("pay_ntfy_sent", {}).items()
     }
+    # cmd_934続き: 壊れた徴(trigger_breaker)の台帳。
+    raw["trigger_misses"] = [datetime.fromisoformat(t) for t in raw.get("trigger_misses", [])]
+    raw["trigger_breaker_open"] = bool(raw.get("trigger_breaker_open", False))
     heads = raw.get("heads", {})
     for head_state in heads.values():
         # F2: last_trigger_atはdatetimeとして扱う(select_targetsの再投げ判定に使う)。
         if head_state.get("last_trigger_at"):
             head_state["last_trigger_at"] = datetime.fromisoformat(head_state["last_trigger_at"])
+        # cmd_934続き: miss_recorded_for_trigger_atも同様にdatetime化する
+        # (同じ投げ=last_trigger_atを二重に「外れた依頼」として数えない
+        # ための見張り)。
+        if head_state.get("miss_recorded_for_trigger_at"):
+            head_state["miss_recorded_for_trigger_at"] = datetime.fromisoformat(
+                head_state["miss_recorded_for_trigger_at"])
     raw["heads"] = heads
     return raw
 
@@ -584,11 +681,15 @@ def _save_state(path, state):
     out["pay_ntfy_sent"] = {
         k: v.isoformat() for k, v in state.get("pay_ntfy_sent", {}).items()
     }
+    out["trigger_misses"] = [t.isoformat() for t in state.get("trigger_misses", [])]
+    out["trigger_breaker_open"] = bool(state.get("trigger_breaker_open", False))
     heads_out = {}
     for key, head_state in state.get("heads", {}).items():
         hs = dict(head_state)
         if hs.get("last_trigger_at") is not None:
             hs["last_trigger_at"] = hs["last_trigger_at"].isoformat()
+        if hs.get("miss_recorded_for_trigger_at") is not None:
+            hs["miss_recorded_for_trigger_at"] = hs["miss_recorded_for_trigger_at"].isoformat()
         heads_out[key] = hs
     out["heads"] = heads_out
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -629,8 +730,9 @@ def _fetch_coderabbit_status(repo, sha, gh_bin="gh", timeout=30):
 
 
 def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
-        run_id=None, runner=None):
-    """1周回ぶんの判定・投げ直しを行う(§1〜§3・確定版§8〜§9・cmd_913§5・cmd_934 T1)。
+        run_id=None, runner=None, dashboard_path=None, trigger_breaker_reset_path=None):
+    """1周回ぶんの判定・投げ直しを行う(§1〜§3・確定版§8〜§9・cmd_913§5・cmd_934 T1・
+    cmd_934続き)。
 
     ★F1是正: PRごとの取得(status)は個別にtry/exceptで囲み、1件の失敗で
     run()全体を落とさず次のPRへ進む。
@@ -641,15 +743,114 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
     (cr-decideの改名後)を呼び、「決める」を一本化する(旧来のrate_limited/
     paused限定の足切り・§3.3のhead_recent_push・確定版F2のstale判定は
     捨てた——review-next自身がwait/queue/in-progress等で適切に待たせる)。
-    台帳(同一head最大3回・毎時毎日の予算・問い合わせの安全弁query_fuse_min・
-    停止スイッチ)は引き続きここで守る。review-nextのcommandが投じてよい
-    2文言の外(approve・pay)なら、投じずに記録だけする(観察用)。
+    台帳(同一head最大3回・問い合わせの安全弁query_fuse_min・停止スイッチ・
+    壊れた徴trigger_breaker)は引き続きここで守る。review-nextのcommandが
+    投じてよい2文言の外(approve・pay)なら、投じずに記録だけする(観察用)。
+
+    ★cmd_934続き(trigger_breaker・案B): 毎時/毎日の数の枷は持たない
+    (select_targets参照)。代わりに、投じた後の周回でその同じheadの
+    CodeRabbit statusが投じた時刻より後にrate limitedへ戻れば「外れた
+    依頼」として刻み、24時間に2回たまれば trigger_breaker_open を立てて
+    以後は一切投じない(select_targetsが見る)。解除は人がstate["heads"]の
+    印を消すか、trigger_breaker_reset_path(停止fileと同じ扱いの解除file)
+    を置くことで行う——解除fileは見つけた周回で読み捨てて消す(一度ぶんの
+    合図として扱う)。
 
     戻り値: (更新後のstate, 実行ログの行のlist)
     """
     killed = is_killed(stop_path)
+
+    # ★自己レビュー是正: 解除fileの消費(state書換・file削除)もdry_runの間は
+    # 行わない——main()はdry_runに関わらずrun()の戻り値を無条件で
+    # _save_state()するため、本番pathを指したまま--dry-runを実行すると
+    # 「観察のみのはず」が実際にbreakerを解除し、人が置いた解除fileを
+    # 消費してしまう(「dry_runは台帳を動かさない」という本モジュール
+    # 全体の約束を破る)。dry_runの間はfileの存在と中身をそのまま残し、
+    # 「次に実行すれば解除される」ことだけをログで示す。
+    # また、breakerが既に閉じていた場合も(=消すべき物が元々無かった
+    # 場合も)、file自体は読み捨てて消す一方、その事実を常にログへ残す
+    # (黙って消えると、積み上がりかけていたtrigger_missesがいつ・なぜ
+    # 消えたのか誰にも分からなくなるため)。
+    if trigger_breaker_reset_path and os.path.exists(trigger_breaker_reset_path):
+        # 自己レビュー是正(2回目): project tree配下への実pathであるかを、
+        # state書換(かつ)file削除の★両方より先に確かめる
+        # (CLAUDE.md「Destructive Operation Safety」Tier3に倣う)。
+        # ★是正前の順序(先にstateを無条件で書き換え、削除だけ封じ込め
+        # 判定後に回す)には重い欠陥があった——外れpathの場合、file自体は
+        # 消えないため、次の周回もまた同じfileが見つかり、毎周回state
+        # (trigger_breaker_open・trigger_misses)を無条件に刈り取り続ける。
+        # これは「一度ぶんの合図」のはずの解除fileを、消せぬまま永久に
+        # 効き続ける「壊れたbreakerの恒久無効化スイッチ」に変えてしまう
+        # (自己レビュー指摘)。封じ込め判定で外れと分かった時は、file・state
+        # いずれにも手を付けず、警告のみを残して周回ごとに知らせ続ける
+        # (人がfileを動かすか消すまで、安全側=「何もしない」へ倒す)。
+        if not _is_within_project_tree(trigger_breaker_reset_path):
+            log_lines_reset = [{
+                "ts": now.isoformat(),
+                "event": "trigger_breaker_reset_file_outside_project_tree",
+                "level": "warn", "path": trigger_breaker_reset_path,
+            }]
+        elif dry_run:
+            had_open_breaker = bool(state.get("trigger_breaker_open"))
+            cleared_miss_count = len(state.get("trigger_misses", []))
+            log_lines_reset = [{
+                "ts": now.isoformat(), "event": "trigger_breaker_reset_would_happen",
+                "dry_run": True, "had_open_breaker": had_open_breaker,
+                "cleared_miss_count": cleared_miss_count,
+            }]
+        else:
+            had_open_breaker = bool(state.get("trigger_breaker_open"))
+            cleared_miss_count = len(state.get("trigger_misses", []))
+            # ★自己レビュー是正(5回目): stateの書換は、file削除が★成功した後に
+            # 限る(是正前は先にstateを書き換えてから削除を試みていたため、
+            # 削除が恒常的に失敗する環境(権限・読取専用mount等)では、毎周回
+            # 同じfileが見つかり続け、その周回の前半でtrigger_missesを
+            # 無条件にゼロへ刈り取ってから自分の周回の検知が走る形になり、
+            # 複数周回にまたがる蓄積が二度とできなくなっていた——project
+            # tree外の時と同じ「消せぬ解除fileが恒久無効化スイッチに変わる」
+            # 病の、別の原因(権限等)による再発。削除が確かに済んで初めて
+            # 「解除された」と認め、stateを書き換える。
+            try:
+                os.remove(trigger_breaker_reset_path)
+            except OSError as exc:
+                # 自己レビュー是正: 消し損ねを黙殺すると、次周回も同じfileが
+                # 見つかり「まだ溜まっていない外れた依頼」まで毎回刈り
+                # 取ってしまい、breakerが二度と閾値へ達しなくなる(見える
+                # 形で知らせねば誰も気づけない事故)。
+                log_lines_reset = [{
+                    "ts": now.isoformat(),
+                    "event": "trigger_breaker_reset_file_remove_failed",
+                    "level": "warn", "error": str(exc),
+                }]
+            else:
+                log_lines_reset = [{
+                    "ts": now.isoformat(), "event": "trigger_breaker_reset",
+                    "had_open_breaker": had_open_breaker,
+                    "cleared_miss_count": cleared_miss_count,
+                }]
+                state["trigger_breaker_open"] = False
+                state["trigger_misses"] = []
+    else:
+        log_lines_reset = []
+
     allowlist = cfg.get("allowlist", [])
     budget = cfg.get("budget", {})
+    # cmd_934続き(trigger_breaker案B・自己レビュー是正4〜5回目): 閾値(既定2件)・
+    # 窓(既定24時間)はconfig/cr_retrigger.yamlのbudgetから読む(旧trigger_
+    # per_hour/dayがyaml1行で調整できたのに対し、裸のPython定数のままでは
+    # 運用上の退化になるため)。0以下・非数値・bool(`isinstance(True, int)`
+    # がTrueになるためtrue/falseの誤記を拾ってしまう)等の壊れた設定値は
+    # 安全側の既定値へ倒す。per-PRループの途中(query投稿の判定)でも
+    # この周回の途中経過を見る必要があるため、ループより前に計算する。
+    breaker_threshold = budget.get("trigger_breaker_threshold", 2)
+    if (isinstance(breaker_threshold, bool)
+            or not isinstance(breaker_threshold, int) or breaker_threshold < 1):
+        breaker_threshold = 2
+    breaker_window_hours = budget.get("trigger_breaker_window_hours", 24)
+    if (isinstance(breaker_window_hours, bool)
+            or not isinstance(breaker_window_hours, (int, float))
+            or breaker_window_hours <= 0):
+        breaker_window_hours = 24
     query_cfg = cfg.get("query", {})
     query_enabled = bool(query_cfg.get("enabled", False))
     cr_decide_cfg = cfg.get("cr_decide", {})
@@ -665,11 +866,15 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
     ntfy_cfg = cfg.get("ntfy", {})
     ntfy_bin = ntfy_cfg.get("bin")
     ntfy_timeout = ntfy_cfg.get("timeout", 30)
-    log_lines = []
+    log_lines = list(log_lines_reset)
 
     tool_paths = None  # (script_path, policy_path) — 最初のcandidateで初期化する
     repo_clone_dirs = {}
     pending_pays = []  # cmd_913至急: このcycleでpay判定になったPR(ntfy候補)
+    # ★自己レビュー是正(4回目): この周回で新たに検知した外れ(trigger_missed)を
+    # dry_runでも一時的に積む(state["trigger_misses"]への永続書込みは
+    # 依然dry_runでは行わない・後述のbreaker判定でのみ使う)。
+    _this_cycle_misses = []
 
     prs = []
     pr_count = 0
@@ -709,6 +914,70 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                 continue
 
             category = classify(desc)
+
+            head_key = _head_key(repo, pr_number, sha)
+            existing_head_state = state.get("heads", {}).get(head_key, {})
+            attempts_so_far = existing_head_state.get("attempts", 0)
+
+            # 壊れた徴の検知。投じた後の周回で、同じhead(sha不変)の
+            # CodeRabbit statusが、投じた時刻より後にrate limitedへ戻って
+            # いれば、review-nextの見立てが外れた徴として刻む(数ではなく
+            # 徴で止めるため)。
+            # ★自己レビュー是正(2回目): 必ず下のmax_attempts等の古い印消しより
+            # ★先に判定する。順序を逆にすると、同じ周回でattempts_so_far
+            # が既にMAX_ATTEMPTS_PER_HEADへ達していた時(=直前の周回で
+            # 投じた3回めの結果を、まさに今の周回で確かめようとしている
+            # 最中)、古い印消しが先に走ってlast_trigger_atを消してしまい、
+            # 最後の(最も確かめたい)投げの外れが二度と記録されなくなる
+            # ——自己レビュー指摘。
+            # ★自己レビュー是正: 二重数えの見張りは、statusのupdated_at単位では
+            # なく「この投げ(last_trigger_at)単位」で行う——CodeRabbitが
+            # 新たな投げ無しに同じrate limited状態を再度timestampし直す
+            # ことがありうるため(updated_atだけで見張ると、1回の失敗した
+            # 投げを2回と誤数えうる)。同じlast_trigger_atに対して一度
+            # 数えたら、次に本当に新しい投げ(last_trigger_atが進む)が
+            # 起きるまで、同じ投げを二度と数えない。
+            # ★自己レビュー是正: dry_runの間はstate(decision台帳)を一切書き換え
+            # ない——sent_log・attempts・query_fuse等、他の全ての台帳更新が
+            # `if not dry_run`の中でのみ行われているのと同じ流儀に揃える
+            # (dry_runを繰り返し走らせても台帳が動かないことを保証する)。
+            last_trigger_at = existing_head_state.get("last_trigger_at")
+            already_counted_for_trigger = existing_head_state.get(
+                "miss_recorded_for_trigger_at")
+            if (category == "rate_limited" and last_trigger_at is not None
+                    and updated_at is not None and updated_at > last_trigger_at
+                    and already_counted_for_trigger != last_trigger_at):
+                # ★自己レビュー是正(4回目): _this_cycle_missesへはdry_runでも積む
+                # (この周回限りのbreaker判定プレビュー用・state永続化とは別)。
+                # state["heads"]の書換(miss_recorded_for_trigger_at)は従来
+                # どおりdry_runでは行わない——existing_head_stateは
+                # state["heads"][head_key]そのもの(別名)であることが
+                # 既に判っている(last_trigger_at is not Noneを通った以上、
+                # この周回の先頭でstateから取得済みの実体)ため、ここで
+                # 改めてsetdefaultのチェーンで辿り直さない。
+                _this_cycle_misses.append(now)
+                if not dry_run:
+                    existing_head_state["miss_recorded_for_trigger_at"] = last_trigger_at
+                log_lines.append({
+                    "ts": now.isoformat(), "repo": repo, "pr": pr_number,
+                    "head_sha": sha, "event": "trigger_missed", "level": "warn",
+                    "reason": "rate_limited_after_trigger", "dry_run": dry_run,
+                })
+
+            # cmd_934続き(trigger_breaker案B・自己レビュー是正): headが既に
+            # reviewed済みになった、または既にmax_attemptsへ達していれば
+            # (=このheadへは二度と投げ直さない)、その昔のlast_trigger_at・
+            # miss_recorded_for_trigger_atを消す。消さずに残すと、何日も
+            # 後に(人の手や別の呼び手による)無関係な再問い合わせが同じ
+            # headへrate limitedを返した時、とうに終わった・見捨てた古い
+            # 投げを「外れた」と誤って数えてしまう(自己レビュー指摘・既に関わりが
+            # 終わった件を見張り続ける必要は無い)。★上の外れた徴の検知の
+            # ★後に行う(直前の注記参照)——この周回で記録すべき最後の
+            # 外れがあれば、それは既に記録し終えている。
+            if not dry_run and (category == "reviewed"
+                                 or attempts_so_far >= MAX_ATTEMPTS_PER_HEAD):
+                existing_head_state.pop("last_trigger_at", None)
+                existing_head_state.pop("miss_recorded_for_trigger_at", None)
 
             pr_entry = {
                 "repo": repo, "pr": pr_number, "head_sha": sha,
@@ -785,7 +1054,27 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                         elif command == "@coderabbitai rate limit":
                             incident_key = f"{repo}#{pr_number}#{sha}#{action}"
                             fuse_min = budget.get("query_fuse_min", 60)
+                            # ★自己レビュー是正(5回目・最重要): trigger_breaker_open
+                            # が開いている間は、この問い合わせ(費えは使わぬが
+                            # GitHubへの投稿そのもの)も止める。killedと同様
+                            # 「以後は一切投じぬ」という約束のはずが、この経路
+                            # だけ漏れていた(実測で確認された欠陥——breaker
+                            # open中でもquery_postedが実際に投稿されていた)。
+                            # ★自己レビュー是正(6回目): state["trigger_breaker_open"]
+                            # だけでは前の周回までの状態しか見えない。まさに
+                            # この周回でbreakerが開くに至る外れを検知した
+                            # PR自身や、ループ内でそれより後に処理される別PRの
+                            # 問い合わせが、同じ周回のうちに漏れて投稿されて
+                            # いた(実測で確認)。_this_cycle_misses(この周回で
+                            # ここまでに検知した外れ)を合わせて判定する。
+                            breaker_effectively_open_now = (
+                                bool(state.get("trigger_breaker_open"))
+                                or _misses_reach_threshold(
+                                    state, _this_cycle_misses, now,
+                                    breaker_threshold, breaker_window_hours)
+                            )
                             if (query_enabled and not killed
+                                    and not breaker_effectively_open_now
                                     and query_fuse_ok(incident_key, state, now, fuse_min)):
                                 if not dry_run:
                                     try:
@@ -806,7 +1095,10 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                                     "ts": now.isoformat(), "repo": repo, "pr": pr_number,
                                     "event": "query_not_posted",
                                     "reason": ("disabled" if not query_enabled
-                                               else "killed" if killed else "fused"),
+                                               else "killed" if killed
+                                               else "trigger_breaker_open"
+                                               if breaker_effectively_open_now
+                                               else "fused"),
                                 })
                         elif command == "@coderabbitai review":
                             # 通常のTRIGGER_BODYルートへ乗せる(台帳はselect_targetsが守る)。
@@ -830,10 +1122,92 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
                 entry["level"] = "warn"
             log_lines.append(entry)
 
-    targets = select_targets(state, prs, budget, now, killed=killed)
+    # cmd_934続き(trigger_breaker案B): 24時間窓に外れた依頼が2回たまれば
+    # breakerを開く(以後select_targetsが一切投じなくする)。既に開いている
+    # 間は再通知しない(人が解除するまで一度だけ知らせれば足りる)。
+    # ★自己レビュー是正: dry_runの間はstate("trigger_misses"の刈り込み・
+    # "trigger_breaker_open"・ntfy・dashboard)を一切変えない——dry_runが
+    # 「決める台帳は動かさず観察のみ」という本モジュール全体の約束を破らぬ
+    # ため(acceptance_criteria⑨の別worktree--dry-run検証が、万一tmp以外の
+    # 本番pathを指して呼ばれても実害が無いようにする安全側の設計)。
+    # (breaker_threshold・breaker_window_hoursはper-PRループより前で
+    # 計算済み——query投稿の判定にも使うため)
+
+    # ★自己レビュー是正(4回目): dry_runでも「この周回で新たに検知した外れ」を
+    # 閾値判定へ反映する(state["trigger_misses"]への永続書込みとは別に、
+    # この周回限りの判断用にlocalで保持する)。これが無いと、--dry-run
+    # プレビューは「本番で実際に投じればbreakerが開き3回目は止まる」はずの
+    # 場合でも「投じる」と誤って示してしまい、acceptance_criteria⑨の
+    # 別worktree--dry-run事前検証(merge前に行う)が当てにならなくなる。
+    local_trigger_misses = [
+        t for t in state.get("trigger_misses", [])
+        if now - t < timedelta(hours=breaker_window_hours)
+    ]
+    for _miss_entry in _this_cycle_misses:
+        local_trigger_misses.append(_miss_entry)
+    if not dry_run:
+        state["trigger_misses"] = local_trigger_misses
+
+    would_open_this_cycle = (
+        len(local_trigger_misses) >= breaker_threshold
+        and not state.get("trigger_breaker_open")
+    )
+    if would_open_this_cycle:
+        log_lines.append({
+            "ts": now.isoformat(), "event": "trigger_breaker_open", "level": "warn",
+            "miss_count": len(local_trigger_misses), "dry_run": dry_run,
+        })
+        if not dry_run:
+            state["trigger_breaker_open"] = True
+            breaker_body = (
+                "cr_retriggerのtrigger_breakerが開いたでござる。24時間に"
+                f"{len(local_trigger_misses)}回、依頼を投じた直後にその同じ"
+                "headのCodeRabbitがrate limitedへ戻った(review-nextの見立て"
+                "が外れた徴)。以後は人が解除するまで一切投じぬ。解除は"
+                "logs/cr_retrigger.trigger_breaker_resetを置くか、"
+                "state/cr_retrigger.jsonのtrigger_breaker_open/"
+                "trigger_missesを直接編集すること(★いずれもbreaker自体の"
+                "解除のみ——きっかけとなったheadが既にmax_attempts(3回)へ"
+                "達している場合、その回数自体は別にstate/cr_retrigger.json"
+                "のheadsを編集せねば0へ戻らぬ)。"
+            )
+            try:
+                _post_trigger_breaker_ntfy(breaker_body, ntfy_bin=ntfy_bin, timeout=ntfy_timeout)
+            except (subprocess.SubprocessError, subprocess.TimeoutExpired, OSError) as exc:
+                log_lines.append({
+                    "ts": now.isoformat(), "event": "trigger_breaker_ntfy_failed",
+                    "level": "warn", "error": str(exc),
+                })
+            # ★自己レビュー是正(4回目): dashboard書込みもtry/exceptで囲む——他の
+            # I/O呼出(gh取得・cr-decide呼出・post_comment・ntfy)は全てここで
+            # 保護されているのに、ここだけ素通しだと、os.replace等の失敗が
+            # run()自身の例外として伝播し、この周回ぶんのlog_lines(今まさに
+            # 積んだtrigger_breaker_openの記録を含む)がlog_pathへ書かれる前に
+            # 失われ、main()のstate保存にも届かない。
+            try:
+                _append_dashboard_alerts(dashboard_path, [
+                    f"- ⚠️ [cr_retrigger trigger_breaker] 24時間に"
+                    f"{len(local_trigger_misses)}回、投じた依頼の直後に"
+                    "rate limitedへ戻った(外れた徴)。以後は人が解除するまで"
+                    "投じない。",
+                ])
+            except OSError as exc:
+                log_lines.append({
+                    "ts": now.isoformat(), "event": "trigger_breaker_dashboard_alert_failed",
+                    "level": "warn", "error": str(exc),
+                })
+
+    # ★自己レビュー是正(4回目): select_targetsへは、まさに今の周回で開いた
+    # (または既に開いていた)breakerの状態を渡す——dry_runではstate自体を
+    # 書き換えないため、state.get("trigger_breaker_open")だけを見ると、
+    # この周回で新たに閾値へ達した事実が反映されず、本番なら止まる投げを
+    # プレビューが誤って「投じる」と示してしまう。
+    effective_breaker_open = bool(state.get("trigger_breaker_open")) or would_open_this_cycle
+    targets = select_targets(
+        state, prs, budget, now, killed=killed, breaker_open=effective_breaker_open)
 
     for pr in targets:
-        key = f"{pr['repo']}#{pr['pr']}#{pr['head_sha']}"
+        key = _head_key(pr['repo'], pr['pr'], pr['head_sha'])
         entry = {"ts": now.isoformat(), "repo": pr["repo"], "pr": pr["pr"],
                   "head_sha": pr["head_sha"], "event": "triggered", "dry_run": dry_run}
         if not dry_run:
@@ -847,7 +1221,13 @@ def run(cfg, state, now, stop_path, gh_bin="gh", dry_run=False, log_path=None,
             head_state = state.setdefault("heads", {}).setdefault(key, {"attempts": 0})
             head_state["attempts"] = head_state.get("attempts", 0) + 1
             head_state["last_trigger_at"] = now  # F2: 再投げの鮮度判定に使う
-            state.setdefault("sent_log", []).append(now)
+            # cmd_934続き(自己レビュー是正): sent_logは毎時/毎日の予算計算の
+            # ためだけに存在した(select_targets参照)。その予算を除いた今、
+            # 読み手が無くなった——書き続ければ無消費のまま永遠に伸び続け
+            # state fileを肥大させる。query_log・query_incidents(cmd_934 T1で
+            # 同様に読み手を失った)と同じ扱いとし、以後このモジュールは
+            # 書かない(_load_state/_save_stateは旧state fileの互換のため
+            # 読み書きのroundtripだけは保つ)。
         log_lines.append(entry)
 
     if pending_pays:
@@ -1083,11 +1463,46 @@ def _check_cr_decide_error_streaks_and_notify(
     return new_alerts
 
 
-def _write_status_summary(status_path, log_path, now, window_hours=24):
+# cmd_934続き(自己レビュー是正・6回目): trigger_breaker自身の運用上の失敗
+# (ntfy送信・dashboard書込み・解除file削除・封じ込め判定の各失敗)。
+# いずれもlevel="warn"を持つため、_write_status_summaryの汎用warnings
+# 抽出と二重計上しないよう、専用欄(trigger_breaker_operational_failures)
+# へ振り分ける対象として名指しする。
+_TRIGGER_BREAKER_OPERATIONAL_FAILURE_EVENTS = frozenset({
+    "trigger_breaker_ntfy_failed",
+    "trigger_breaker_dashboard_alert_failed",
+    "trigger_breaker_reset_file_remove_failed",
+    "trigger_breaker_reset_file_outside_project_tree",
+})
+
+
+def _write_status_summary(status_path, log_path, now, window_hours=24,
+                           trigger_breaker_open=False):
     """queue/reports/cr_retrigger_status.yaml: 直近window_hours時間の要約(確定版§4)。
     cmd_861の『朝に分かること』のため、家老が巡回でdashboardへ写せる形にする。
     ★cmd_913: cr-decideのerror・observed_not_posted(approve/pay)の件数も加える
     (観察のため・pay/approveの枝がいつ・何度出たかを見える形にする)。
+
+    ★cmd_934続き(自己レビュー是正): trigger_missed・trigger_breaker_openは
+    warningsの汎用抽出(repo/pr/reason)に入れると、trigger_breaker_open
+    (miss_countしか持たぬ・repo/pr無し)やtrigger_breaker_ntfy_failed
+    (errorしか持たぬ・reason無し)の中身がnull埋めで失われるため、専用の
+    欄を設ける。また、state["trigger_breaker_open"]は一度開けば人が解除
+    するまで変わらず、ログのwindow_hours(既定24時間)を跨いで何日も
+    開いたままになりうる——window内のログだけを見ていては「24時間より前に
+    開いて今も閉じていない」breakerが要約から消えてしまうため、呼び出し側
+    (main())がその時点のstate["trigger_breaker_open"]を直接渡し、ログの
+    有無に関係なく今の状態として載せる。
+
+    ★自己レビュー是正(6回目): 上の専用欄を設けただけでは、同じeventがwarnings
+    の汎用抽出(`level == "warn"`)にも★二重に数えられ続けていた
+    (trigger_missed・trigger_breaker_open自身もlevel="warn"を持つため)。
+    warning_countが水増しされ、warningsにnull埋めの重複が混じる
+    ——Karo(cmd_861の朝の巡回)が見るwarning_countを不正確にする。
+    専用欄を持つ2種(trigger_missed・trigger_breaker_open)はwarningsから
+    除く。trigger_breaker自身の運用上の失敗(ntfy送信・dashboard書込み・
+    解除file削除の失敗等)は専用欄を持たぬため、warningsから除く代わりに
+    中身を失わない専用欄(trigger_breaker_operational_failures)を設ける。
     """
     import yaml  # PyYAML
 
@@ -1097,7 +1512,15 @@ def _write_status_summary(status_path, log_path, now, window_hours=24):
     failed = [e for e in entries if e.get("event") in (
         "post_failed", "status_fetch_error", "pr_list_error", "query_post_failed",
         "commit_fetch_error", "cr_decide_clone_error")]
-    warnings = [e for e in entries if e.get("level") == "warn"]
+    trigger_missed = [e for e in entries if e.get("event") == "trigger_missed"]
+    trigger_breaker_opened_events = [
+        e for e in entries if e.get("event") == "trigger_breaker_open"]
+    trigger_breaker_operational_failures = [
+        e for e in entries if e.get("event") in _TRIGGER_BREAKER_OPERATIONAL_FAILURE_EVENTS]
+    _dedicated_events = (
+        {"trigger_missed", "trigger_breaker_open"} | _TRIGGER_BREAKER_OPERATIONAL_FAILURE_EVENTS)
+    warnings = [e for e in entries
+                if e.get("level") == "warn" and e.get("event") not in _dedicated_events]
     cycles = [e for e in entries if e.get("event") == "cycle"]
     cr_decide_errors = [e for e in entries if e.get("event") == "cr_decide_error"]
     observed_not_posted = [e for e in entries if e.get("event") == "cr_decide_observed_not_posted"]
@@ -1127,6 +1550,21 @@ def _write_status_summary(status_path, log_path, now, window_hours=24):
              "command": e.get("command"), "ts": e.get("ts")}
             for e in observed_not_posted
         ],
+        # cmd_934続き(trigger_breaker案B): 壊れた徴の見える化。
+        "trigger_missed_count": len(trigger_missed),
+        "trigger_missed": [
+            {"repo": e.get("repo"), "pr": e.get("pr"), "head_sha": e.get("head_sha"),
+             "ts": e.get("ts")}
+            for e in trigger_missed
+        ],
+        "trigger_breaker_opened_in_window_count": len(trigger_breaker_opened_events),
+        "trigger_breaker_open": bool(trigger_breaker_open),
+        "trigger_breaker_operational_failure_count": len(trigger_breaker_operational_failures),
+        "trigger_breaker_operational_failures": [
+            {"event": e.get("event"), "repo": e.get("repo"), "pr": e.get("pr"),
+             "error": e.get("error"), "path": e.get("path"), "ts": e.get("ts")}
+            for e in trigger_breaker_operational_failures
+        ],
     }
     os.makedirs(os.path.dirname(status_path), exist_ok=True)
     with open(status_path, "w", encoding="utf-8") as f:
@@ -1148,6 +1586,8 @@ def main(argv=None):
         os.path.dirname(__file__), "..", "queue", "reports", "cr_retrigger_status.yaml"))
     parser.add_argument("--dashboard-file", default=os.path.join(
         os.path.dirname(__file__), "..", "dashboard.md"))
+    parser.add_argument("--trigger-breaker-reset-file", default=os.path.join(
+        os.path.dirname(__file__), "..", "logs", "cr_retrigger.trigger_breaker_reset"))
     parser.add_argument("--dry-run", action="store_true",
                          help="投稿せず、候補のみログへ出す")
     args = parser.parse_args(argv)
@@ -1165,14 +1605,16 @@ def main(argv=None):
 
     state, log_lines = run(
         cfg, state, now, args.stop_file, dry_run=args.dry_run, log_path=args.log_file,
-        run_id=run_id, runner=runner,
+        run_id=run_id, runner=runner, dashboard_path=args.dashboard_file,
+        trigger_breaker_reset_path=args.trigger_breaker_reset_file,
     )
     # cmd_928【四】: 当家側の見張り——同一repo#prでcr_decide_errorが連続した時、
     # dashboard.mdへ気づける形で記す(ntfyは鳴らさない)。state更新はsave前に行う。
     _check_cr_decide_error_streaks_and_notify(
         state, args.log_file, args.dashboard_file, now)
     _save_state(args.state, state)
-    _write_status_summary(args.status_file, args.log_file, now)
+    _write_status_summary(args.status_file, args.log_file, now,
+                           trigger_breaker_open=state.get("trigger_breaker_open", False))
 
     for entry in log_lines:
         print(json.dumps(entry, ensure_ascii=False, default=str))

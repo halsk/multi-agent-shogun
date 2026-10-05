@@ -17,6 +17,17 @@ may_query・§3.3のhead_recent_push・確定版F2のstale_no_fresh_rate_limit�
 のrate_limited/paused縛りが外れたことに伴いTest23の「skippedはcr-decideを
 呼ばぬ」を「呼ぶ」へ反転した。Test35〜Test37にcmd_934 T1のRED対照3件
 (問い合わせの安全弁・二重の依頼の防止・HOME明示)を追加する。
+★cmd_934 T2(assert_allowed_bodyのpay/approve本文拒否): Test38・Test39に
+固定する(PR#185)。
+★cmd_934続き(queue/reports/cmd934_trigger_per_day_judgment.md §6・案B):
+trigger_per_hour・trigger_per_day(数の枷)を除き、「壊れた徴」
+(trigger_breaker_open)で止める形へ替えた。旧来の毎時/毎日の予算試験
+(Test8)は、当家の数の枷がreview-nextの判断を盲目に上書きしていたことの
+RED対照(PR#246の再現)へ置き換えた——除去前のselect_targetsの核をテスト内に
+歴史の記録として再現し(cr_retrigger.py本体からは削除済み)、是正前後の
+挙動差を示す。Test40以降にtrigger_breakerの試験(壊れた徴の検知・開く・
+解除file)を追加する(PR#185のTest38・Test39との衝突を避けrebase時に
+採番し直した)。
 """
 import json
 import os
@@ -155,30 +166,67 @@ class Test7UnknownDescriptionNotSelected(unittest.TestCase):
         self.assertEqual(cr.classify(None), "no_status")
 
 
-class Test8HourlyAndDailyBudgetEnforced(unittest.TestCase):
-    """§7-8: 毎時・毎日の予算を超えぬ。"""
+class Test8TriggerPerHourDayRemoved(unittest.TestCase):
+    """cmd_934続き(queue/reports/cmd934_trigger_per_day_judgment.md §6・案B・
+    RED対照・PR#246の再現): 旧来のtrigger_per_hour・trigger_per_dayは、
+    review-nextが実際の空きを測った上でreviewを勧めていても、当家の数の枷で
+    握りつぶしていた(今日の実例: PR#246が41周回reviewを勧められながら
+    一度も投じられなかった)。是正後のselect_targetsはこの数の枷を持たない
+    (同じheadへの最大試行回数=max_attemptsは_decision_reason側に残る・
+    Test2参照)。
+    """
 
-    def test_hourly_budget_blocks_second_trigger_within_hour(self):
-        prs = [make_pr(), make_pr(pr=2, head_sha="sha2")]
-        state = {"heads": {}, "sent_log": [NOW - timedelta(minutes=10)]}
-        budget = {"trigger_per_hour": 1, "trigger_per_day": 8}
-        targets = cr.select_targets(state, prs, budget, NOW)
-        self.assertEqual(targets, [])
+    def _old_select_targets_with_hour_day_budget(self, state, prs, budget, now, killed=False):
+        """除去前のselect_targetsの核(毎時/毎日budgetの絞り込み)を、
+        歴史の記録として再現する(cr_retrigger.py本体からは削除済み・
+        Test35の old_may_query_once_per_incident と同じ流儀)。"""
+        if killed:
+            return []
+        candidates = [pr for pr in prs if cr._decision_reason(pr, state, now) == "candidate"]
+        candidates.sort(key=lambda p: p.get("next_attempt_at", now))
+        sent_log = state.get("sent_log", [])
+        hour_count = sum(1 for t in sent_log if now - t < timedelta(hours=1))
+        day_count = sum(1 for t in sent_log if now - t < timedelta(days=1))
+        hour_remaining = budget.get("trigger_per_hour", 1) - hour_count
+        day_remaining = budget.get("trigger_per_day", 8) - day_count
+        remaining = max(0, min(hour_remaining, day_remaining))
+        return candidates[:remaining]
 
-    def test_daily_budget_blocks_despite_hourly_room(self):
-        prs = [make_pr()]
+    def test_red_old_day_budget_blocks_despite_review_next_recommends_review(self):
+        """RED対照: 24時間窓に8件のsent_logがある状態(PR#246と同じ詰まり)で、
+        review-nextがreviewを返し続けても、旧ロジックは一度も投じない。"""
+        pr = make_pr(cr_decide_recommends_review=True)
         sent_log = [NOW - timedelta(hours=h, minutes=1) for h in range(1, 9)]
         state = {"heads": {}, "sent_log": sent_log}
-        budget = {"trigger_per_hour": 5, "trigger_per_day": 8}
-        targets = cr.select_targets(state, prs, budget, NOW)
+        budget = {"trigger_per_hour": 1, "trigger_per_day": 8}
+        targets = self._old_select_targets_with_hour_day_budget(state, [pr], budget, NOW)
         self.assertEqual(targets, [])
 
-    def test_within_budget_allows_trigger(self):
-        prs = [make_pr()]
-        state = {"heads": {}, "sent_log": []}
+    def test_green_select_targets_ignores_hour_and_day_budget(self):
+        """是正後: 同じ24時間窓に8件のsent_logがあっても、review-nextが
+        reviewを勧めている限り投じる(PR#246の握りつぶしが直ったこと)。"""
+        pr = make_pr(cr_decide_recommends_review=True)
+        sent_log = [NOW - timedelta(hours=h, minutes=1) for h in range(1, 9)]
+        state = {"heads": {}, "sent_log": sent_log}
         budget = {"trigger_per_hour": 1, "trigger_per_day": 8}
-        targets = cr.select_targets(state, prs, budget, NOW)
+        targets = cr.select_targets(state, [pr], budget, NOW)
         self.assertEqual(len(targets), 1)
+
+    def test_green_select_targets_works_with_empty_budget_dict(self):
+        """budgetがhour/day予算を一切持たなくても(空dict)動くこと。"""
+        pr = make_pr(cr_decide_recommends_review=True)
+        state = {"heads": {}, "sent_log": []}
+        targets = cr.select_targets(state, [pr], {}, NOW)
+        self.assertEqual(len(targets), 1)
+
+    def test_max_attempts_still_enforced_without_hour_day_budget(self):
+        """同じheadへの最大試行回数(max_attempts=3)は、数の枷を除いた後も
+        引き続き効くこと(Test2の回帰確認・is_cr_decide_target経由)。"""
+        pr = make_pr(cr_decide_recommends_review=True)
+        state = {"heads": {"geolonia/geonicdb-console#1#sha1": {"attempts": 3}},
+                  "sent_log": []}
+        targets = cr.select_targets(state, [pr], {}, NOW)
+        self.assertEqual(targets, [])
 
 
 class Test9PostCommentRejectsUnknownBody(unittest.TestCase):
@@ -1893,6 +1941,1127 @@ class Test39RedControlLoosenedAssertAllowedBodyWouldPostPay(unittest.TestCase):
             with self.assertRaises(ValueError):
                 cr.post_comment("geolonia/geonicdb-console", 1, self.APPROVE_BODY)
         run_mock.assert_not_called()
+# ── cmd_934続き(queue/reports/cmd934_trigger_per_day_judgment.md §6・案B):
+#    trigger_breaker(壊れた徴で止める)の試験。Test8が「数の枷を除いた」
+#    ことを固定したのに対し、ここでは「数の代わりに徴で止める」ことを固定する。
+
+class Test40TriggerMissedDetection(unittest.TestCase):
+    """投じた後の周回で、同じhead(sha不変)のCodeRabbit statusが、投じた
+    時刻より後にrate limitedへ戻っていれば、「外れた依頼」としてstateに
+    刻む(trigger_missedイベント・state["trigger_misses"])。"""
+
+    def test_rate_limited_after_trigger_is_recorded_as_miss(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a",
+                          "retryAt": (NOW + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        missed = [e for e in log_lines if e.get("event") == "trigger_missed"]
+        self.assertEqual(len(missed), 1)
+        self.assertEqual(missed[0]["pr"], 1)
+        self.assertEqual(missed[0]["level"], "warn")
+        self.assertEqual(len(state["trigger_misses"]), 1)
+        self.assertEqual(state["trigger_misses"][0], NOW)
+
+    def test_status_before_trigger_is_not_a_miss(self):
+        """statusの更新時刻が投じた時刻より前(投じる前からrate limitedの
+        まま)なら、外れた徴ではない。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited",
+                                               last_trigger_at - timedelta(minutes=1))), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines if e.get("event") == "trigger_missed"], [])
+
+    def test_no_prior_trigger_is_not_a_miss(self):
+        """一度も投じていないhead(last_trigger_at無し)は、rate limitedの
+        ままでも外れた依頼ではない(そもそも外れる依頼が無い)。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines if e.get("event") == "trigger_missed"], [])
+
+    def test_same_status_update_not_double_counted_across_cycles(self):
+        """同じupdated_atのまま次周回を回しても、外れた依頼を2重に数えない
+        (miss_recorded_for_trigger_atが同じ更新の再数えを防ぐ)。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW - timedelta(minutes=10)
+        status_updated_at = NOW
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+
+        patches1 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", status_updated_at)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches1[0], patches1[1], patches1[2]:
+            state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+        self.assertEqual(
+            len([e for e in log_lines1 if e.get("event") == "trigger_missed"]), 1)
+
+        now2 = NOW + timedelta(minutes=5)
+        patches2 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", status_updated_at)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches2[0], patches2[1], patches2[2]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines2 if e.get("event") == "trigger_missed"], [])
+        self.assertEqual(len(state["trigger_misses"]), 1)
+
+    def test_status_restamped_with_new_updated_at_still_not_double_counted(self):
+        """RED→GREEN(自己レビュー是正): 是正前は「同じupdated_atか」で二重数えを
+        見張っていたため、CodeRabbitが新たな投げ無しに同じrate limited状態
+        を★別のupdated_atで再timestampし直すと、1回の失敗した投げを2回と
+        誤って数えてしまっていた。是正後は「この投げ(last_trigger_at)単位」
+        で見張るため、last_trigger_atが変わらない限りupdated_atが進んでも
+        二重に数えない。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+
+        patches1 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches1[0], patches1[1], patches1[2]:
+            state, log_lines1 = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+        self.assertEqual(
+            len([e for e in log_lines1 if e.get("event") == "trigger_missed"]), 1)
+
+        # CodeRabbitが新たな投げ無しに、同じrate limited状態を★別の
+        # updated_at(NOW + 1分)で再timestampし直した想定(last_trigger_atは
+        # 変わらぬまま=本当に新しい投げは一度も起きていない)。
+        now2 = NOW + timedelta(minutes=5)
+        restamped_updated_at = NOW + timedelta(minutes=1)
+        patches2 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", restamped_updated_at)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches2[0], patches2[1], patches2[2]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines2 if e.get("event") == "trigger_missed"], [])
+        self.assertEqual(len(state["trigger_misses"]), 1)
+
+    def test_dry_run_does_not_mutate_state_but_still_logs(self):
+        """自己レビュー是正: dry_runの間はstate(decision台帳)を一切書き換えない
+        (sent_log・attempts・query_fuse等、他の全ての台帳更新と同じ流儀)。
+        観察のためのログ出力(trigger_missed・dry_run=Trueの印)は出す。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
+
+        missed = [e for e in log_lines if e.get("event") == "trigger_missed"]
+        self.assertEqual(len(missed), 1)
+        self.assertTrue(missed[0]["dry_run"])
+        # 核心: dry_runの間はtrigger_misses等の台帳が一切増えていないこと。
+        self.assertNotIn("trigger_misses", state)
+        self.assertEqual(
+            state["heads"]["geolonia/geonicdb-console#1#sha1"].get("miss_recorded_for_trigger_at"),
+            None)
+        self.assertEqual(
+            state["heads"]["geolonia/geonicdb-console#1#sha1"]["last_trigger_at"],
+            last_trigger_at)
+
+
+class Test41TriggerBreakerOpensAfterTwoMissesAndBlocksThirdAttempt(unittest.TestCase):
+    """acceptance_criteria: 投じた後にrate limitedが2回続けて返ると、3回目は
+    投じずtrigger_breaker_openとなり、ntfy通知の呼び出しがある
+    (queue/reports/cmd934_trigger_per_day_judgment.md §6・案B)。"""
+
+    def test_third_attempt_blocked_after_two_missed_triggers(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        # cycle1: まだ投じていない。review-nextが勧め、1回目を投じる。
+        now1 = NOW
+        decisions1 = {1: {"action": "review", "reason": "1 review available",
+                            "command": "@coderabbitai review"}}
+        patches1 = _patch_cr_decide_wiring(decisions1)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review paused", now1)), \
+             mock.patch.object(cr, "post_comment") as post_mock1, \
+             patches1[0], patches1[1], patches1[2]:
+            state, _ = cr.run(cfg, state, now1, "/nonexistent/.stop", dry_run=False)
+        post_mock1.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+        self.assertEqual(
+            state["heads"]["geolonia/geonicdb-console#1#sha1"]["attempts"], 1)
+
+        # cycle2(10分後): 投じた直後rate limitedへ戻る(外れた依頼その1)。
+        # review-nextはなお勧めるので2回目を投じる(breakerはまだ閉じている)。
+        now2 = now1 + timedelta(minutes=10)
+        decisions2 = {1: {"action": "review", "reason": "1 review available",
+                            "command": "@coderabbitai review"}}
+        patches2 = _patch_cr_decide_wiring(decisions2)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment") as post_mock2, \
+             patches2[0], patches2[1], patches2[2]:
+            state, log_lines2 = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+        missed2 = [e for e in log_lines2 if e.get("event") == "trigger_missed"]
+        self.assertEqual(len(missed2), 1)
+        post_mock2.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+        self.assertEqual(
+            state["heads"]["geolonia/geonicdb-console#1#sha1"]["attempts"], 2)
+        self.assertFalse(state.get("trigger_breaker_open", False))
+
+        # cycle3(さらに10分後): 2度目のrate limitedへ戻り(外れた依頼その2)、
+        # breakerが開く。review-nextはなお勧めるが、3回目は投じない。
+        now3 = now2 + timedelta(minutes=10)
+        decisions3 = {1: {"action": "review", "reason": "1 review available",
+                            "command": "@coderabbitai review"}}
+        patches3 = _patch_cr_decide_wiring(decisions3)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now3)), \
+             mock.patch.object(cr, "post_comment") as post_mock3, \
+             mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock, \
+             patches3[0], patches3[1], patches3[2]:
+            state, log_lines3 = cr.run(cfg, state, now3, "/nonexistent/.stop", dry_run=False)
+
+        post_mock3.assert_not_called()
+        self.assertTrue(state["trigger_breaker_open"])
+        ntfy_mock.assert_called_once()
+        opened = [e for e in log_lines3 if e.get("event") == "trigger_breaker_open"]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["level"], "warn")
+        self.assertEqual(opened[0]["miss_count"], 2)
+        # 3回目は投じられていないため、attemptsは2のまま(max_attemptsの
+        # 枷とは別に、breakerが先に止めたことの確認)。
+        self.assertEqual(
+            state["heads"]["geolonia/geonicdb-console#1#sha1"]["attempts"], 2)
+
+    def test_breaker_stays_open_without_renotifying_on_later_cycles(self):
+        """一度開いたbreakerは、以後のcycleで新たな外れた依頼が無くても
+        (既にopenのまま)、重ねてntfyを呼ばない。"""
+        cfg = {"allowlist": [], "budget": {}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_breaker_open": True,
+                  "trigger_misses": [NOW - timedelta(hours=1), NOW - timedelta(minutes=30)]}
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock.assert_not_called()
+        self.assertEqual(
+            [e for e in log_lines if e.get("event") == "trigger_breaker_open"], [])
+
+    def test_dry_run_does_not_open_breaker_or_notify(self):
+        """自己レビュー是正: dry_runの間はtrigger_breaker_open自体も実際には
+        開かず(stateは変わらず)、ntfy・dashboard追記も呼ばない。観察用の
+        ログ(dry_run=Trueの印つき)だけは出す。"""
+        cfg = {"allowlist": [], "budget": {}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_misses": [NOW - timedelta(hours=1), NOW - timedelta(minutes=30)]}
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock, \
+             mock.patch.object(cr, "_append_dashboard_alerts") as dashboard_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
+
+        ntfy_mock.assert_not_called()
+        dashboard_mock.assert_not_called()
+        self.assertFalse(state.get("trigger_breaker_open", False))
+        opened = [e for e in log_lines if e.get("event") == "trigger_breaker_open"]
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0]["dry_run"])
+
+    def test_dry_run_accurately_predicts_same_cycle_breaker_blocking_other_prs(self):
+        """RED→GREEN(自己レビュー是正・4回目・最重要): 是正前は、この周回で新たに
+        検知した外れをdry_runの間はstateへ積まなかったため、「この周回で
+        2件めの外れに達し、同じ周回でbreakerが開いて他のPRの投げも止まる」
+        はずの場面でも、--dry-runは古い(この周回より前の)件数だけで判定
+        してしまい、review-nextが勧める別PRを誤って「投じる」と示していた
+        ——acceptance_criteria⑨の別worktree--dry-run事前検証(merge前に
+        本番相当のPRで行う)が当てにならなくなる欠陥だった。是正後は、
+        この周回で新たに検知した外れを(stateへは書かずに)判定へ反映する。
+        """
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        pr1_last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": pr1_last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+            "trigger_misses": [NOW - timedelta(hours=1)],  # 既に1件(24時間窓内)
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        def fake_status(repo, sha, gh_bin="gh", timeout=30):
+            if sha == "sha1":
+                return "Review rate limited", NOW  # 今回の周回で2件めの外れになる
+            return "Review paused", NOW  # PR2はcr_decideへ回る
+
+        decisions = {
+            1: {"action": "wait", "reason": "n/a"},
+            2: {"action": "review", "reason": "1 review available",
+                "command": "@coderabbitai review"},
+        }
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=True)
+
+        missed = [e for e in log_lines if e.get("event") == "trigger_missed"]
+        self.assertEqual(len(missed), 1)
+        opened = [e for e in log_lines if e.get("event") == "trigger_breaker_open"]
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(opened[0]["miss_count"], 2)
+        self.assertTrue(opened[0]["dry_run"])
+        # 核心: PR2はreview-nextがreviewを勧めているが、この周回で開く
+        # (はずの)breakerにより、dry_runでも「投じる」と示してはならない。
+        self.assertEqual([e for e in log_lines if e.get("event") == "triggered"], [])
+        post_mock.assert_not_called()
+        # stateそのものは引き続きdry_run中は変わらない(他の是正と整合)。
+        self.assertFalse(state.get("trigger_breaker_open", False))
+        self.assertEqual(state["trigger_misses"], [NOW - timedelta(hours=1)])
+
+    def test_zero_threshold_config_is_clamped_to_safe_default(self):
+        """RED→GREEN(自己レビュー是正・4回目): trigger_breaker_threshold: 0の
+        ような壊れた設定値は、1件も外れていないのに`0 >= 0`で即座に
+        breakerを開いてしまう——既定値(2)へ安全側に倒す。"""
+        cfg = {"allowlist": [], "budget": {"trigger_breaker_threshold": 0}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        ntfy_mock.assert_not_called()
+        self.assertFalse(state.get("trigger_breaker_open", False))
+        self.assertEqual(
+            [e for e in log_lines if e.get("event") == "trigger_breaker_open"], [])
+
+    def test_negative_window_hours_config_is_clamped_to_safe_default(self):
+        cfg = {"allowlist": [], "budget": {"trigger_breaker_window_hours": -5}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_misses": [NOW - timedelta(hours=1), NOW - timedelta(minutes=10)]}
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 既定の24時間窓が使われ、通常どおり2件で開く(壊れた負の窓に
+        # よって窓が空になり誤判定することはない)。
+        ntfy_mock.assert_called_once()
+        self.assertTrue(state["trigger_breaker_open"])
+
+    def test_dashboard_alert_failure_does_not_lose_cycle_log_or_state(self):
+        """RED→GREEN(自己レビュー是正・4回目): _append_dashboard_alertsの失敗を
+        run()自身が無防備に伝播させると、この周回のlog_lines(今まさに
+        積んだtrigger_breaker_openの記録を含む)がlog_pathへ書かれる前に
+        失われ、main()のstate保存(trigger_breaker_open=True等)にも
+        届かない。他のI/O呼出(ntfy・post_comment・gh取得)と同じく、
+        失敗はwarnログに変えてrun()を完走させること。"""
+        cfg = {"allowlist": [], "budget": {}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_misses": [NOW - timedelta(hours=1), NOW - timedelta(minutes=10)]}
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy"), \
+             mock.patch.object(cr, "_append_dashboard_alerts",
+                                side_effect=OSError("simulated dashboard write failure")):
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 核心: run()自身が例外で落ちず、この周回の記録とstate更新が残る。
+        self.assertTrue(state["trigger_breaker_open"])
+        opened = [e for e in log_lines if e.get("event") == "trigger_breaker_open"]
+        self.assertEqual(len(opened), 1)
+        failed = [e for e in log_lines
+                  if e.get("event") == "trigger_breaker_dashboard_alert_failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["level"], "warn")
+        cycle_lines = [e for e in log_lines if e.get("event") == "cycle"]
+        self.assertEqual(len(cycle_lines), 1)  # run()が最後まで完走している
+
+    def test_bool_threshold_config_is_not_mistaken_for_valid_int(self):
+        """RED→GREEN(自己レビュー是正・5回目): Pythonの`bool`は`int`の派生型
+        (`isinstance(True, int)`はTrue)であるため、`isinstance(x, int)`
+        だけの検証では`trigger_breaker_threshold: true`という誤記
+        (config/cr_retrigger.yamlは`enabled: true`等が並び紛れやすい)が
+        `1`として素通りしてしまう——1件の外れで即座にbreakerが開く事故に
+        なる。boolは明示的に弾き、既定値(2)へ倒すこと。"""
+        cfg = {"allowlist": [], "budget": {"trigger_breaker_threshold": True}}
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_misses": [NOW - timedelta(hours=1)]}  # 1件のみ
+
+        with mock.patch.object(cr, "_post_trigger_breaker_ntfy") as ntfy_mock:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 既定値2が使われるため、1件だけでは開かない。
+        ntfy_mock.assert_not_called()
+        self.assertFalse(state.get("trigger_breaker_open", False))
+
+
+class Test41bQueryGatedByTriggerBreaker(unittest.TestCase):
+    """自己レビュー是正(5回目・最重要・実測で確認された欠陥): trigger_breaker_open
+    が開いている間は、`[AI] @coderabbitai rate limit`の予備の問い合わせも
+    止める。killedと同様「以後は一切投じぬ」はずが、この経路だけ漏れて
+    おり、breaker open中でも実際にquery_postedが投稿されていた。"""
+
+    def test_query_not_posted_while_breaker_is_open(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                  "trigger_breaker_open": True}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_not_called()
+        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
+        self.assertEqual(len(not_posted), 1)
+        self.assertEqual(not_posted[0]["reason"], "trigger_breaker_open")
+        self.assertEqual(state.get("query_fuse", {}), {})
+
+    def test_query_posted_normally_when_breaker_closed(self):
+        """回帰確認: breakerが閉じていれば、従来どおり問い合わせは投じる。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "check", "reason": "budget unknown",
+                          "command": "@coderabbitai rate limit"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        post_mock.assert_called_once_with(
+            "geolonia/geonicdb-console", 1, cr.QUERY_BODY, gh_bin="gh")
+
+    def test_query_blocked_same_cycle_breaker_trips_including_for_triggering_pr_itself(self):
+        """RED→GREEN(自己レビュー是正・6回目・実測で再現): is_within_project_tree
+        済みのstate["trigger_breaker_open"]だけを見ると、まさにこの周回で
+        2件めの外れを検知して閾値へ達した(=この周回でbreakerが開く)
+        場合、その外れを起こしたPR自身や、ループ内でそれより後に処理
+        される別PRの問い合わせが、同じ周回のうちに漏れて投稿されていた
+        (実測で再現された欠陥)。_this_cycle_misses込みで判定すること。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"], query_enabled=True)
+        pr1_last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": pr1_last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+            "trigger_misses": [NOW - timedelta(hours=1)],  # 既に1件(24時間窓内)
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [
+                {"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None},
+                {"number": 2, "headRefOid": "sha2", "isDraft": False, "createdAt": None},
+            ]
+
+        def fake_status(repo, sha, gh_bin="gh", timeout=30):
+            return "Review rate limited", NOW  # PR1は今回2件めの外れになる
+
+        decisions = {
+            1: {"action": "check", "reason": "budget unknown",
+                "command": "@coderabbitai rate limit"},
+            2: {"action": "check", "reason": "budget unknown",
+                "command": "@coderabbitai rate limit"},
+        }
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status", side_effect=fake_status), \
+             mock.patch.object(cr, "post_comment") as post_mock, \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 核心: PR1(外れを起こした当人)・PR2(ループ内でそれより後)、
+        # いずれの問い合わせも同じ周回のうちに投稿されてはならない。
+        post_mock.assert_not_called()
+        not_posted = [e for e in log_lines if e.get("event") == "query_not_posted"]
+        self.assertEqual(len(not_posted), 2)
+        for e in not_posted:
+            self.assertEqual(e["reason"], "trigger_breaker_open")
+        self.assertTrue(state["trigger_breaker_open"])
+
+
+class Test42TriggerBreakerResetFile(unittest.TestCase):
+    """解除は人がstate["heads"]の印を消すか、停止fileと同じ扱いの解除file
+    (trigger_breaker_reset_path)を置くことで行う。解除fileは読み捨てて
+    消す(一度ぶんの合図として扱う)。★自己レビュー是正: この消費(state書換・
+    file削除)自体もdry_runの間は行わない(他の全ての台帳更新と同じ
+    流儀)。"""
+
+    def test_reset_file_present_clears_breaker_and_is_consumed(self):
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_reset_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = {"allowlist": [], "budget": {}}
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                      "trigger_breaker_open": True,
+                      "trigger_misses": [NOW - timedelta(hours=1), NOW - timedelta(minutes=10)]}
+
+            # このtestの主眼はreset「意味論」(stateが変わる・ログが出る・
+            # 消費される)であって、project tree封じ込めの可否ではない
+            # ——封じ込め自体はTest45で別途固定する。tmpdirは実システムの
+            # 一時dirでありproject tree外のため、ここではTrueに固定する。
+            with mock.patch.object(cr, "_is_within_project_tree", return_value=True):
+                state, log_lines = cr.run(
+                    cfg, state, NOW, "/nonexistent/.stop", dry_run=False,
+                    trigger_breaker_reset_path=reset_path)
+
+            self.assertFalse(state["trigger_breaker_open"])
+            self.assertEqual(state["trigger_misses"], [])
+            reset_events = [e for e in log_lines if e.get("event") == "trigger_breaker_reset"]
+            self.assertEqual(len(reset_events), 1)
+            self.assertTrue(reset_events[0]["had_open_breaker"])
+            self.assertEqual(reset_events[0]["cleared_miss_count"], 2)
+            self.assertFalse(os.path.exists(reset_path))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_reset_event_still_logged_when_breaker_already_closed(self):
+        """breakerが元々閉じていた場合も、fileが消費された事実は常に
+        ログへ残す(自己レビュー是正: 黙って消えると、積み上がりかけていた
+        trigger_missesがいつ・なぜ消えたのか誰にも分からなくなる)。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_reset_noop_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = {"allowlist": [], "budget": {}}
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {}}
+
+            with mock.patch.object(cr, "_is_within_project_tree", return_value=True):
+                state, log_lines = cr.run(
+                    cfg, state, NOW, "/nonexistent/.stop", dry_run=False,
+                    trigger_breaker_reset_path=reset_path)
+
+            reset_events = [e for e in log_lines if e.get("event") == "trigger_breaker_reset"]
+            self.assertEqual(len(reset_events), 1)
+            self.assertFalse(reset_events[0]["had_open_breaker"])
+            self.assertEqual(reset_events[0]["cleared_miss_count"], 0)
+            self.assertFalse(os.path.exists(reset_path))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_dry_run_does_not_consume_reset_file_or_mutate_state(self):
+        """RED→GREEN(自己レビュー是正): main()はdry_runに関わらずstateを無条件で
+        保存するため、本番pathを指したまま--dry-runを走らせても、人が
+        置いた解除fileを消費せず・breaker/trigger_missesも変えないこと。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_reset_dryrun_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = {"allowlist": [], "budget": {}}
+            original_misses = [NOW - timedelta(hours=1), NOW - timedelta(minutes=10)]
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                      "trigger_breaker_open": True,
+                      "trigger_misses": list(original_misses)}
+
+            with mock.patch.object(cr, "_is_within_project_tree", return_value=True):
+                state, log_lines = cr.run(
+                    cfg, state, NOW, "/nonexistent/.stop", dry_run=True,
+                    trigger_breaker_reset_path=reset_path)
+
+            self.assertTrue(state["trigger_breaker_open"])
+            self.assertEqual(state["trigger_misses"], original_misses)
+            self.assertTrue(os.path.exists(reset_path))  # 消費されず残る
+            would_happen = [
+                e for e in log_lines if e.get("event") == "trigger_breaker_reset_would_happen"]
+            self.assertEqual(len(would_happen), 1)
+            self.assertTrue(would_happen[0]["dry_run"])
+            self.assertTrue(would_happen[0]["had_open_breaker"])
+            self.assertEqual(
+                [e for e in log_lines if e.get("event") == "trigger_breaker_reset"], [])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_green_reset_allows_triggering_to_resume(self):
+        """解除後は、review-nextがreviewを勧めていれば即座に投じを再開する
+        (解除fileは恒久停止ではなく、一度ぶんの人の確認の合図であること)。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_resume_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                      "trigger_breaker_open": True, "trigger_misses": [NOW, NOW]}
+
+            def fake_open_prs(repo, gh_bin="gh", timeout=30):
+                return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+            decisions = {1: {"action": "review", "reason": "1 review available",
+                              "command": "@coderabbitai review"}}
+            patches = _patch_cr_decide_wiring(decisions)
+            with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+                 mock.patch.object(cr, "_fetch_coderabbit_status",
+                                    return_value=("Review paused", NOW)), \
+                 mock.patch.object(cr, "post_comment") as post_mock, \
+                 mock.patch.object(cr, "_is_within_project_tree", return_value=True), \
+                 patches[0], patches[1], patches[2]:
+                state, log_lines = cr.run(
+                    cfg, state, NOW, "/nonexistent/.stop", dry_run=False,
+                    trigger_breaker_reset_path=reset_path)
+
+            self.assertFalse(state["trigger_breaker_open"])
+            post_mock.assert_called_once_with(
+                "geolonia/geonicdb-console", 1, cr.TRIGGER_BODY, gh_bin="gh")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_remove_failure_is_logged_not_silently_swallowed(self):
+        """自己レビュー是正(5回目): 解除fileの消し損ね(os.remove失敗)を黙殺すると、
+        次周回も同じfileが見つかり続け、まだ溜まっていない外れた依頼まで
+        毎回刈り取ってbreakerが二度と閾値に達しなくなる——気づける形で
+        warnログを残すこと。★さらに、削除が失敗した以上「解除された」とは
+        認めず、stateは一切変えない(削除が確かに済んで初めてstateを
+        書き換える設計——是正前は先にstateを書き換えてから削除を試みて
+        いたため、削除が恒常的に失敗する環境では毎周回trigger_missesが
+        無条件にゼロへ刈り取られ続けていた)。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_reset_removefail_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = {"allowlist": [], "budget": {}}
+            original_misses = [NOW, NOW]
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                      "trigger_breaker_open": True, "trigger_misses": list(original_misses)}
+
+            with mock.patch("os.remove", side_effect=OSError("simulated remove failure")), \
+                 mock.patch.object(cr, "_is_within_project_tree", return_value=True):
+                state, log_lines = cr.run(
+                    cfg, state, NOW, "/nonexistent/.stop", dry_run=False,
+                    trigger_breaker_reset_path=reset_path)
+
+            # 核心: 削除が失敗した以上、breaker・misses双方とも変わらない。
+            self.assertTrue(state["trigger_breaker_open"])
+            self.assertEqual(state["trigger_misses"], original_misses)
+            failed = [e for e in log_lines
+                      if e.get("event") == "trigger_breaker_reset_file_remove_failed"]
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(failed[0]["level"], "warn")
+            self.assertEqual(
+                [e for e in log_lines if e.get("event") == "trigger_breaker_reset"], [])
+            self.assertTrue(os.path.exists(reset_path))  # 消せなかった事実のまま残る
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+
+class Test43ReviewedHeadClearsStaleTriggerBookkeeping(unittest.TestCase):
+    """自己レビュー是正: headが既にreviewed済みになった後は、古いlast_trigger_at・
+    miss_recorded_for_trigger_atを消す。消さずに残すと、何日も後に(人の手や別の呼び手
+    による)無関係な再問い合わせが同じheadへrate limitedを返した時、
+    とうに成功した古い投げを「外れた」と誤って数えてしまう。"""
+
+    def test_reviewed_status_clears_stale_last_trigger_at(self):
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        old_trigger_at = NOW - timedelta(days=3)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": old_trigger_at,
+                       "miss_recorded_for_trigger_at": old_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review completed", NOW)):
+            state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        head_state = state["heads"]["geolonia/geonicdb-console#1#sha1"]
+        self.assertNotIn("last_trigger_at", head_state)
+        self.assertNotIn("miss_recorded_for_trigger_at", head_state)
+
+    def test_unrelated_later_rate_limit_on_reviewed_head_is_not_a_miss(self):
+        """RED→GREEN: 是正前は、reviewed後に残った古いlast_trigger_atのせいで、
+        何日も後の無関係なrate limitedが「外れた依頼」として誤カウントされて
+        いた。是正後は2周回(まずreviewedで古い印を消す→次にrate limitedを
+        観測)を経ても誤カウントされない。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        old_trigger_at = NOW - timedelta(days=3)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": 1, "last_trigger_at": old_trigger_at,
+                       "miss_recorded_for_trigger_at": old_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        # cycle1: reviewed済みを観測 → 古いlast_trigger_at・miss_recorded_for_trigger_atを消す。
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review completed", NOW)):
+            state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # cycle2(何日か後、別の呼び手が同じheadへ無関係な再問い合わせをした想定):
+        # rate limitedへ戻っても、last_trigger_atが消えているため外れた
+        # 依頼としては数えない。
+        now2 = NOW + timedelta(days=2)
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines if e.get("event") == "trigger_missed"], [])
+
+    def test_max_attempts_reached_head_also_clears_stale_bookkeeping(self):
+        """自己レビュー是正(続): reviewedにならずmax_attempts(3回)へ達した
+        headも、cr_retriggerはもう二度と投げ直さない——古いlast_trigger_at
+        を残すと、何日も後の無関係なrate limitedを誤って「外れた依頼」と
+        数えてしまう(reviewedの場合と同じ病)。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        old_trigger_at = NOW - timedelta(days=3)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": cr.MAX_ATTEMPTS_PER_HEAD, "last_trigger_at": old_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review paused", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, _ = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        head_state = state["heads"]["geolonia/geonicdb-console#1#sha1"]
+        self.assertNotIn("last_trigger_at", head_state)
+
+        # 何日か後、無関係なrate limitedが同じheadへ現れても数えない。
+        now2 = NOW + timedelta(days=2)
+        patches2 = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", now2)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches2[0], patches2[1], patches2[2]:
+            state, log_lines = cr.run(cfg, state, now2, "/nonexistent/.stop", dry_run=False)
+
+        self.assertEqual([e for e in log_lines if e.get("event") == "trigger_missed"], [])
+
+    def test_final_attempt_miss_is_recorded_before_stale_bookkeeping_is_cleared(self):
+        """RED→GREEN(自己レビュー是正・2回目・最重要): headが既にmax_attempts
+        (3回)へ達した周回で、かつ★その周回のCodeRabbit statusがまさに
+        rate limitedへ戻っている(=直前に投じた3回めの結果そのもの)時、
+        その外れを記録し損ねてはならない。
+
+        ★是正前の順序(古い印消し→外れの検知)だと、この周回の時点で
+        attempts_so_far が既に3であるため、古い印消しが外れの検知より
+        ★先に走ってlast_trigger_atを消してしまい、最後の(最も確かめ
+        たい)投げの外れが永遠に記録されない——trigger_breakerが最も
+        壊れた振る舞いを示すheadほど見張れなくなるという、安全弁の趣旨
+        そのものに反する欠陥だった。是正後は外れの検知を先に行う。"""
+        cfg = _cr_decide_cfg(["geolonia/geonicdb-console"])
+        last_trigger_at = NOW - timedelta(minutes=10)
+        state = {
+            "heads": {"geolonia/geonicdb-console#1#sha1":
+                      {"attempts": cr.MAX_ATTEMPTS_PER_HEAD, "last_trigger_at": last_trigger_at}},
+            "sent_log": [], "query_log": [], "query_incidents": {},
+        }
+
+        def fake_open_prs(repo, gh_bin="gh", timeout=30):
+            return [{"number": 1, "headRefOid": "sha1", "isDraft": False, "createdAt": None}]
+
+        decisions = {1: {"action": "wait", "reason": "n/a"}}
+        patches = _patch_cr_decide_wiring(decisions)
+        with mock.patch.object(cr, "_fetch_open_prs", side_effect=fake_open_prs), \
+             mock.patch.object(cr, "_fetch_coderabbit_status",
+                                return_value=("Review rate limited", NOW)), \
+             mock.patch.object(cr, "post_comment"), \
+             patches[0], patches[1], patches[2]:
+            state, log_lines = cr.run(cfg, state, NOW, "/nonexistent/.stop", dry_run=False)
+
+        # 核心: 同じ周回で、最後の試行の外れが記録され、かつ古い印も
+        # (この外れを記録した直後に)消えていること。
+        missed = [e for e in log_lines if e.get("event") == "trigger_missed"]
+        self.assertEqual(len(missed), 1)
+        self.assertEqual(len(state["trigger_misses"]), 1)
+        head_state = state["heads"]["geolonia/geonicdb-console#1#sha1"]
+        self.assertNotIn("last_trigger_at", head_state)
+        self.assertNotIn("miss_recorded_for_trigger_at", head_state)
+
+
+class Test44StatusSummarySurfacesTriggerBreaker(unittest.TestCase):
+    """自己レビュー是正: trigger_missed・trigger_breaker_openは専用欄へ出し、
+    warningsの汎用抽出(repo/pr/reason)でnull埋めにして中身を失わない。
+    さらに、state["trigger_breaker_open"]は24時間のログwindowを跨いで
+    何日も開いたままになりうるため、呼び出し側が渡す現在のstateの値を
+    ログの有無と関係なく反映する。"""
+
+    def test_trigger_missed_and_breaker_open_events_get_dedicated_fields(self):
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_breaker_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "repo": "geolonia/geonicdb-console", "pr": 246,
+                    "head_sha": "sha1", "event": "trigger_missed", "level": "warn",
+                    "reason": "rate_limited_after_trigger",
+                }) + "\n")
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "event": "trigger_breaker_open", "level": "warn",
+                    "miss_count": 2,
+                }) + "\n")
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 1}) + "\n")
+
+            import yaml
+            summary = cr._write_status_summary(
+                status_path, log_path, NOW, trigger_breaker_open=True)
+
+            self.assertEqual(summary["trigger_missed_count"], 1)
+            self.assertEqual(summary["trigger_missed"][0]["repo"], "geolonia/geonicdb-console")
+            self.assertEqual(summary["trigger_missed"][0]["pr"], 246)
+            self.assertEqual(summary["trigger_breaker_opened_in_window_count"], 1)
+            self.assertTrue(summary["trigger_breaker_open"])
+
+            with open(status_path, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
+            self.assertTrue(loaded["trigger_breaker_open"])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_breaker_open_surfaced_even_when_opened_outside_log_window(self):
+        """RED→GREEN: breakerが24時間より前に開いて今も閉じていない場合、
+        ログwindow内にtrigger_breaker_openイベントが無くても、現在のstateを
+        渡せば要約に「開いたまま」と出ること(ログwindowだけに頼ると見えなく
+        なる問題の是正)。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_breaker_stale_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 0}) + "\n")
+
+            summary = cr._write_status_summary(
+                status_path, log_path, NOW, trigger_breaker_open=True)
+
+            self.assertEqual(summary["trigger_breaker_opened_in_window_count"], 0)
+            self.assertTrue(summary["trigger_breaker_open"])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_default_trigger_breaker_open_is_false(self):
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_breaker_default_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 0}) + "\n")
+
+            summary = cr._write_status_summary(status_path, log_path, NOW)
+
+            self.assertFalse(summary["trigger_breaker_open"])
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_trigger_missed_and_breaker_open_are_not_double_counted_in_warnings(self):
+        """RED→GREEN(自己レビュー是正・6回目): trigger_missed・trigger_breaker_open
+        はどちらもlevel="warn"を持つため、専用欄を設けただけでは汎用
+        warnings抽出(`level == "warn"`)にも★二重に数えられ、warning_count
+        が水増しされ、warningsにnull埋めの重複(repo/pr/reason全てnull)が
+        混じっていた——Karo(cmd_861の朝の巡回)が見るwarning_countを
+        不正確にする欠陥だった。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_nodupe_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "repo": "geolonia/geonicdb-console", "pr": 246,
+                    "head_sha": "sha1", "event": "trigger_missed", "level": "warn",
+                    "reason": "rate_limited_after_trigger",
+                }) + "\n")
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "event": "trigger_breaker_open", "level": "warn",
+                    "miss_count": 2,
+                }) + "\n")
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 1}) + "\n")
+
+            summary = cr._write_status_summary(
+                status_path, log_path, NOW, trigger_breaker_open=True)
+
+            # 核心: trigger_missed・trigger_breaker_openは専用欄にだけ現れ、
+            # 汎用warningsには一切現れない(二重計上されない)。
+            self.assertEqual(summary["warning_count"], 0)
+            self.assertEqual(summary["warnings"], [])
+            self.assertEqual(summary["trigger_missed_count"], 1)
+            self.assertEqual(summary["trigger_breaker_opened_in_window_count"], 1)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_trigger_breaker_operational_failures_get_dedicated_field_not_lost(self):
+        """RED→GREEN(自己レビュー是正・6回目): ntfy送信・dashboard書込み・解除
+        file削除・封じ込め判定の各失敗イベントは、汎用warnings抽出からは
+        除かれる(二重計上防止)が、中身(error・path)を失わない専用欄を
+        持つこと。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_opfail_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "event": "trigger_breaker_ntfy_failed",
+                    "level": "warn", "error": "simulated ntfy failure",
+                }) + "\n")
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(),
+                    "event": "trigger_breaker_reset_file_outside_project_tree",
+                    "level": "warn", "path": "/tmp/outside/reset",
+                }) + "\n")
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 0}) + "\n")
+
+            summary = cr._write_status_summary(status_path, log_path, NOW)
+
+            self.assertEqual(summary["warning_count"], 0)  # ここに二重計上されない
+            self.assertEqual(summary["trigger_breaker_operational_failure_count"], 2)
+            errors = {e["event"]: e for e in summary["trigger_breaker_operational_failures"]}
+            self.assertEqual(
+                errors["trigger_breaker_ntfy_failed"]["error"], "simulated ntfy failure")
+            self.assertEqual(
+                errors["trigger_breaker_reset_file_outside_project_tree"]["path"],
+                "/tmp/outside/reset")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_unrelated_warning_still_counted_normally(self):
+        """回帰確認: trigger_breaker系でない通常のwarnイベント(例:
+        no_status_over_2h)は、従来どおりwarningsへ数えられること。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_status_otherwarn_")
+        try:
+            log_path = os.path.join(tmpdir, "cr_retrigger.jsonl")
+            status_path = os.path.join(tmpdir, "cr_retrigger_status.yaml")
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": NOW.isoformat(), "repo": "geolonia/geonicdb-console", "pr": 1,
+                    "category": "no_status", "decision": "skip", "level": "warn",
+                    "reason": "no_status_over_2h",
+                }) + "\n")
+                f.write(json.dumps({"ts": NOW.isoformat(), "event": "cycle",
+                                     "runner": "launchd", "run_id": "x", "prs_seen": 1}) + "\n")
+
+            summary = cr._write_status_summary(status_path, log_path, NOW)
+
+            self.assertEqual(summary["warning_count"], 1)
+            self.assertEqual(summary["warnings"][0]["reason"], "no_status_over_2h")
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+
+class Test45ResetFileDeletionStaysWithinProjectTree(unittest.TestCase):
+    """自己レビュー是正: CLAUDE.md「Destructive Operation Safety」Tier3
+    (rm -rf <dir> → project tree内のみ、realpathで確認してから)に倣い、
+    解除fileの実削除はproject tree配下への実pathでのみ行う。"""
+
+    def test_is_within_project_tree_accepts_real_default_path(self):
+        default_path = os.path.join(
+            os.path.dirname(cr.__file__), "..", "logs", "cr_retrigger.trigger_breaker_reset")
+        self.assertTrue(cr._is_within_project_tree(default_path))
+
+    def test_is_within_project_tree_rejects_outside_path(self):
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_outside_project_tree_")
+        try:
+            outside_path = os.path.join(tmpdir, "some_file")
+            self.assertFalse(cr._is_within_project_tree(outside_path))
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
+
+    def test_reset_file_outside_project_tree_touches_nothing_but_warns(self):
+        """RED→GREEN(自己レビュー是正・2回目): project tree外を指す解除fileは、
+        os.remove()されないだけでなく、state(trigger_breaker_open・
+        trigger_misses)も一切変えない——warnログだけを周回ごとに残す。
+
+        ★是正前の設計(封じ込め判定より先にstateを無条件で書き換えていた)
+        には重い欠陥があった: fileが消せない以上、次の周回もまた同じfileが
+        見つかり、毎周回stateを無条件に刈り取り続ける——「一度ぶんの合図」
+        のはずの解除fileが、消せぬまま永久に効き続ける「壊れたbreakerの
+        恒久無効化スイッチ」に変わってしまっていた(自己レビュー指摘)。是正後は
+        封じ込め判定で外れと分かった時点で、file・stateいずれにも手を
+        付けず安全側(=何もしない)へ倒す。"""
+        tmpdir = tempfile.mkdtemp(prefix="cr_retrigger_breaker_reset_outside_")
+        try:
+            reset_path = os.path.join(tmpdir, "cr_retrigger.trigger_breaker_reset")
+            with open(reset_path, "w", encoding="utf-8") as f:
+                f.write("")
+
+            cfg = {"allowlist": [], "budget": {}}
+            original_misses = [NOW, NOW]
+            state = {"heads": {}, "sent_log": [], "query_log": [], "query_incidents": {},
+                      "trigger_breaker_open": True, "trigger_misses": list(original_misses)}
+
+            state, log_lines = cr.run(
+                cfg, state, NOW, "/nonexistent/.stop", dry_run=False,
+                trigger_breaker_reset_path=reset_path)
+
+            # 核心: 封じ込め判定で外れと分かった以上、stateは一切変わらない
+            # (削除できぬ以上、解除の意味論そのものを実行してはならない)。
+            self.assertTrue(state["trigger_breaker_open"])
+            self.assertEqual(state["trigger_misses"], original_misses)
+            outside_events = [
+                e for e in log_lines
+                if e.get("event") == "trigger_breaker_reset_file_outside_project_tree"]
+            self.assertEqual(len(outside_events), 1)
+            self.assertEqual(outside_events[0]["level"], "warn")
+            self.assertEqual(outside_events[0]["path"], reset_path)
+            self.assertEqual(
+                [e for e in log_lines if e.get("event") == "trigger_breaker_reset"], [])
+            self.assertTrue(os.path.exists(reset_path))  # 削除されずに残る
+
+            # 次の周回でも同じ警告が出続ける(人が気づくまで安全側のまま)。
+            now2 = NOW + timedelta(minutes=10)
+            state, log_lines2 = cr.run(
+                cfg, state, now2, "/nonexistent/.stop", dry_run=False,
+                trigger_breaker_reset_path=reset_path)
+            self.assertTrue(state["trigger_breaker_open"])
+            self.assertEqual(state["trigger_misses"], original_misses)
+            outside_events2 = [
+                e for e in log_lines2
+                if e.get("event") == "trigger_breaker_reset_file_outside_project_tree"]
+            self.assertEqual(len(outside_events2), 1)
+        finally:
+            import shutil
+            shutil.rmtree(tmpdir)
 
 
 if __name__ == "__main__":
