@@ -8,6 +8,16 @@
 #   当家側の自前の判断(may_query・head_recent_push・
 #   stale_no_fresh_rate_limit)を捨てる。予備の問い合わせの下限だけは
 #   「安全の上限」(暴走を止める枷であって判断ではない)として残す。
+# cmd_934続き(queue/reports/cmd934_trigger_per_day_judgment.md §6・案B):
+#   引き金(`[AI] @coderabbitai review`)の毎時/毎日の数の枷
+#   (trigger_per_hour・trigger_per_day)は廃した。review-nextは既に
+#   CodeRabbit自身の空きを測った上でreviewを返しており、当家の数の枷は
+#   その判断を盲目に上書きして正しい依頼を握りつぶしていた(実例:
+#   PR#246が41周回reviewを勧められながら一度も依頼されなかった)。
+#   止めるべきは数でなく「壊れた徴」——state["trigger_breaker_open"]
+#   (cr_retrigger.py側が、投じた直後にrate limitedへ戻る徴を検知して
+#   立てる)。同じheadへの最大試行回数(max_attempts=3・コード側固定)は
+#   残る。
 #
 # ★上限の件数はここにも一切置かない(§9.1)。budget は CodeRabbit の割当の
 # 推測ではなく、当家の試行の数を抑えるための自前の枷である。
@@ -24,9 +34,8 @@ allowlist:
   - geolonia/geonicdb-docs
 
 budget:
-  # 引き金(`[AI] @coderabbitai review`)の自前の予算(確定版§9.1・追補2の勧め)。
-  trigger_per_hour: 1
-  trigger_per_day: 8
+  # cmd_934続き: trigger_per_hour・trigger_per_dayはここから除いた
+  # (review-nextの判断を数で上書きしないため——上のcmd_934続き節を見よ)。
   # cmd_934 T1: 予備の問い合わせ(`[AI] @coderabbitai rate limit`)の安全の
   # 上限。同じ件(incident_key)への問い合わせは、この分数に1回まで
   # (判断ではなく暴走を止める枷——query_fuse_ok()が守る)。
@@ -35,6 +44,15 @@ budget:
   # 冪等性さえ守れば、他のPRへの問い合わせを待たせる理由が無いため
   # (queue/reports/cmd934_decompose.md §1-2)。
   query_fuse_min: 60
+
+  # cmd_934続き(自己レビュー是正): trigger_breakerが開く閾値(既定2件)・見る窓
+  # (既定24時間)。旧trigger_per_hour/per_dayはyamlの1行書換で調整できて
+  # いたのに対し、裸のPythonの数のままにすると閾値の見直しにコード変更+
+  # 再deployが要る(運用上の退化)。数そのものは「判断」ではなく「壊れた徴
+  # 2回」という安全弁の調整値である——判断を数で上書きしないという本節
+  # 冒頭の原理には反しない(review-nextの答えそのものには一切触れない)。
+  trigger_breaker_threshold: 2
+  trigger_breaker_window_hours: 24
 
 # 予備の問い合わせ(review-nextのcheckが返すcommand)の投稿有効/無効。
 # cmd_913 X1是正: cr-decideのcollect()は、通知の待ち時間が過ぎると予算を
