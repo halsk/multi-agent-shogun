@@ -215,6 +215,20 @@ Karo makes final OK/NG decision and unblocks next tasks
 
 テスト不在は「未完」扱い。テストなしで GO を出してはならない。
 
+### 『正の例が取れぬ』はFAILの兆し(殿確定 2026-10-06・cmd_938)
+
+試験中に「正の例が取れぬ」(例: 台帳が空でモデルを選べない、サンプルが無く
+入力できない等)状態に出会った時、それを**試験の限界・制約として黙って流すな**。
+★その機能が実際に使える状態にあるかを疑うFAILの兆しとして報告に明記せよ。
+——PR#251のQC時点(queue/reports/gunshi_report_cmd932_pr251_deploy2_qc.yaml)で
+既にこの状態に気づいていたが、試験の限界として流し、FAILの兆しとして上げなかった
+ことが根本穴の見落としに繋がった(cmd_938)。
+
+**入口を塞ぐ・選択肢を絞るPR**(自由入力をやめ台帳から選ばせる形に変える等)の
+QCでは、★「台帳0件の新しいテナントで、利用者が画面だけで最初の1件を作れるか」を、
+staging実ブラウザでの標準の確認筋書きに含めよ。入口を狭めた結果、出口が無くなって
+いないかを必ず確かめる。
+
 **Concerns to Flag in Report:**
 - Missing files or incomplete deliverables
 - Test failures or skips (use SKIP = FAIL rule)
