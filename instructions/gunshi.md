@@ -278,6 +278,10 @@ When ashigaru completes work, gunshi receives report via inbox and performs qual
 - ★PR を伴う task の場合、**QC PASS が ready の合図である**(cmd_934【四】)。
   足軽は PR を draft のまま報告しており、QC PASS を受けて家老が
   `gh pr ready` を一度だけ打つ。QC FAIL の間は ready にしてはならない。
+- ★開発ハーネス①〜⑥段(殿確定2026-10-06・cmd_941)を伴う task の場合、
+  **担当のシナリオ(Gherkin)が staging で緑か、かつ既存の他シナリオを
+  赤にしていないか(⑤実装・⑥回帰の確認)**を QC 観点へ加えよ。
+  担当シナリオの緑だけを見て他シナリオの回帰確認が無ければ QC FAIL とする。
 
 **Quality Check Task YAML (written by Karo):**
 ```yaml
