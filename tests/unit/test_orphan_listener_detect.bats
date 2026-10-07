@@ -402,7 +402,6 @@ setup() {
 
 @test "T-OL-024: ORPHAN_LISTENER_ROOTS does not blanket the whole /Users/hal/tools/ tree (false-positive guard)" {
   eval "$(sed -n '/^ORPHAN_LISTENER_ROOTS=/,/"$/p' "${PROJECT_ROOT}/scripts/stall_watchdog.sh")"
-  [[ "$ORPHAN_LISTENER_ROOTS" != *$'\n/Users/hal/tools/\n'* ]]
-  [[ "$ORPHAN_LISTENER_ROOTS" != *$'\n/Users/hal/tools/'$'\n'* ]]
-  ! grep -qx "/Users/hal/tools/" <<< "$ORPHAN_LISTENER_ROOTS"
+  # SC2314対策: 裸の`!`はbatsの最終行以外では失敗を伝播しないため`run !`を使う
+  run ! grep -qx "/Users/hal/tools/" <<< "$ORPHAN_LISTENER_ROOTS"
 }
