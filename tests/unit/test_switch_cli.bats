@@ -7,6 +7,9 @@
 setup() {
     TEST_TMP="$(mktemp -d)"
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+    # update_settings 系が直接呼び、display_name 系が lib/cli_adapter.sh 経由で
+    # 使う python3。実体の場所はここ一箇所で決める(require_venv_python と共有)。
+    VENV_PYTHON="${PROJECT_ROOT}/.venv/bin/python3"
 
     # テスト用settings.yaml
     cat > "${TEST_TMP}/settings.yaml" << 'YAML'
@@ -45,6 +48,41 @@ YAML
 
 teardown() {
     rm -rf "$TEST_TMP"
+}
+
+# require_venv_python — python3(.venv)に依存するテストの冒頭で呼ぶ前提確認。
+#
+# 経緯(cmd_945 軍師QC N4): 「本ファイルの2件が full-suite でのみ落ちる」と
+# 申告されたが、計測の結果はテスト順序依存ではなく、.venv の無い worktree で
+# 走らせたことによる前提欠落であった(2026-10-07・ashigaru1 は .venv 無しの
+# worktree で full-suite を tail -40 付きで、.venv ありの本体 repo で単体を
+# 走らせて比べていた。出力には Executed 629 instead of expected 726 /
+# exit 127 / .venv 不在 skip 3件が残る)。.venv が無いと本ファイルは6件落ちる
+# (update_settings 3件は exit 127、display_name 3件は assertion 不一致)が、
+# tail -40 の窓に残ったのが display_name の2件だけだったため「2件」に見えた。
+#
+# display_name 側が assertion 不一致という形で落ちるのは、lib/cli_adapter.sh の
+# _cli_adapter_read_yaml / get_cli_type が python3 の起動失敗を 2>/dev/null で
+# 黙らせ既定値(claude / sonnet / thinking 未設定)へ倒すためで、全員が
+# "Sonnet+T" になり Spark / Sonnet / Opus+T を期待する箇所だけ落ちる(ashigaru1
+# の "Sonnet+T" を見る箇所は偶然一致して通る)。この黙る既定値は cli_adapter.sh
+# 側の課題として別途扱う(本ファイルの範囲外)。
+#
+# 前提が欠けている場合は skip ではなく失敗にする(CLAUDE.md「SKIP = FAIL」)。
+# python を使わない resolve_pane / usage 系 13件はそのまま走らせ、python 依存の
+# 6件だけが原因を名指しして落ちるようにする。CI は unit tests 前に .venv を作る
+# (.github/workflows/test.yml「Setup Python venv with PyYAML」)ため影響しない。
+require_venv_python() {
+    if [ ! -x "$VENV_PYTHON" ]; then
+        echo "PRECONDITION FAILED: ${VENV_PYTHON} が存在しない。worktree なら 'python3 -m venv .venv && .venv/bin/pip install -r requirements.txt' で用意せよ" >&2
+        return 1
+    fi
+    local err
+    if ! err=$("$VENV_PYTHON" -c 'import yaml' 2>&1); then
+        echo "PRECONDITION FAILED: ${VENV_PYTHON} で PyYAML を import できない: ${err}" >&2
+        echo "  (.venv が壊れていなければ '.venv/bin/pip install -r requirements.txt' で用意せよ)" >&2
+        return 1
+    fi
 }
 
 # =============================================================================
@@ -125,11 +163,12 @@ load_resolve_pane() {
 # =============================================================================
 
 @test "update_settings: type変更でYAMLが正しく更新される" {
+    require_venv_python
     # テスト用settings
     cp "${TEST_TMP}/settings.yaml" "${TEST_TMP}/settings_update.yaml"
 
     # Python直接実行でtype更新
-    "${PROJECT_ROOT}/.venv/bin/python3" << PYEOF
+    "$VENV_PYTHON" << PYEOF
 import yaml
 
 path = "${TEST_TMP}/settings_update.yaml"
@@ -155,9 +194,10 @@ PYEOF
 }
 
 @test "update_settings: model変更後にbuild_cli_commandが反映" {
+    require_venv_python
     cp "${TEST_TMP}/settings.yaml" "${TEST_TMP}/settings_update2.yaml"
 
-    "${PROJECT_ROOT}/.venv/bin/python3" << PYEOF
+    "$VENV_PYTHON" << PYEOF
 import yaml
 
 path = "${TEST_TMP}/settings_update2.yaml"
@@ -179,9 +219,10 @@ PYEOF
 }
 
 @test "update_settings: thinking:false後のbuild_cli_commandにMAX_THINKING_TOKENS=0" {
+    require_venv_python
     cp "${TEST_TMP}/settings.yaml" "${TEST_TMP}/settings_update3.yaml"
 
-    "${PROJECT_ROOT}/.venv/bin/python3" << PYEOF
+    "$VENV_PYTHON" << PYEOF
 import yaml
 
 path = "${TEST_TMP}/settings_update3.yaml"
@@ -233,6 +274,7 @@ PYEOF
 # =============================================================================
 
 @test "display_name: 切替前後で表示名が正しく変わる" {
+    require_venv_python
     # 元: Sonnet+T
     result=$(get_model_display_name "ashigaru1")
     [ "$result" = "Sonnet+T" ]
@@ -255,6 +297,7 @@ YAML
 }
 
 @test "display_name: Codex → Claude切替で表示名更新" {
+    require_venv_python
     # ashigaru3はCodex Spark
     result=$(get_model_display_name "ashigaru3")
     [ "$result" = "Spark" ]
@@ -361,6 +404,7 @@ load_real_resolve_pane() {
 }
 
 @test "display_name: thinking:false で +T が消える" {
+    require_venv_python
     # ashigaru2は thinking:false
     result=$(get_model_display_name "ashigaru2")
     [ "$result" = "Sonnet" ]
