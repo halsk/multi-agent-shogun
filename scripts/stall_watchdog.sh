@@ -70,6 +70,10 @@ source "$SCRIPT_DIR/lib/report_consumption_detect.sh"
 # 埋める(HC_PING_URL_SWEEP Keychain登録が9日間放置された実例への対応)。
 # ★単独の新規監視機構は作らず本watchdogへ相乗り。
 source "$SCRIPT_DIR/lib/lord_turn_stall_detect.sh"
+# shellcheck source=../lib/orphan_listener_detect.sh
+# cmd_945 事後是正③: 止め忘れサーバ(LANから届く口で待ち受ける・家中の作業dir由来)の見回り。
+# killは行わない(D006・殿の手)。★単独の新規監視機構は作らず本watchdogへ相乗り。
+source "$SCRIPT_DIR/lib/orphan_listener_detect.sh"
 
 # ── フラグ解析 ────────────────────────────────────────────────────────────────
 DRY_RUN=false
@@ -269,6 +273,22 @@ UNCONSUMED_REPORT_THRESHOLD=$((24 * 60 * 60))
 # コメント参照)より一段厳しく倒す——本件はまさに「dashboard巡回だけに
 # 頼ると見落とす」ことが実証された事案そのものであるため。
 LORD_TURN_STALL_THRESHOLD_DAYS=2
+
+# cmd_945事後是正③: 止め忘れサーバ(orphan listener)検知の対象根(改行区切り・
+# 前方一致)。設計§2.2どおりgit管理下のこのファイルへ直接置く(config/settings.yaml
+# には置かない——settings.yamlはgit管理外の一点物で2026-09-13に消えた前例がある)。
+ORPHAN_LISTENER_ROOTS="/Users/hal/workspace/
+/Users/hal/tools/multi-agent-shogun/
+/private/tmp/claude-501/
+/tmp/claude-"
+
+# cmd_945事後是正③: 期限付き除外登録(設計§4)。★cmd_787⑩: 除外は期限付きのみ
+# 許可する(恒久除外の温床にしない)。各行
+# "出所dirの前方一致|port(または*)|期限YYYY-MM-DD|裁可の出所"。
+# ★yt2obsidian(*:3500・唯一の実測該当)は、LANへ開けておいてよいか殿の確認を
+# 取ってから登録する(設計§4・§7問い2)。今は未登録のため--dry-runで検知され続ける
+# (意図どおり・報告に添える現状)。
+ORPHAN_LISTENER_REGISTRY=""
 
 mkdir -p "$STATE_DIR" logs
 
@@ -1659,6 +1679,139 @@ check_lord_turn_stalls() {
     rm -f "$seen_keys_file"
 }
 
+# ── cmd_945事後是正③ 相乗り: 止め忘れサーバ(orphan listener)の見回り ───────────
+# LANから届く口(*・0.0.0.0・[::]・具体のLAN/Tailscale IP)で待ち受け、かつ
+# 家中の作業dir(ORPHAN_LISTENER_ROOTS)から起きたプロセスをdashboard🚨へ出す。
+# ★killは一切行わない(D006・殿の手)。ntfyは既定で鳴らさない(cmd_795殿裁定・丙)。
+# ★単独の新規監視機構は作らず本watchdogへ相乗り(lib/orphan_listener_detect.sh)。
+
+_olisten_format_etime() {
+  local etime="$1"
+  local days=0 hours=0 mins=0
+  local rest="$etime"
+  if [[ "$rest" == *-* ]]; then
+    days="${rest%%-*}"
+    rest="${rest#*-}"
+  fi
+  local IFS=:
+  local -a parts
+  read -ra parts <<< "$rest"
+  local n="${#parts[@]}"
+  if [[ "$n" -eq 3 ]]; then
+    hours="${parts[0]#0}"; hours="${hours:-0}"
+    mins="${parts[1]#0}"; mins="${mins:-0}"
+  elif [[ "$n" -eq 2 ]]; then
+    mins="${parts[0]#0}"; mins="${mins:-0}"
+  fi
+  days="${days#0}"; days="${days:-0}"
+  printf '%s日%s時間%s分' "$days" "$hours" "$mins"
+}
+
+_olisten_cksum_short() {
+  echo -n "$1" | cksum | awk '{print $1}'
+}
+
+notify_dashboard_orphan_listener() {
+    local pid="$1" port="$2" scope="$3" origin="$4" etime="$5"
+    local ts
+    ts=$(now_iso)
+    local scope_label
+    if [[ "$scope" == "exposed_all" ]]; then
+        scope_label="全ての口"
+    else
+        scope_label="外から届く口"
+    fi
+    local origin_short="$origin"
+    if [[ "${#origin_short}" -gt 60 ]]; then
+        origin_short="…${origin_short: -60}"
+    fi
+    local elapsed_label
+    elapsed_label=$(_olisten_format_etime "$etime")
+    local entry="- 🚨 [orphan-listener] PID ${pid} が :${port}(${scope_label})で待ち受け、同じLANから読める。出所: ${origin_short}(cwd)・起動から ${elapsed_label}。止めるのは殿の手(watchdogは止めぬ) @ $ts"
+    local dashboard="$SCRIPT_DIR/dashboard.md"
+    local _dash_marker
+    _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
+    if [[ -n "$_dash_marker" ]]; then
+        local _dash_tmp
+        _dash_tmp=$(mktemp)
+        sed "${_dash_marker}a\\
+$entry
+" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+    else
+        printf '\n%s\n' "$entry" >> "$dashboard"
+    fi
+}
+
+send_ntfy_orphan_listener() {
+    local pid="$1" port="$2" origin="$3"
+    # cmd_945事後是正③: 既定は鳴らさない(cmd_795殿裁定・丙の原則を維持)。
+    # 鳴らすか否かは設計§7問い1として殿へ伺い中——殿のお言葉より広く取らない
+    # (feedback_do_not_widen_lords_words)。
+    # bash "$SCRIPT_DIR/scripts/ntfy.sh" "orphan-listener: PID ${pid} が :${port}(${origin})でLANへ開いたまま。確認せよ。"
+}
+
+reset_gone_orphan_listeners() {
+    local seen_keys_file="$1"
+    local f base hash_part
+    for f in "$STATE_DIR"/listener__*.yaml; do
+        [[ -e "$f" ]] || continue
+        base=$(basename "$f" .yaml)
+        hash_part="${base#listener__}"
+        if ! grep -qxF "$hash_part" "$seen_keys_file" 2>/dev/null; then
+            log "[ORPHAN-LISTENER-GONE] $base: 消失 → state削除"
+            rm -f "$f"
+        fi
+    done
+}
+
+check_orphan_listeners() {
+    local now
+    now=$(now_epoch)
+
+    local seen_keys_file
+    seen_keys_file=$(mktemp)
+
+    local pid port scope cmd origin etime lstart
+    while IFS='|' read -r pid port scope cmd origin etime lstart; do
+        [[ -z "$pid" ]] && continue
+
+        if [[ "$pid" == "ERROR" ]]; then
+            log "[ORPHAN-LISTENER-ERROR] $port"
+            continue
+        fi
+
+        local hash state_key problem_id
+        hash=$(_olisten_cksum_short "${origin}:${port}")
+        state_key="listener__${hash}"
+        echo "$hash" >> "$seen_keys_file"
+        problem_id="${pid}:${lstart}"
+
+        local already_notified
+        already_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ "$already_notified" != "$problem_id" ]]; then
+            log "[ORPHAN-LISTENER] $cmd PID $pid :$port ($scope) origin=$origin"
+            if $DRY_RUN; then
+                log "[DRY-RUN] would notify dashboard for $state_key (orphan-listener)"
+            else
+                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime"
+            fi
+            state_set "$state_key" "notified_status" "$problem_id"
+            state_set "$state_key" "first_bad_at" "$(now_iso)"
+            state_set "$state_key" "last_redisplay_at" "$(now_iso)"
+        elif should_redisplay_dashboard_entry "$state_key" "$now" "$DASHBOARD_HEALTH_REDISPLAY_INTERVAL"; then
+            log "[ORPHAN-LISTENER-REDISPLAY] $state_key 継続中 → dashboard再掲示"
+            if $DRY_RUN; then
+                log "[DRY-RUN] would redisplay dashboard for $state_key (orphan-listener)"
+            else
+                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime"
+            fi
+        fi
+    done < <(detect_orphan_listeners "$ORPHAN_LISTENER_ROOTS" "$ORPHAN_LISTENER_REGISTRY" "$now")
+
+    reset_gone_orphan_listeners "$seen_keys_file"
+    rm -f "$seen_keys_file"
+}
+
 # ── テスト用 source ガード ────────────────────────────────────────────────────
 # source して関数だけ使う場合はここでリターン (flock・メインループをスキップ)
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
@@ -1819,6 +1972,9 @@ check_unconsumed_reports
 
 # cmd_827 案4: 🚨要対応節「殿/将軍の手番待ち」entryの滞留検知
 check_lord_turn_stalls
+
+# cmd_945事後是正③: 止め忘れサーバ(LANから届く口)の見回り
+check_orphan_listeners
 
 log "[DONE] stall_watchdog scan complete"
 

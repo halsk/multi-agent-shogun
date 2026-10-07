@@ -835,6 +835,112 @@ STATE_DIR="$_ORIG_STATE_DIR14"
 LOG_FILE="$_ORIG_LOG_FILE14"
 rm -rf "$TMPDIR_TEST14"
 
+# ── Section 15: cmd_945事後是正③ — 止め忘れサーバ(orphan listener)検知の統合テスト ──
+# 純関数(olisten_*・detect_orphan_listeners)自体の単体テストは
+# tests/unit/test_orphan_listener_detect.bats が担当。本Sectionは
+# check_orphan_listeners()のdashboard書込・state(重複抑制・再掲・解消)までを
+# 通しで検証する(check_stale_errlogs・check_lord_turn_stallsと同じ分担方針)。
+
+echo ""
+echo "=== Section 15: 止め忘れサーバ検知(check_orphan_listeners) ==="
+echo ""
+
+TMPDIR_TEST15=$(mktemp -d)
+_ORIG_SCRIPT_DIR15="$SCRIPT_DIR"
+_ORIG_STATE_DIR15="$STATE_DIR"
+_ORIG_LOG_FILE15="$LOG_FILE"
+SCRIPT_DIR="$TMPDIR_TEST15"
+STATE_DIR="$TMPDIR_TEST15/state"
+LOG_FILE="$TMPDIR_TEST15/stall_watchdog.log"
+mkdir -p "$STATE_DIR"
+DRY_RUN=false
+
+cat > "$SCRIPT_DIR/dashboard.md" <<'EOF'
+# ダッシュボード(テスト用複製)
+
+## 🚨 要対応 - 殿のご判断をお待ちしております (Action Required)
+- (既存の項目)
+
+## ❓ 伺い事項 (Questions for Lord)
+なし (None)
+EOF
+
+ORPHAN_LISTENER_ROOTS="/private/tmp/claude-501/"
+ORPHAN_LISTENER_REGISTRY=""
+
+# 15用の固定fixture: ashigaru3実例相当(node・*:8131・scratchpad由来)
+_olisten_lsof_listen() { printf 'p49296\ncnode\nn*:8131\n'; }
+_olisten_cwd() { echo "/private/tmp/claude-501/-Users-hal-tools-multi-agent-shogun/scratchpad/scen"; }
+_olisten_args() { echo "node server.js"; }
+_olisten_etime() { echo "00:24"; }
+_olisten_lstart() { echo "Tue Oct  7 13:00:00 2026"; }
+
+# 15a: 初回検知 → dashboardへ1件挿入され、stateへnotified_statusが記録される
+check_orphan_listeners
+count_15a=$(grep -c 'orphan-listener' "$SCRIPT_DIR/dashboard.md")
+assert_eq "15a: 初回検知でdashboardへ1件挿入" "1" "$count_15a"
+
+_hash15=$(_olisten_cksum_short "/private/tmp/claude-501/-Users-hal-tools-multi-agent-shogun/scratchpad/scen:8131")
+notified_15a=$(state_get "listener__${_hash15}" "notified_status" "")
+assert_eq "15a2: notified_statusにPID:lstartが記録される" "49296:Tue Oct  7 13:00:00 2026" "$notified_15a"
+
+# 15b(★最重要・⑥dedup): 同じPID・lstartの二度目は再度dashboardへ出さない
+check_orphan_listeners
+count_15b=$(grep -c 'orphan-listener' "$SCRIPT_DIR/dashboard.md")
+assert_eq "15b: 同一PID・lstartの再検知は重複通知しない(dedup)" "$count_15a" "$count_15b"
+
+# 15c(★最重要・⑥6h後再掲): last_redisplay_atを7時間前に戻すと状態不変でも再掲示される
+old_redisplay_ts=$(date -v-7H '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date -d '-7 hours' '+%Y-%m-%dT%H:%M:%S%z')
+state_set "listener__${_hash15}" "last_redisplay_at" "$old_redisplay_ts"
+check_orphan_listeners
+count_15c=$(grep -c 'orphan-listener' "$SCRIPT_DIR/dashboard.md")
+assert_eq "15c: 6h超過後は状態不変でも再掲示される" "2" "$count_15c"
+
+# 15d(★最重要・⑦解消): プロセスが消えた(lsofの出力に現れなくなった) → stateが空に戻る
+_olisten_lsof_listen() { return 0; }
+check_orphan_listeners
+if [[ -f "$STATE_DIR/listener__${_hash15}.yaml" ]]; then
+    assert_eq "15d: 消えたlistenerのstateが削除される(空に戻る)" "deleted" "STILL EXISTS"
+else
+    assert_eq "15d: 消えたlistenerのstateが削除される(空に戻る)" "deleted" "deleted"
+fi
+
+# 15e: --dry-run相当(DRY_RUN=true)ではdashboardへ書き込まず、ログのみに留める
+DRY_RUN=true
+_olisten_lsof_listen() { printf 'p1111\ncpython3\nn*:9999\n'; }
+_olisten_cwd() { echo "/private/tmp/claude-501/dryrun-check"; }
+_olisten_args() { echo "python3 server.py"; }
+_olisten_etime() { echo "00:01"; }
+_olisten_lstart() { echo "Tue Oct  7 14:00:00 2026"; }
+count_before_15e=$(grep -c 'orphan-listener' "$SCRIPT_DIR/dashboard.md")
+check_orphan_listeners
+count_after_15e=$(grep -c 'orphan-listener' "$SCRIPT_DIR/dashboard.md")
+assert_eq "15e: --dry-run相当(DRY_RUN=true)ではdashboardへ書き込まない" "$count_before_15e" "$count_after_15e"
+if grep -q '\[DRY-RUN\] would notify dashboard.*orphan-listener' "$LOG_FILE"; then
+    assert_eq "15e2: DRY_RUN時はログにのみ記録する" "found" "found"
+else
+    assert_eq "15e2: DRY_RUN時はログにのみ記録する" "found" "not found"
+fi
+DRY_RUN=false
+
+# 15f: killもsend_ntfyの実発火も一切行っていないこと(コード上の相乗り確認)
+if grep -qE '^\s*(kill|killall|pkill)\b' "$SCRIPT_DIR/scripts/stall_watchdog.sh" 2>/dev/null; then
+    assert_eq "15f: orphan listener周りにkill系呼出が無い(D006)" "no_kill" "kill系呼出あり(違反)"
+else
+    assert_eq "15f: orphan listener周りにkill系呼出が無い(D006)" "no_kill" "no_kill"
+fi
+if grep -A2 'send_ntfy_orphan_listener()' "$_ORIG_SCRIPT_DIR15/scripts/stall_watchdog.sh" | grep -qE '^\s*bash .*ntfy\.sh'; then
+    assert_eq "15f2: send_ntfy_orphan_listenerの本体はコメントアウトされたまま(既定で鳴らさない)" "commented_out" "ACTIVE(違反)"
+else
+    assert_eq "15f2: send_ntfy_orphan_listenerの本体はコメントアウトされたまま(既定で鳴らさない)" "commented_out" "commented_out"
+fi
+
+unset -f _olisten_lsof_listen _olisten_cwd _olisten_args _olisten_etime _olisten_lstart
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR15"
+STATE_DIR="$_ORIG_STATE_DIR15"
+LOG_FILE="$_ORIG_LOG_FILE15"
+rm -rf "$TMPDIR_TEST15"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""
