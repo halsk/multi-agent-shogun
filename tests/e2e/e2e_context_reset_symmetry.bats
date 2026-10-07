@@ -49,6 +49,8 @@ setup_file() {
     chmod +x "$E2E_QUEUE/scripts/"*.sh
     cp "$PROJECT_ROOT/lib/cli_adapter.sh" "$E2E_QUEUE/lib/" 2>/dev/null || true
     cp "$PROJECT_ROOT/lib/agent_status.sh" "$E2E_QUEUE/lib/" 2>/dev/null || true
+    # inbox_watcher.sh が無条件に source する(cmd_942派生)。欠けると watcher が起動直後に死ぬ
+    cp "$PROJECT_ROOT/lib/yaml_scalar.sh" "$E2E_QUEUE/lib/"
     cp "$PROJECT_ROOT/config/settings.yaml" "$E2E_QUEUE/config/" 2>/dev/null || true
 
     if [ -d "$PROJECT_ROOT/.venv" ]; then
