@@ -368,3 +368,41 @@ setup() {
   grep -q "orphan_listener_detect.sh" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
   grep -qE "check_orphan_listeners|detect_orphan_listeners" "${PROJECT_ROOT}/scripts/stall_watchdog.sh"
 }
+
+# ── T-OL-023: cmd_945事後是正B4 — 根の列がmulti-agent-shogunのworktree
+# 置き場所(/Users/hal/tools/multi-agent-shogun-wt-*・足軽の作業dir)を覆うこと。
+# ★軍師QC2実測(queue/reports/gunshi_report_cmd945_orphan_listener_impl_qc2.yaml
+# issue B4): B1の是正でdir境界判定になったため、/Users/hal/tools/
+# multi-agent-shogun/の根は兄弟dir(-wt-*)に当たらない
+# (cwd=/Users/hal/tools/multi-agent-shogun-wt-xで検知0件)。
+# /tmp/claude-と同じく、意図して途中で切る前方一致の根を一行足す。
+
+@test "T-OL-023: the real ORPHAN_LISTENER_ROOTS in stall_watchdog.sh detects a listener whose cwd is under a multi-agent-shogun-wt-* ashigaru worktree" {
+  source "$LIB_FILE"
+
+  # ★本番のORPHAN_LISTENER_ROOTS代入をstall_watchdog.shから直に切り出して使う
+  # (スクリプト全体をsourceすると見回り本体が走ってしまうため、grepで安全に
+  # 代入文だけを取り出すT-OL-014と同じ作法)。これにより、根の列へ一行足す
+  # 前は実際に検知0件(RED)となり、足した後にのみ緑になる——手書きの根の列を
+  # テスト内に複製するとテストが本番の値から乖離し続ける(今回のB4がまさに
+  # それだった)ため、ここだけは本番の値そのものを読む。
+  eval "$(sed -n '/^ORPHAN_LISTENER_ROOTS=/,/"$/p' "${PROJECT_ROOT}/scripts/stall_watchdog.sh")"
+  [[ -n "$ORPHAN_LISTENER_ROOTS" ]]
+
+  _olisten_lsof_listen() { printf 'p8131\ncnode\nn*:8131\n'; }
+  _olisten_cwd() { echo "/Users/hal/tools/multi-agent-shogun-wt-ashigaru1-x"; }
+  _olisten_args() { echo "node server.js"; }
+  _olisten_etime() { echo "00:03"; }
+  _olisten_lstart() { echo "Tue Oct  7 14:30:00 2026"; }
+
+  run detect_orphan_listeners "$ORPHAN_LISTENER_ROOTS" "" "$(date '+%s')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"8131|8131|exposed_all|node|/Users/hal/tools/multi-agent-shogun-wt-ashigaru1-x|"* ]]
+}
+
+@test "T-OL-024: ORPHAN_LISTENER_ROOTS does not blanket the whole /Users/hal/tools/ tree (false-positive guard)" {
+  eval "$(sed -n '/^ORPHAN_LISTENER_ROOTS=/,/"$/p' "${PROJECT_ROOT}/scripts/stall_watchdog.sh")"
+  [[ "$ORPHAN_LISTENER_ROOTS" != *$'\n/Users/hal/tools/\n'* ]]
+  [[ "$ORPHAN_LISTENER_ROOTS" != *$'\n/Users/hal/tools/'$'\n'* ]]
+  ! grep -qx "/Users/hal/tools/" <<< "$ORPHAN_LISTENER_ROOTS"
+}

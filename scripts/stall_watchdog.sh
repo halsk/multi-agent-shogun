@@ -279,6 +279,7 @@ LORD_TURN_STALL_THRESHOLD_DAYS=2
 # には置かない——settings.yamlはgit管理外の一点物で2026-09-13に消えた前例がある)。
 ORPHAN_LISTENER_ROOTS="/Users/hal/workspace/
 /Users/hal/tools/multi-agent-shogun/
+/Users/hal/tools/multi-agent-shogun-wt-
 /private/tmp/claude-501/
 /tmp/claude-"
 
