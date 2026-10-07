@@ -1035,6 +1035,13 @@ After Gunshi's QC report arrives, Karo may run fast mechanical checks before mar
     (Iron Law 7)。投稿する場合は必ず①事前に殿/家老の確認を取り、
     ②冒頭に `[AI]` を付すこと。本節はあくまで手順の明記であり、
     無断で投稿してよいという意味ではない。
+    ★ただし halsk/multi-agent-shogun・halsk/life-sim は、殿ご裁定
+    (2026-10-07・cmd_942)によりIron Law 7の①事前確認が免除されている
+    (CLAUDE.md「殿の代理での外部書き込み」節参照)。この2 repo に限り
+    ①は不要だが、②`[AI]`の印は引き続き必須である。★これは直上の
+    CodeRabbit対象外の取り決め(halsk/*はCR不要)とは★別の規則であり、
+    混同するな——CR対象外は「レビュー要否」、Iron Law 7免除は
+    「外部書込前の承認要否」を定めるものである。
   - ★`@coderabbitai review`・`@coderabbitai rate limit` を**投じるのは
     `cr_retrigger`(review-next の判断に従う自動化)だけ**である
     (cmd_934【一】)。家老は足軽へこれらの投稿を task YAML の手順として
