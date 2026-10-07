@@ -100,6 +100,12 @@ gh pr create --draft --repo <owner>/<repo> --title "..." --body "..."
 ```
 
 - halsk/multi-agent-shogun は Issue First 免除・CodeRabbit 不要(それ以外の repo は project 方針に従う)
+- ★halsk/multi-agent-shogun・halsk/life-sim は、Iron Law 7(外部書込前の事前確認)の
+  ①足軽→家老→将軍への事前確認も免除される(殿ご裁定 2026-10-07・cmd_942。
+  詳細=CLAUDE.md「殿の代理での外部書き込み」節)。★これは直上の Issue First/
+  CodeRabbit 免除とは★別の規則であり混同するな——あちらは「レビュー要否」、
+  こちらは「外部書込前の承認要否」である。★免除は事前確認のみ——②冒頭 `[AI]`
+  の印(Hook 12)は引き続き必須。
 - `--repo` を必ず明示する(フォーク元への誤 PR 防止。省略すると upstream に誤って PR が飛ぶ実例あり)
 - ★CodeRabbit 導入 repo(halsk/* 以外)は **必ず `--draft` で開く**。中央設定
   (`geolonia/coderabbit`)は `auto_review.drafts: false` であり、draft 中は

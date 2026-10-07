@@ -181,6 +181,16 @@ draft 中は CodeRabbit がレビューしない。CodeRabbit の Adaptive Fair 
 
 詳細手順(Claude Code)は `.claude/skills/inbox/SKILL.md` の Step 7 を正とする。
 
+## Iron Law 7 事前確認の免除対象(殿ご裁定 2026-10-07・cmd_942)
+
+`halsk/multi-agent-shogun`・`halsk/life-sim` は殿お一人の所有 repo であり、この2 repo への
+PR・コメント投稿に限り、Iron Law 7(殿の代理で外部へ書き込む際の事前確認)の①足軽→家老→
+将軍への事前確認が免除される(詳細=CLAUDE.md「殿の代理での外部書き込み」節)。
+★免除は事前確認のみ——②冒頭 `[AI]` の印(Hook 12)は引き続き必須である。
+★これは上記「Pull Request Policy」節の CodeRabbit 対象外の取り決め(halsk/* は CR 不要)
+とは★別の規則であり、混同するな。CR対象外は「レビュー要否」、本節は「外部書込前の
+承認要否」を定めるものである。
+
 ## Language
 
 Check `config/settings.yaml` → `language`:
