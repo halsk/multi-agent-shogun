@@ -348,6 +348,15 @@ task_status() {
     task_scalar status "$yaml"
 }
 
+# 監視対象の status か(メインループの唯一のフィルタ。テストも同じ関数を呼ぶ——
+# テスト側に式の写しを置くと、ループ側を変えた時に写しだけが通り続ける)
+# cmd_771 fix_e: assigned状態の滞留はstatusフィルタ外だった穴を埋める
+# 戻り値: 0=監視対象(in_progress/work/assigned) 1=対象外
+is_monitored_status() {
+    local status="$1"
+    [[ "$status" == "in_progress" || "$status" == "work" || "$status" == "assigned" ]]
+}
+
 # state ファイル読み取り (フィールドがなければデフォルト)
 state_get() {
     local agent="$1"
@@ -1854,9 +1863,8 @@ log "[START] stall_watchdog dry_run=$DRY_RUN observation_only=$OBSERVATION_ONLY"
 for agent in "${ALL_AGENTS[@]}"; do
     status=$(task_status "$agent")
 
-    # 対象外 status → state リセットして次へ
-    # cmd_771 fix_e: assigned状態の滞留はstatusフィルタ外だった穴を埋める
-    if [[ "$status" != "in_progress" && "$status" != "work" && "$status" != "assigned" ]]; then
+    # 対象外 status → state リセットして次へ(判定は is_monitored_status() に集約)
+    if ! is_monitored_status "$status"; then
         reset_state "$agent"
         continue
     fi

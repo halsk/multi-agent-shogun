@@ -230,7 +230,9 @@ get_task_status() {
     local task_yaml="${SCRIPT_DIR}/queue/tasks/${AGENT_ID}.yaml"
     [ -f "$task_yaml" ] || { echo "unknown"; return 0; }
     local status
-    status=$(task_scalar status "$task_yaml" 2>/dev/null)
+    # ★stderrは潰さない: helperが未sourceなら「command not found」を見えるまま
+    # 残す(潰すと空→'unknown'→should_nudge_idleが永久に鳴らぬ無音の見逃しになる)
+    status=$(task_scalar status "$task_yaml")
     echo "${status:-unknown}"
 }
 

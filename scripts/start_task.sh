@@ -85,11 +85,12 @@ if [ -z "$tmp_file" ]; then
   exit 1
 fi
 
+# ★書き換える行は _read_status(task_scalar) が読んだ行と同じ錨(字下げ2つ)で
+# 選ぶ。読みと書きの錨が違うと、別の status: 行(入れ子の4字下げ等)を書き換える
+# 読み書きの非対称が生じる(self code-review指摘)
 if ! awk '
-  !done && $0 ~ /^[[:space:]]*status:[[:space:]]*/ {
-    match($0, /^[[:space:]]*/)
-    indent = substr($0, RSTART, RLENGTH)
-    print indent "status: in_progress"
+  !done && $0 ~ /^  status:[[:space:]]*/ {
+    print "  status: in_progress"
     done = 1
     next
   }

@@ -594,10 +594,17 @@ echo ""
 echo "=== Section 10: fix_e assigned状態監視 (コード確認) ==="
 echo ""
 
-if grep -qE '"\$status" != "in_progress" && "\$status" != "work" && "\$status" != "assigned"' "$SCRIPT_DIR/scripts/stall_watchdog.sh"; then
+# フィルタは is_monitored_status() に集約された(cmd_942派生)ため、文字列grepでなく
+# メインループが実際に呼ぶ関数の挙動で確かめる
+if is_monitored_status "assigned"; then
     assert_eq "10a: assigned状態が監視対象statusフィルタに含まれる" "found" "found"
 else
     assert_eq "10a: assigned状態が監視対象statusフィルタに含まれる" "found" "not found"
+fi
+if is_monitored_status "done"; then
+    assert_eq "10b: done状態は監視対象外" "excluded" "included"
+else
+    assert_eq "10b: done状態は監視対象外" "excluded" "excluded"
 fi
 
 # ── Section 11: cmd_771 fix_c — all_ashigaru_idle のfail-safe回帰テスト ──────
@@ -994,15 +1001,11 @@ _ORIG_SCRIPT_DIR16="$SCRIPT_DIR"
 SCRIPT_DIR="$TMPDIR_TEST16"
 mkdir -p "$SCRIPT_DIR/queue/tasks"
 
-# メインループ(source guardの先・関数化されていない)と★同一の監視対象フィルタ式。
-# task_status()の戻り値がこの式でどう扱われるかを、ループ本体を動かさずに測る。
+# メインループが実際に呼ぶ is_monitored_status()(scripts/stall_watchdog.sh)を
+# そのまま使う。test側に式の写しは置かない(写しだとループ側の変更に追随せず
+# 通り続ける——self code-review指摘)。
 _is_monitored_16() {
-    local status="$1"
-    if [[ "$status" != "in_progress" && "$status" != "work" && "$status" != "assigned" ]]; then
-        echo "skipped"
-    else
-        echo "monitored"
-    fi
+    if is_monitored_status "$1"; then echo "monitored"; else echo "skipped"; fi
 }
 
 # 16a(本丸): status: assigned にinline commentが付いた足軽が監視対象から漏れない
@@ -1056,6 +1059,24 @@ assert_eq "16e: 素の status: assigned は従来どおり 'assigned'" "assigned
 
 # 16f(回帰): task YAMLが無い agent は従来どおり 'none'
 assert_eq "16f: task YAML無しは 'none'" "none" "$(task_status ashigaru_nonexistent_16)"
+
+# 16g(self code-reviewで再現した回帰の歯止め): 字下げ2つの status: 行を持たぬ
+# task YAML(4字下げ等)があっても、set -euo pipefail 下の `status=$(task_status …)`
+# が中断せず空文字を返し、その agent は対象外として次へ進める(メインループが
+# 最初の該当agentで死に以後の全agentが無音で見張られなくなる形を防ぐ)
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+    status: assigned
+YAML
+out_16g=$(set -euo pipefail; s=$(task_status ashigaru9); echo "survived:[$s]") || out_16g="ABORTED(rc=$?)"
+assert_eq "16g: 字下げ2つのstatus行が無くても set -e 下で中断せず空文字を返す" "survived:[]" "$out_16g"
+assert_eq "16g2: 空文字は対象外(skipped)として扱われループは次へ進める" "skipped" "$(_is_monitored_16 "")"
+# ループ側の関数が実在し、ループ本体がそれを呼んでいること(写し防止)
+if grep -q '^    if ! is_monitored_status "\$status"; then' "$_ORIG_SCRIPT_DIR16/scripts/stall_watchdog.sh"; then
+    assert_eq "16h: メインループは is_monitored_status() を呼ぶ(test側と同じ関数)" "found" "found"
+else
+    assert_eq "16h: メインループは is_monitored_status() を呼ぶ(test側と同じ関数)" "found" "NOT FOUND"
+fi
 
 unset -f _is_monitored_16
 SCRIPT_DIR="$_ORIG_SCRIPT_DIR16"

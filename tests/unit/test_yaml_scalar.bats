@@ -73,15 +73,29 @@ _scalar() {
   [ "$output" = "issue#12" ]
 }
 
-@test "T-YS-008: 写しが残っていない—5つの呼び出し元が全てlib/yaml_scalar.shをsourceし、独自のstatus抽出パイプラインを持たない" {
+@test "T-YS-008: 写しが残っていない—5つの呼び出し元が全てlib/yaml_scalar.shをsourceし、欲張りsed(s/.*status:)の写しを持たない" {
   for s in scripts/deadman_switch.sh scripts/stall_watchdog.sh scripts/inbox_watcher.sh scripts/console_stall_watchdog.sh scripts/start_task.sh; do
     run grep -c 'lib/yaml_scalar.sh' "$PROJECT_ROOT/$s"
     [ "$output" -ge 1 ]
-    # 旧来の写し: grep で status: を拾って sed '.*status:' で切る形
-    run bash -c "grep -E \"status:.*\\| *sed\" '$PROJECT_ROOT/$s' | grep -v '^ *#'"
+    # 旧来の写しの署名: 欲張りな `s/.*status:` でコメントを切らずに値を抜く形
+    # (status: と sed が同じ行にあるだけでは誤爆するため、バグそのものの形で探す)
+    run bash -c "grep -F 's/.*status:' '$PROJECT_ROOT/$s' | grep -v '^ *#'"
     [ "$status" -ne 0 ]
   done
-  # task_scalar() の定義は lib に1つだけ
-  run bash -c "grep -l '^task_scalar()' '$PROJECT_ROOT'/scripts/*.sh"
-  [ "$status" -ne 0 ]
+  # task_scalar() の定義は lib/yaml_scalar.sh の1つだけ(scripts/・lib/・scripts/lib/ を走査)
+  run bash -c "grep -l '^task_scalar()' '$PROJECT_ROOT'/scripts/*.sh '$PROJECT_ROOT'/scripts/lib/*.sh '$PROJECT_ROOT'/lib/*.sh 2>/dev/null"
+  [ "$output" = "$PROJECT_ROOT/lib/yaml_scalar.sh" ]
+}
+
+@test "T-YS-009: 字下げ2つのkey:行が無い場合は空文字・戻り値0—set -e下の呼び出し元を中断させない(self code-reviewで再現した回帰)" {
+  # 4字下げ(task:ブロック外・別構造)のみ → 一致なし
+  printf 'task:\n    status: assigned\n' > "$F"
+  run bash -c "set -euo pipefail; source '$LIB'; s=\$(task_scalar status '$F'); echo \"survived:[\$s]\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "survived:[]" ]
+  # 鍵そのものが無い
+  printf 'task:\n  task_id: x\n' > "$F"
+  run bash -c "set -euo pipefail; source '$LIB'; s=\$(task_scalar status '$F'); echo \"survived:[\$s]\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "survived:[]" ]
 }

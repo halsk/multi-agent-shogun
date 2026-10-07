@@ -76,6 +76,24 @@ YAML
   [ "$output" -eq 1 ]
 }
 
+# ── T-ST-001c: 読みと書きの錨が同じ—入れ子(4字下げ)のstatus:行が先にあっても
+#   task直下(2字下げ)の行だけを書き換える(self code-review指摘の非対称の歯止め) ──
+@test "T-ST-001c: 入れ子の4字下げstatus:行が先にあっても2字下げのtask直下行だけ書き換える" {
+  cat > "$TMP_DIR/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_001c
+  history:
+    status: done
+  status: assigned
+YAML
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  run grep -c "^  status: in_progress" "$TMP_DIR/tasks/ashigaru9.yaml"
+  [ "$output" -eq 1 ]
+  run grep -c "^    status: done" "$TMP_DIR/tasks/ashigaru9.yaml"
+  [ "$output" -eq 1 ]
+}
+
 # ── T-ST-003b(歯止め): status=done にinline commentが付いていても書き換えない ──
 @test "T-ST-003b: status: doneにinline commentが付いていても書き換えず終了する" {
   cat > "$TMP_DIR/tasks/ashigaru9.yaml" <<'YAML'
