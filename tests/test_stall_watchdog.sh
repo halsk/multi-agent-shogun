@@ -973,6 +973,94 @@ STATE_DIR="$_ORIG_STATE_DIR15"
 LOG_FILE="$_ORIG_LOG_FILE15"
 rm -rf "$TMPDIR_TEST15"
 
+# ── Section 16: task_status — status行のinline commentで★見逃さない(cmd_942派生・本丸) ──
+# 軍師QC(gunshi_report_deadman_trailing_comment_qc.yaml findings_for_karo)が
+# 見つけた、deadman_switch.sh(PR#199)と同型の穴。家老は
+# `status: assigned  # 家老が割当` のようにstatus行へ理由つきコメントを添える
+# 慣例がある。是正前のtask_status()はコメントを切らずに空白だけ潰すため
+# 「assigned#家老が割当」を返し、メインループの監視対象フィルタ
+# (in_progress/work/assigned)に一致せず reset_state → continue で素通りする。
+# ★deadman_switch.shの穴(doneなのに誤って報せる=煩わしいが無害)と向きが逆で、
+# 「本当に詰まった足軽を誰も検知しない(無音の見逃し)」方向に効く。
+# RED対照: 是正前(独自grep/sed抽出)のtask_status()に対して本Sectionを
+# 実行すると 16a/16b/16d が FAIL する(実測済み・報告書に記録)。
+
+echo ""
+echo "=== Section 16: task_status — inline comment付きstatus行を見逃さない(cmd_942派生・見逃し方向) ==="
+echo ""
+
+TMPDIR_TEST16=$(mktemp -d)
+_ORIG_SCRIPT_DIR16="$SCRIPT_DIR"
+SCRIPT_DIR="$TMPDIR_TEST16"
+mkdir -p "$SCRIPT_DIR/queue/tasks"
+
+# メインループ(source guardの先・関数化されていない)と★同一の監視対象フィルタ式。
+# task_status()の戻り値がこの式でどう扱われるかを、ループ本体を動かさずに測る。
+_is_monitored_16() {
+    local status="$1"
+    if [[ "$status" != "in_progress" && "$status" != "work" && "$status" != "assigned" ]]; then
+        echo "skipped"
+    else
+        echo "monitored"
+    fi
+}
+
+# 16a(本丸): status: assigned にinline commentが付いた足軽が監視対象から漏れない
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_assigned_with_comment
+  status: assigned  # 家老が割当(2026-10-07 22:15)
+  assigned_to: ashigaru9
+YAML
+st_16a=$(task_status ashigaru9)
+assert_eq "16a: inline comment付き status: assigned は 'assigned' と読める" "assigned" "$st_16a"
+assert_eq "16a2: その足軽はメインループの監視対象に残る(見逃されない)" "monitored" "$(_is_monitored_16 "$st_16a")"
+
+# 16b: in_progress + コメント(空白1つ・クォート付き)でも監視対象に残る
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_in_progress_with_comment
+  status: "in_progress" # 足軽が着手
+YAML
+st_16b=$(task_status ashigaru9)
+assert_eq "16b: 空白1つ+クォート付き status: in_progress も 'in_progress' と読める" "in_progress" "$st_16b"
+assert_eq "16b2: 監視対象に残る" "monitored" "$(_is_monitored_16 "$st_16b")"
+
+# 16c(歯止め): done + コメント は従来どおり監視対象外(コメント切りが「何でも監視」になっていない)
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_done_with_comment
+  status: done  # 16:58 CI全green・main be2647aへmerge済み(家老)
+YAML
+st_16c=$(task_status ashigaru9)
+assert_eq "16c: inline comment付き status: done は 'done' と読める" "done" "$st_16c"
+assert_eq "16c2: done は従来どおり監視対象外" "skipped" "$(_is_monitored_16 "$st_16c")"
+
+# 16d: コメント自体に「status:」の語がある(旧status: done から戻した等)場合も本物の値
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_comment_mentions_status
+  status: assigned  # 旧status: done から差し戻し(家老)
+YAML
+st_16d=$(task_status ashigaru9)
+assert_eq "16d: コメント内にstatus:の語があっても本物の 'assigned' を読む" "assigned" "$st_16d"
+assert_eq "16d2: 監視対象に残る" "monitored" "$(_is_monitored_16 "$st_16d")"
+
+# 16e(回帰): コメント無しの素の行は従来どおり
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_plain
+  status: assigned
+YAML
+assert_eq "16e: 素の status: assigned は従来どおり 'assigned'" "assigned" "$(task_status ashigaru9)"
+
+# 16f(回帰): task YAMLが無い agent は従来どおり 'none'
+assert_eq "16f: task YAML無しは 'none'" "none" "$(task_status ashigaru_nonexistent_16)"
+
+unset -f _is_monitored_16
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR16"
+rm -rf "$TMPDIR_TEST16"
+
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""

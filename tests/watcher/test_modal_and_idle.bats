@@ -294,3 +294,46 @@ maybe_dismiss_modal
     run bash -c "source '$TEST_HARNESS' && should_nudge_idle idle 1 300 600"
     [ "$status" -eq 1 ]
 }
+
+# --- T-STATUS-001〜003: get_task_status — status行のinline commentを切って読む(cmd_942派生) ---
+# deadman_switch.sh(PR#199)と同型の壊れたstatus抽出の写し。是正前は
+# `status: assigned  # 家老が割当` を「assigned#家老が割当」と返すため、
+# should_nudge_idle のassigned/work/in_progress判定に一致せず idle nudge が
+# 出ない(見逃し方向)。RED対照: 是正前のget_task_status()に対して
+# T-STATUS-001/002 は FAIL する(実測済み・報告書に記録)。
+# ★SCRIPT_DIRをTEST_TMPDIRへ差し替え、本物のqueue/tasksを読まぬよう隔離する。
+
+@test "T-STATUS-001: get_task_status inline comment付き status: assigned -> 'assigned'" {
+    cat > "$TEST_TASKS_DIR/test_agent.yaml" << 'YAML'
+task:
+  task_id: subtask_test_status_comment
+  status: assigned  # 家老が割当(2026-10-07)
+YAML
+    run bash -c "source '$TEST_HARNESS' && SCRIPT_DIR='$TEST_TMPDIR' && get_task_status"
+    [ "$status" -eq 0 ]
+    [ "$output" = "assigned" ]
+}
+
+@test "T-STATUS-002: get_task_status コメント内にstatus:の語・クォート付きでも本物の値" {
+    cat > "$TEST_TASKS_DIR/test_agent.yaml" << 'YAML'
+task:
+  task_id: subtask_test_status_comment2
+  status: "in_progress" # 旧status: assigned から着手
+YAML
+    run bash -c "source '$TEST_HARNESS' && SCRIPT_DIR='$TEST_TMPDIR' && get_task_status"
+    [ "$status" -eq 0 ]
+    [ "$output" = "in_progress" ]
+}
+
+@test "T-STATUS-003: get_task_status 素のstatus行は従来どおり・task YAML無しは 'unknown'" {
+    cat > "$TEST_TASKS_DIR/test_agent.yaml" << 'YAML'
+task:
+  task_id: subtask_test_status_plain
+  status: done
+YAML
+    run bash -c "source '$TEST_HARNESS' && SCRIPT_DIR='$TEST_TMPDIR' && get_task_status"
+    [ "$output" = "done" ]
+    rm -f "$TEST_TASKS_DIR/test_agent.yaml"
+    run bash -c "source '$TEST_HARNESS' && SCRIPT_DIR='$TEST_TMPDIR' && get_task_status"
+    [ "$output" = "unknown" ]
+}

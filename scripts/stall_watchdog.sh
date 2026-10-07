@@ -20,6 +20,11 @@ cd "$SCRIPT_DIR"
 source "$SCRIPT_DIR/lib/agent_status.sh"
 # shellcheck source=../lib/stall_detect.sh
 source "$SCRIPT_DIR/lib/stall_detect.sh"
+# shellcheck source=../lib/yaml_scalar.sh
+# cmd_942派生: task YAMLのstatus抽出をinline commentを切る共通helperへ寄せる
+# (従来の独自grep/sedは「status: assigned  # 家老が割当」を'assigned'と読めず、
+# 本当に詰まった足軽を監視対象から落としていた=無音の見逃し)
+source "$SCRIPT_DIR/lib/yaml_scalar.sh"
 # shellcheck source=../lib/ledger_mismatch_detect.sh
 # cmd_766 第一層: report done なのに台帳 cmd が pending/in_progress のまま
 # 残っている「done未遷移」を検知する(cmd_741 第二層watchdogへ相乗り・新機構は作らない)
@@ -337,7 +342,10 @@ task_status() {
         echo "none"
         return
     fi
-    grep -E '^\s*status:\s*' "$yaml" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' '
+    # inline comment付き(`status: assigned  # 家老が割当`)でも素の値を返す
+    # (lib/yaml_scalar.sh・cmd_942派生。是正前はコメント残骸が付いて
+    # 監視対象フィルタに一致せず見逃していた)
+    task_scalar status "$yaml"
 }
 
 # state ファイル読み取り (フィールドがなければデフォルト)

@@ -280,6 +280,7 @@ mkdir -p "$TMPDIR_TEST12/scripts" "$TMPDIR_TEST12/lib" "$TMPDIR_TEST12/logs" "$T
 cp "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" "$TMPDIR_TEST12/scripts/console_stall_watchdog.sh"
 cp "$SCRIPT_DIR/lib/console_stall_detect.sh" "$TMPDIR_TEST12/lib/console_stall_detect.sh"
 cp "$SCRIPT_DIR/lib/run_log.sh" "$TMPDIR_TEST12/lib/run_log.sh"
+cp "$SCRIPT_DIR/lib/yaml_scalar.sh" "$TMPDIR_TEST12/lib/yaml_scalar.sh"
 
 cat > "$TMPDIR_TEST12/dashboard.md" <<'DASH'
 # dashboard
@@ -369,6 +370,55 @@ else
 fi
 
 rm -rf "$TMPDIR_TEST13"
+
+# ── Section 14: console_task_status_and_reason — status行のinline commentで区分cを見逃さない(cmd_942派生) ──
+# deadman_switch.sh(PR#199)と同型の壊れたstatus抽出の写し。是正前は
+# `status: blocked  # 理由` を「blocked#理由」と読み、blocked判定に一致せず
+# "none|" を返す(=区分c「blocked+理由あり」が殿へ届かない・見逃し方向)。
+# RED対照: 是正前の console_task_status_and_reason() に対して本Sectionを実行
+# すると 14a が FAIL する(実測済み・報告書に記録)。
+echo ""
+echo "=== Section 14: console_task_status_and_reason — inline comment付きstatus行を見逃さない(cmd_942派生) ==="
+
+TMPDIR_TEST14=$(mktemp -d)
+_ORIG_SCRIPT_DIR14="$SCRIPT_DIR"
+SCRIPT_DIR="$TMPDIR_TEST14"
+mkdir -p "$SCRIPT_DIR/queue/tasks"
+
+# 14a(本丸): blocked + inline comment → blocked|理由 が返る
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_console_blocked_comment
+  project: geonicdb-console
+  status: blocked  # 殿のAPIキー発行待ち(家老)
+  blocked_reason: "地図APIキーの許可ドメイン追加待ち"
+YAML
+assert_eq "14a: inline comment付き status: blocked でも blocked|理由 を返す" \
+    "blocked|地図APIキーの許可ドメイン追加待ち" "$(console_task_status_and_reason)"
+
+# 14b(歯止め): assigned + inline comment は blocked でないので none|
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_console_assigned_comment
+  project: geonicdb-console
+  status: assigned  # 家老が割当
+  blocked_reason: "残骸"
+YAML
+assert_eq "14b: inline comment付き status: assigned は blocked 扱いにならない" "none|" "$(console_task_status_and_reason)"
+
+# 14c(回帰): コメント無しの素の blocked は従来どおり
+cat > "$SCRIPT_DIR/queue/tasks/ashigaru9.yaml" <<'YAML'
+task:
+  task_id: subtask_test_console_blocked_plain
+  project: geonicdb-console
+  status: blocked
+  risk_reason: "SpaHashedAssets Lambdaの原因未特定"
+YAML
+assert_eq "14c: 素の status: blocked は従来どおり blocked|理由" \
+    "blocked|SpaHashedAssets Lambdaの原因未特定" "$(console_task_status_and_reason)"
+
+SCRIPT_DIR="$_ORIG_SCRIPT_DIR14"
+rm -rf "$TMPDIR_TEST14"
 
 # ── サマリー ──────────────────────────────────────────────────────────────────
 echo ""

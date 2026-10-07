@@ -25,6 +25,9 @@ cd "$SCRIPT_DIR"
 
 # shellcheck source=../lib/console_stall_detect.sh
 source "$SCRIPT_DIR/lib/console_stall_detect.sh"
+# shellcheck source=../lib/yaml_scalar.sh
+# cmd_942派生: task YAMLのstatus抽出をinline commentを切る共通helperへ寄せる
+source "$SCRIPT_DIR/lib/yaml_scalar.sh"
 
 # ★テストが閾値等を書き換える際、実在の config/settings.yaml を直接
 # sed+mv するのではなく、この環境変数でテスト専用の一時ファイルへ差し替え
@@ -201,7 +204,9 @@ console_task_status_and_reason() {
     for f in "$SCRIPT_DIR"/queue/tasks/ashigaru*.yaml; do
         [[ -f "$f" ]] || continue
         grep -q '^\s*project:\s*geonicdb-console' "$f" 2>/dev/null || continue
-        status=$(grep -E '^\s*status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d ' ')
+        # inline comment付き(`status: blocked  # 理由`)でも素の値を返す
+        # (lib/yaml_scalar.sh・cmd_942派生。是正前は区分cを見逃していた)
+        status=$(task_scalar status "$f")
         if [[ "$status" == "blocked" ]]; then
             reason=$(grep -E '^\s*(blocked_reason|risk_reason):\s*' "$f" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '"')
             echo "blocked|$reason"
