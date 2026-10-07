@@ -19,13 +19,17 @@
 #       "loopback"(127.*・[::1]・localhost)
 #
 #   olisten_origin <pid>
-#     → 出所の絶対パス。cwdが取れてそれが"/"でなければcwdを使う。
-#       そうでなければコマンド行(args)に現れる最初の絶対パストークンを使う。
+#     → "<出所の絶対パス>|<kind>" の形で返す(kind は cwd または args)。
+#       cwdが取れてそれが"/"でなければcwdを使う(kind=cwd)。
+#       そうでなければコマンド行(args)の2番目以降(argv[0]=interpreterの絶対パスは
+#       飛ばす・cmd_945事後是正B2)に現れる最初の絶対パストークンを使う(kind=args)。
 #       いずれも取れなければ空文字を返す(系の道具を誤って拾わない側に倒す)。
 #
 #   olisten_under_roots <path> <roots>
-#     → roots(改行区切りの前方一致パターン)のいずれかにpathが前方一致すれば0、
-#       しなければ1を返す。
+#     → roots(改行区切り)のいずれかにpathが一致すれば0、しなければ1を返す。
+#       根が"/"で終わる場合はdir境界判定(pathが根そのもの、または根/配下)、
+#       根が"/"で終わらない場合は従来どおりの文字列前方一致とする
+#       (/tmp/claude-のように意図して途中で切った根を壊さないため・cmd_945事後是正B1)。
 #
 #   olisten_is_excluded <origin> <port> <now_epoch> <registry>
 #     → registry(各行 "出所dirの前方一致|port(または*)|期限YYYY-MM-DD|裁可の出所")の
@@ -41,7 +45,24 @@
 #       空出力のままとし、ERRORと区別する。
 #
 # 試験で差し替える包み(既定は実コマンド。試験ではこれらを再定義して差し替える):
-_olisten_lsof_listen() { lsof -nP -iTCP -sTCP:LISTEN -F pcn 2>/dev/null; }
+#
+# cmd_945事後是正B3: 実物のlsofは該当(待ち受け)が一つも無い時exit 1を返す([実測])。
+# これを「lsof実行自体の失敗」と誤認しない三通りに分ける:
+#   ① lsofコマンド自体が無い            → 失敗(非ゼロ・呼出元がERROR扱い)
+#   ② exit 1 かつ 出力なし(=該当なし)  → 成功扱い(exit 0・空出力)
+#   ③ それ以外の非ゼロ(権限不足等)     → 失敗(非ゼロ・呼出元がERROR扱い)
+_olisten_lsof_listen() {
+  command -v lsof >/dev/null 2>&1 || return 127
+  local out rc
+  out=$(lsof -nP -iTCP -sTCP:LISTEN -F pcn 2>/dev/null)
+  rc=$?
+  if [[ "$rc" -eq 1 && -z "$out" ]]; then
+    return 0
+  fi
+  [[ "$rc" -ne 0 ]] && return "$rc"
+  [[ -n "$out" ]] && printf '%s\n' "$out"
+  return 0
+}
 _olisten_cwd()        { lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; }
 _olisten_args()       { ps -o args= -p "$1" 2>/dev/null; }
 _olisten_etime()      { ps -o etime= -p "$1" 2>/dev/null | tr -d ' '; }
@@ -67,15 +88,23 @@ olisten_origin() {
   local cwd
   cwd=$(_olisten_cwd "$pid")
   if [[ -n "$cwd" && "$cwd" != "/" ]]; then
-    echo "$cwd"
+    printf '%s|cwd' "$cwd"
     return
   fi
 
-  local args tok
+  # cmd_945事後是正B2: argv[0](interpreterの絶対パス。例 /opt/homebrew/.../node)は
+  # 出所として採らない。npx・vite・PM2等はprocess.execPath(絶対パス)で子のnodeを
+  # 起こすため、argv[0]を採ると本当のscriptのパスを見逃す。2番目以降の絶対パス
+  # トークンを見る。
+  local args
   args=$(_olisten_args "$pid")
-  for tok in $args; do
+  local -a toks
+  read -ra toks <<< "$args"
+  local i tok
+  for (( i=1; i<${#toks[@]}; i++ )); do
+    tok="${toks[$i]}"
     if [[ "$tok" == /* ]]; then
-      echo "$tok"
+      printf '%s|args' "$tok"
       return
     fi
   done
@@ -83,12 +112,24 @@ olisten_origin() {
   echo ""
 }
 
+# dir境界での一致判定: pathがprefixそのもの、またはprefix/配下であればtrue。
+# prefixの末尾に/があっても無くても同じ判定になるよう正規化する。
+_olisten_dir_boundary_match() {
+  local path="$1" prefix="$2"
+  local prefix_noslash="${prefix%/}"
+  [[ "$path" == "$prefix_noslash" || "$path" == "$prefix_noslash"/* ]]
+}
+
 olisten_under_roots() {
   local path="$1" roots="$2"
   local root
   while IFS= read -r root; do
     [[ -z "$root" ]] && continue
-    [[ "$path" == "$root"* ]] && return 0
+    if [[ "$root" == */ ]]; then
+      _olisten_dir_boundary_match "$path" "$root" && return 0
+    else
+      [[ "$path" == "$root"* ]] && return 0
+    fi
   done <<< "$roots"
   return 1
 }
@@ -107,7 +148,9 @@ olisten_is_excluded() {
   local prefix reg_port until_date _rest
   while IFS='|' read -r prefix reg_port until_date _rest; do
     [[ -z "$prefix" ]] && continue
-    [[ "$origin" == "$prefix"* ]] || continue
+    # cmd_945事後是正N1: ここもB1と同じdir境界判定へ揃える。素の前方一致だと
+    # 例えばyt2obsidianの登録がyt2obsidian-other(別物・同port)も誤って除外する。
+    _olisten_dir_boundary_match "$origin" "$prefix" || continue
     [[ "$reg_port" == "*" || "$reg_port" == "$port" ]] || continue
 
     local until_epoch
@@ -136,15 +179,19 @@ detect_orphan_listeners() {
   sort -u |
   while IFS='|' read -r pid cmd name; do
     [[ -z "$pid" ]] && continue
-    local host port scope origin
+    local host port scope origin_raw origin origin_kind
     host="${name%:*}"
     port="${name##*:}"
     scope=$(olisten_classify_host "$host")
     [[ "$scope" == "loopback" ]] && continue
-    origin=$(olisten_origin "$pid")
-    [[ -z "$origin" ]] && continue
+    origin_raw=$(olisten_origin "$pid")
+    [[ -z "$origin_raw" ]] && continue
+    origin="${origin_raw%|*}"
+    origin_kind="${origin_raw##*|}"
     olisten_under_roots "$origin" "$roots" || continue
     olisten_is_excluded "$origin" "$port" "$now" "$registry" && continue
-    echo "$pid|$port|$scope|$cmd|$origin|$(_olisten_etime "$pid")|$(_olisten_lstart "$pid")"
+    # cmd_945事後是正N2: 出所の種(cwd/args)を末尾に足す。呼出元(dashboard文面)が
+    # 書き分けられるようにする(既存フィールドの並びは変えない)。
+    echo "$pid|$port|$scope|$cmd|$origin|$(_olisten_etime "$pid")|$(_olisten_lstart "$pid")|$origin_kind"
   done
 }

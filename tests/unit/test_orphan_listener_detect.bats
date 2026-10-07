@@ -1,4 +1,5 @@
 #!/usr/bin/env bats
+bats_require_minimum_version 1.5.0
 #
 # tests/unit/test_orphan_listener_detect.bats
 #
@@ -72,12 +73,19 @@ setup() {
 }
 
 # ── T-OL-005: detect_orphan_listeners ② 127.0.0.1/[::1] → 拾わぬ ──
+#
+# ★cmd_945事後是正B1是正の一環: cwdは根の「配下」(根そのものと等しい、ではなく)
+# に正しく置く。旧実装は根が末尾/付きの文字列前方一致で、cwdが根そのもの
+# (末尾/無し)だと根の不一致で落ちてしまい、本試験が守りたいloopback判定を
+# 一切検めていなかった(軍師QC実測・M2=loopback skip行を消す変異でも16件
+# 全て緑のまま)。cwdを根の配下の子pathへ置き直すことで、M2変異を当てれば
+# 本試験が確実に落ちるようにする。
 
 @test "T-OL-005: does not detect a loopback-only listener even when origin matches roots" {
   source "$LIB_FILE"
 
   _olisten_lsof_listen() { printf 'p999\ncpython3\nn127.0.0.1:8787\n'; }
-  _olisten_cwd() { echo "/Users/hal/tools/multi-agent-shogun"; }
+  _olisten_cwd() { echo "/Users/hal/tools/multi-agent-shogun/subproj"; }
   _olisten_args() { echo "python3 server.py"; }
   _olisten_etime() { echo "20-00:00"; }
   _olisten_lstart() { echo "Mon Sep 17 09:00:00 2026"; }
@@ -234,6 +242,124 @@ setup() {
   [ "$status" -eq 0 ]
   run olisten_is_excluded "/Users/hal/workspace/yt2obsidian" "9999" "$(date '+%s')" "$registry"
   [ "$status" -eq 1 ]
+}
+
+# ── T-OL-015: cmd_945事後是正B1(a) — cwdが根そのもの(末尾/無し)でも拾う ──
+# 軍師QC実測: lsofのcwdは末尾/を付けない。根がちょうどそのdir直下で動いている
+# サーバを見逃さないことを確かめる。
+
+@test "T-OL-015: detects a listener whose cwd equals the root directory itself (no trailing path)" {
+  source "$LIB_FILE"
+
+  _olisten_lsof_listen() { printf 'p777\ncpython3\nn*:8787\n'; }
+  _olisten_cwd() { echo "/Users/hal/tools/multi-agent-shogun"; }
+  _olisten_args() { echo "python3 server.py"; }
+  _olisten_etime() { echo "00:05"; }
+  _olisten_lstart() { echo "Tue Oct  7 14:00:00 2026"; }
+
+  roots="/Users/hal/tools/multi-agent-shogun/"
+
+  run detect_orphan_listeners "$roots" "" "$(date '+%s')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"777|8787|exposed_all|python3|/Users/hal/tools/multi-agent-shogun|"* ]]
+}
+
+# ── T-OL-016: cmd_945事後是正B1 回帰防止 — 根の末尾/で揃えた境界判定が
+# 字面が似た兄弟dirまで誤って拾わないこと(exposed_all境界の負例) ──
+
+@test "T-OL-016: a sibling directory whose name merely starts with the root string is not matched" {
+  source "$LIB_FILE"
+  roots="/Users/hal/tools/multi-agent-shogun/"
+  run olisten_under_roots "/Users/hal/tools/multi-agent-shogun-evil-twin" "$roots"
+  [ "$status" -eq 1 ]
+}
+
+# ── T-OL-017: cmd_945事後是正B1 回帰防止 — /tmp/claude-のように意図して
+# 途中で切った根(末尾/無し)は従来どおり素の前方一致のままであること ──
+
+@test "T-OL-017: a deliberately truncated root (no trailing slash) still matches by plain prefix" {
+  source "$LIB_FILE"
+  roots="/tmp/claude-"
+  run olisten_under_roots "/tmp/claude-501/x/scratchpad" "$roots"
+  [ "$status" -eq 0 ]
+}
+
+# ── T-OL-018: cmd_945事後是正B2 — interpreterをargv[0]の絶対パスで起こした時、
+# argv[0]でなく2番目以降のscript絶対パスを出所として拾う(npx/vite/PM2等の実際の形) ──
+
+@test "T-OL-018: picks the script's absolute path, not argv[0]'s interpreter path, as origin" {
+  source "$LIB_FILE"
+
+  _olisten_lsof_listen() { printf 'p8131\ncnode\nn*:8131\n'; }
+  _olisten_cwd() { echo "/"; }
+  _olisten_args() { echo "/opt/homebrew/Cellar/node/26.0.0/bin/node /private/tmp/claude-501/x/scen/server.mjs"; }
+  _olisten_etime() { echo "00:10"; }
+  _olisten_lstart() { echo "Tue Oct  7 13:50:00 2026"; }
+
+  roots="/private/tmp/claude-501/"
+
+  run detect_orphan_listeners "$roots" "" "$(date '+%s')"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"8131|8131|exposed_all|node|/private/tmp/claude-501/x/scen/server.mjs|"* ]]
+}
+
+# ── T-OL-019: cmd_945事後是正N1 — 除外登録のdir境界判定が、字面が似た
+# 兄弟dir(例 yt2obsidian-other・同port)まで誤って除外しないこと ──
+
+@test "T-OL-019: an exclusion registered for one dir does not also suppress a sibling dir with a similar name" {
+  source "$LIB_FILE"
+  future_date=$(date -v+90d '+%Y-%m-%d' 2>/dev/null || date -d '+90 days' '+%Y-%m-%d')
+  registry="/Users/hal/workspace/yt2obsidian|3500|${future_date}|テスト"
+  run olisten_is_excluded "/Users/hal/workspace/yt2obsidian-other" "3500" "$(date '+%s')" "$registry"
+  [ "$status" -eq 1 ]
+}
+
+# ── T-OL-020: cmd_945事後是正B3 — 実物のlsofがexit 1(該当なし)を返す場面でも
+# ERRORにならず、正常に空出力として扱われること(_olisten_lsof_listen本体の検証・
+# モックで上書きせず実装そのものを呼ぶ) ──
+
+@test "T-OL-020: a genuine lsof exit-1-with-no-output (no listeners) is treated as success, not ERROR" {
+  source "$LIB_FILE"
+  lsof() { return 1; }
+  run _olisten_lsof_listen
+  [ "$status" -eq 0 ]
+  [[ -z "$output" ]]
+}
+
+# ── T-OL-021: cmd_945事後是正B3 回帰防止 — lsofコマンド自体が存在しない場合は
+# 引き続き失敗(非ゼロ)として扱われること ──
+
+@test "T-OL-021: a missing lsof command still surfaces as a failure (non-zero exit)" {
+  source "$LIB_FILE"
+  command() {
+    if [[ "$1" == "-v" && "$2" == "lsof" ]]; then
+      return 1
+    fi
+    builtin command "$@"
+  }
+  run -127 _olisten_lsof_listen
+}
+
+# ── T-OL-022: cmd_945事後是正N2 — detect_orphan_listenersの出力が出所の種
+# (cwd/args)を末尾フィールドへ書き分けること ──
+
+@test "T-OL-022: detect_orphan_listeners appends the origin kind (cwd vs args) as the trailing field" {
+  source "$LIB_FILE"
+
+  _olisten_lsof_listen() { printf 'p1\ncnode\nn*:9001\n'; }
+  _olisten_cwd() { echo "/Users/hal/workspace/proj"; }
+  _olisten_args() { echo "node server.js"; }
+  _olisten_etime() { echo "00:01"; }
+  _olisten_lstart() { echo "Tue Oct  7 13:00:00 2026"; }
+  roots="/Users/hal/workspace/"
+  run detect_orphan_listeners "$roots" "" "$(date '+%s')"
+  [[ "$output" == *"|cwd" ]]
+
+  _olisten_lsof_listen() { printf 'p2\ncnode\nn*:9002\n'; }
+  _olisten_cwd() { echo "/"; }
+  _olisten_args() { echo "/opt/homebrew/bin/node /Users/hal/workspace/proj/server.js"; }
+  run detect_orphan_listeners "$roots" "" "$(date '+%s')"
+  [[ "$output" == *"|args" ]]
 }
 
 # ── T-OL-014: stall_watchdog.sh がこのlibを実際に相乗りさせている(相乗り確認) ──

@@ -1712,7 +1712,7 @@ _olisten_cksum_short() {
 }
 
 notify_dashboard_orphan_listener() {
-    local pid="$1" port="$2" scope="$3" origin="$4" etime="$5"
+    local pid="$1" port="$2" scope="$3" origin="$4" etime="$5" origin_kind="${6:-cwd}"
     local ts
     ts=$(now_iso)
     local scope_label
@@ -1727,7 +1727,11 @@ notify_dashboard_orphan_listener() {
     fi
     local elapsed_label
     elapsed_label=$(_olisten_format_etime "$etime")
-    local entry="- 🚨 [orphan-listener] PID ${pid} が :${port}(${scope_label})で待ち受け、同じLANから読める。出所: ${origin_short}(cwd)・起動から ${elapsed_label}。止めるのは殿の手(watchdogは止めぬ) @ $ts"
+    # cmd_945事後是正N2: 出所がcwdから取れたかコマンド行(args)から当て推量したかを
+    # 書き分ける(いずれもcwdと書いていた旧文面の誤りを正す)。
+    local origin_kind_label="cwd"
+    [[ "$origin_kind" == "args" ]] && origin_kind_label="コマンド行"
+    local entry="- 🚨 [orphan-listener] PID ${pid} が :${port}(${scope_label})で待ち受け、同じLANから読める。出所: ${origin_short}(${origin_kind_label})・起動から ${elapsed_label}。止めるのは殿の手(watchdogは止めぬ) @ $ts"
     local dashboard="$SCRIPT_DIR/dashboard.md"
     local _dash_marker
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
@@ -1770,13 +1774,19 @@ check_orphan_listeners() {
 
     local seen_keys_file
     seen_keys_file=$(mktemp)
+    # cmd_945事後是正B3: lsofが失敗した回(ERROR行)は、見えたlistenerの一覧が
+    # 不完全である疑いがある。この回でreset_gone_orphan_listenersを呼ぶと、
+    # seenが空(または不完全)のまま現存するstateを誤って全消ししてしまう
+    # (通知済みの記録が消え、次回同じ件をdashboardへ出し直す)。
+    local had_error=false
 
-    local pid port scope cmd origin etime lstart
-    while IFS='|' read -r pid port scope cmd origin etime lstart; do
+    local pid port scope cmd origin etime lstart origin_kind
+    while IFS='|' read -r pid port scope cmd origin etime lstart origin_kind; do
         [[ -z "$pid" ]] && continue
 
         if [[ "$pid" == "ERROR" ]]; then
             log "[ORPHAN-LISTENER-ERROR] $port"
+            had_error=true
             continue
         fi
 
@@ -1793,7 +1803,7 @@ check_orphan_listeners() {
             if $DRY_RUN; then
                 log "[DRY-RUN] would notify dashboard for $state_key (orphan-listener)"
             else
-                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime"
+                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime" "$origin_kind"
             fi
             state_set "$state_key" "notified_status" "$problem_id"
             state_set "$state_key" "first_bad_at" "$(now_iso)"
@@ -1803,12 +1813,16 @@ check_orphan_listeners() {
             if $DRY_RUN; then
                 log "[DRY-RUN] would redisplay dashboard for $state_key (orphan-listener)"
             else
-                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime"
+                notify_dashboard_orphan_listener "$pid" "$port" "$scope" "$origin" "$etime" "$origin_kind"
             fi
         fi
     done < <(detect_orphan_listeners "$ORPHAN_LISTENER_ROOTS" "$ORPHAN_LISTENER_REGISTRY" "$now")
 
-    reset_gone_orphan_listeners "$seen_keys_file"
+    if $had_error; then
+        log "[ORPHAN-LISTENER-ERROR] lsof失敗の回のためreset_gone_orphan_listenersをスキップ(state誤消去防止)"
+    else
+        reset_gone_orphan_listeners "$seen_keys_file"
+    fi
     rm -f "$seen_keys_file"
 }
 

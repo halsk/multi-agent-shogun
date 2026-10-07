@@ -905,6 +905,24 @@ else
     assert_eq "15d: 消えたlistenerのstateが削除される(空に戻る)" "deleted" "deleted"
 fi
 
+# 15d2(★cmd_945事後是正B3): lsofが失敗した回(ERROR)は一覧が不完全な疑いがあり、
+# reset_gone_orphan_listenersを呼んではならない(呼べば通知済みのstateを
+# 誤って全消しし、次回同じ件をdashboardへ出し直すことになる)。
+# いったん通知済みstateを作り直し、ERROR回を経ても残ることを確かめる。
+state_set "listener__${_hash15}" "notified_status" "49296:Tue Oct  7 13:00:00 2026"
+_olisten_lsof_listen() { return 127; }
+check_orphan_listeners
+if [[ -f "$STATE_DIR/listener__${_hash15}.yaml" ]]; then
+    assert_eq "15d2: lsof失敗(ERROR)の回はstateを誤って全消ししない" "kept" "kept"
+else
+    assert_eq "15d2: lsof失敗(ERROR)の回はstateを誤って全消ししない" "kept" "DELETED(違反)"
+fi
+if grep -q 'ORPHAN-LISTENER-ERROR' "$LOG_FILE"; then
+    assert_eq "15d2b: ERROR回がログに残る(失敗が失敗として現れる)" "found" "found"
+else
+    assert_eq "15d2b: ERROR回がログに残る(失敗が失敗として現れる)" "found" "not found"
+fi
+
 # 15e: --dry-run相当(DRY_RUN=true)ではdashboardへ書き込まず、ログのみに留める
 DRY_RUN=true
 _olisten_lsof_listen() { printf 'p1111\ncpython3\nn*:9999\n'; }
@@ -922,6 +940,20 @@ else
     assert_eq "15e2: DRY_RUN時はログにのみ記録する" "found" "not found"
 fi
 DRY_RUN=false
+
+# 15g(★cmd_945事後是正N2): 出所がcwdでなくコマンド行(args)から当て推量された
+# 場合、dashboard文面は「(cwd)」でなく「(コマンド行)」と書き分けること。
+_olisten_lsof_listen() { printf 'p2222\ncnode\nn*:8888\n'; }
+_olisten_cwd() { echo "/"; }
+_olisten_args() { echo "/opt/homebrew/bin/node /private/tmp/claude-501/x/server.js"; }
+_olisten_etime() { echo "00:02"; }
+_olisten_lstart() { echo "Tue Oct  7 15:00:00 2026"; }
+check_orphan_listeners
+if grep -qE 'PID 2222.*コマンド行' "$SCRIPT_DIR/dashboard.md"; then
+    assert_eq "15g: argsから当て推量した出所はdashboardで「(コマンド行)」と書かれる" "found" "found"
+else
+    assert_eq "15g: argsから当て推量した出所はdashboardで「(コマンド行)」と書かれる" "found" "not found"
+fi
 
 # 15f: killもsend_ntfyの実発火も一切行っていないこと(コード上の相乗り確認)
 if grep -qE '^\s*(kill|killall|pkill)\b' "$SCRIPT_DIR/scripts/stall_watchdog.sh" 2>/dev/null; then
