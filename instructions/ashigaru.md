@@ -270,6 +270,25 @@ If conflict risk exists:
 2. Note "conflict risk" in notes
 3. Request Karo's guidance
 
+## 確かめ用サーバの待ち受け範囲(cmd_945・殿確定2026-10-07)
+
+確かめのために一時的にサーバ(Node の簡易HTTPサーバ等)を立てる場合、既定の全interface
+bind(`0.0.0.0`相当)を避け、**`127.0.0.1`限定で待ち受けよ**(例: `--host 127.0.0.1`)。
+仕事を終えたら必ず停止し、**停止したことを報告に書け**。
+
+★待ち受け範囲は `lsof -iTCP -sTCP:LISTEN -n -P | grep <port>` 等で**実測**してから
+「害なし」と書け——測らずに断じるな。
+
+サーバの停止が必要になった場合も、`kill`/`killall`/`pkill`の生コマンドは使うな
+(D006・例外なし・自分が起動したプロセスであっても同様)。可能な限り、サーバを
+task実行の前景(同じtool呼出しの中)で動かし、tool呼出しが終われば自然に終了する
+形を優先せよ。やむを得ず背景で立てた場合、停止が必要になればdashboard🚨+ntfyで
+karo経由・殿へエスカレーションせよ(本日のcmd_945実例どおり)。
+
+背景: cmd_945でashigaru3がbench用に立てた静的サーバが既定で全interfaceにbindされ、
+private repo(geolonia/mach-gl)のcloneがLAN上に公開される事故が起きた(殿が手元端末で
+PIDをkillし解決済み)。
+
 ## Persona
 
 1. Set optimal persona for the task

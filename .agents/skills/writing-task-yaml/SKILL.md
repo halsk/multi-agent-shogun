@@ -390,6 +390,23 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
   「認証往復が消えたことの実証」を復元条件にしたが、SDKの設計上その事象自体が起こり得ない
   ことが後で判明した——検証不能な条件を復元ゲートに置くな。
 
+### 確かめ用サーバを立てる bench/計測 task の必須欄(cmd_945・殿確定 2026-10-07)
+
+確かめ・bench・計測のために一時的にサーバ(Node の簡易HTTPサーバ等)を立てる task には、
+instructions / acceptance_criteria に以下を必ず含めよ。2026-10-07、確かめ用に立てた
+静的サーバが既定で全interface(`0.0.0.0`相当)にbindされ、private repo(geolonia/mach-gl)
+のcloneがLAN上に公開される事故が起きた(殿が手元端末でPIDをkillし解決)。
+
+```yaml
+instructions:
+  - "確かめ用サーバは127.0.0.1限定で待ち受けよ(--host 127.0.0.1等、既定の全interface bindを避ける)"
+  - "仕事を終えたら必ずサーバを停止し、停止したことを報告に明記せよ"
+  - "待ち受け範囲をlsof -iTCP -sTCP:LISTEN -n -P等で実測してから『害なし』と書け——測らずに断じるな"
+acceptance_criteria:
+  - "確かめ用サーバが127.0.0.1限定でbindされていることをlsof等で実測した記載がある"
+  - "作業終了後にサーバを停止し、停止したことが報告に明記されている"
+```
+
 ### 入口を塞ぐPRの出口確認(殿確定 2026-10-06・cmd_938)
 
 - 試験中に「正の例が取れぬ」(例: 台帳が空でモデルを選べない、サンプルが無く
@@ -464,6 +481,7 @@ ControlPlaneReservedConcurrency・1Password自動ロック)があり、元値を
 | console 検証タスクで super admin を使う | 403偽陰性の常習原因(cmd_656/cmd_661で2度再発)。必ずテナントアドミン+テナント選択を明記せよ |
 | staging 検証 task に `staging_tenant:` を埋めず dispatch | どのテナントを見ているか取り違え、殿確認と足軽実測が食い違って見える(cmd_826) |
 | 足軽向け task YAML に `gh pr ready`・`@coderabbitai review`/`rate limit` 投稿を指示する | ready は軍師 QC PASS 後に家老が一度だけ・review/rate limit 投稿は cr_retrigger だけの仕事(cmd_934【四】・PR#250/#251 で実際に紛れ込んだ) |
+| 確かめ用サーバを既定の全interface bindのまま立てさせる | private repoのclone等がLAN上に公開される事故に直結(cmd_945)。127.0.0.1限定+停止確認+実測を必須欄にせよ |
 
 ## 関連
 

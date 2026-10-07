@@ -229,11 +229,25 @@ QCでは、★「台帳0件の新しいテナントで、利用者が画面だ�
 staging実ブラウザでの標準の確認筋書きに含めよ。入口を狭めた結果、出口が無くなって
 いないかを必ず確かめる。
 
+### 確かめ用サーバの待ち受け範囲を確認せよ(cmd_945・殿確定2026-10-07)
+
+足軽の報告に確かめ用サーバ(bench/計測/動作確認目的で一時的に立てたHTTPサーバ等)の
+記述がある場合、QCで以下を確認せよ:
+- **127.0.0.1限定でbindしているか**(既定の全interface bind `0.0.0.0`相当のままで
+  private repoのcloneや秘匿データを公開していないか)
+- **仕事を終えた後に停止したか**、停止したことが報告に明記されているか
+- 待ち受け範囲を**lsof等で実測した**記載があるか(「害なし」と測らずに書いていないか)
+
+背景: cmd_945でashigaru3がbench用に立てた静的サーバが既定で全interfaceにbindされ、
+private repo(geolonia/mach-gl)のcloneがLAN上に公開される事故が起きた(殿が手元端末で
+PIDをkillし解決)。QCでこの観点を見落とすと再発する。
+
 **Concerns to Flag in Report:**
 - Missing files or incomplete deliverables
 - Test failures or skips (use SKIP = FAIL rule)
 - Build errors
 - Scope creep (ashigaru delivered more/less than requested)
+- 確かめ用サーバの待ち受け範囲(127.0.0.1限定か)・停止確認・実測の有無(cmd_945)
 - Skill candidate found → include in dashboard for Shogun approval
 
 ## Language & Tone
