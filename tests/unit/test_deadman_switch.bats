@@ -552,6 +552,95 @@ YAML
 }
 
 # ══════════════════════════════════════════════════════════════════════════
+# cmd_942派生(2026-10-07): status:行のインラインコメントで誤検知する穴
+# 家老はstatus:をdoneへ書き戻す時、慣例として
+#   status: done  # 2026-10-07 16:58 CI全green・main be2647aへmerge済み(家老)
+# のようにinline commentで根拠を添える。是正前の抽出
+#   sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' '
+# は「#」以降を切り捨てず、$statusが
+#   done#2026-10-0716:58CI全green・mainbe2647aへmerge済み(家老)
+# となり[ "$status" = "done" ]に一致せず、手が空いただけの足軽へ20分おきに
+# 🚨を出し続けた(実例: ashigaru6へ3回以上)。blockedも同じ抽出を通るため
+# 同じ穴がある。番号はT-DM-027〜035が既にcmd_914 T2で使われているため
+# 036/037を振る(task YAMLの「T-DM-027(仮称)」は仮の番号)。
+# ══════════════════════════════════════════════════════════════════════════
+
+# ── T-DM-036【RED→GREEN】status:doneにinline commentが付いていても、
+#   idleがどれだけ長くてもstalledと報せない。是正前はKARO_CALLS_LOGに
+#   ashigaru1の🚨が積まれた ──
+@test "T-DM-036: status:done行にinline commentが付いていてもstalledと報せない—是正前は誤検知した" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  task_id: subtask_test_done_trailing_comment
+  status: done  # 2026-10-07 16:58 CI全green・main be2647aへmerge済み(家老)
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+
+  # 夜間(idle=17h超)でも通知なし
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-08 23:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+
+  # 昼間に切り替わってもなお通知なし(idle=32h超)
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+  run grep -c "stalled=0" "$DEADMAN_DASHBOARD"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-037【RED→GREEN】status:blockedにinline commentが付いていても
+#   同様に素通りする(殿裁可待ちは正しい停止)。併せて、空白1つだけの
+#   「done #…」・クォート付き「"done" # …」の形もdoneと読めることを
+#   確かめる(書き方の揺れで判定が変わらぬこと) ──
+@test "T-DM-037: status:blocked行のinline comment・空白1つ/クォート付きの揺れでも誤検知しない—是正前は誤検知した" {
+  cat > "$TMP_DIR/tasks/ashigaru1.yaml" <<'YAML'
+task:
+  task_id: subtask_test_blocked_trailing_comment
+  status: blocked  # 殿裁可待ち
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru1.yaml"
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  task_id: subtask_test_done_single_space_comment
+  status: done #merge済み
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+  cat > "$TMP_DIR/tasks/ashigaru3.yaml" <<'YAML'
+task:
+  task_id: subtask_test_done_quoted_comment
+  status: "done"  # PR#199 merge済み
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru3.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$KARO_CALLS_LOG" ]
+  run grep -c "stalled=0" "$DEADMAN_DASHBOARD"
+  [ "$output" -ge 1 ]
+}
+
+# ── T-DM-038【歯止め・RED→GREEN】inline commentを切っても、done/blocked
+#   以外(assigned等)は従来どおり検知される(コメント切りが「何でも素通り」に
+#   なっていないこと)。併せて家老への文言のstatus=欄がコメントの残骸
+#   (assigned#2026-10-0720:32家老が割当)でなく素のassignedになることを確かめる
+#   (是正前は検知自体はしたが文言に残骸が混じった) ──
+@test "T-DM-038: inline comment付きでもstatus:assignedは従来どおり検知され、文言のstatus=欄は素の値になる" {
+  cat > "$TMP_DIR/tasks/ashigaru2.yaml" <<'YAML'
+task:
+  task_id: subtask_test_assigned_trailing_comment
+  status: assigned  # 2026-10-07 20:32 家老が割当
+YAML
+  touch -t 202609080600.00 "$TMP_DIR/tasks/ashigaru2.yaml"
+
+  DEADMAN_NOW_EPOCH="$(epoch_of "2026-09-09 14:00:00")" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$KARO_CALLS_LOG" ]
+  run grep -c "ashigaru2(status=assigned・idle=" "$KARO_CALLS_LOG"
+  [ "$output" -ge 1 ]
+}
+
+# ══════════════════════════════════════════════════════════════════════════
 # cmd_914【一】T2: REPORTED_NOT_CLOSED判定(軍師設計§3.2・§4の条件1〜6)
 # ══════════════════════════════════════════════════════════════════════════
 

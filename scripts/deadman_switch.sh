@@ -349,7 +349,15 @@ for f in "$TASKS_DIR"/*.yaml; do
   # what_to_doのblock文字列中の「status: …」という言及(家老の説明文に
   # よく出る)が本物のstatus:行より前に現れると、そちらを誤って読んでいた
   # (write_back_status()と同じ壊れ方が判定の入口にもあった)。
-  status=$(grep -E '^  status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' ')
+  # ★cmd_942派生(2026-10-07): 家老は `status: done  # 16:58 CI全green・main
+  # be2647aへmerge済み(家老)` のようにinline commentで根拠を添える慣例がある。
+  # 従来はコメントを切り捨てずに `tr -d ' '` していたため $status が
+  # 「done#16:58CI全green…」となり done/blocked に一致せず、手が空いただけの
+  # 足軽へ20分おきに🚨を出し続けた。YAMLの慣例どおり「空白+#」以降を
+  # コメントとして切り捨てる(空白を潰す前に切る——潰した後では「done#…」の
+  # 境界が消えて判別できない)。空白を伴わぬ「#」はYAML上もコメントでは
+  # ないため切らない(クォート内に#を含む値を壊さぬため)。
+  status=$(grep -E '^  status:\s*' "$f" | head -1 | sed 's/.*status:[[:space:]]*//' | sed 's/[[:space:]]#.*$//' | tr -d '"' | tr -d "'" | tr -d ' ')
   [ "$status" = "blocked" ] && continue   # 殿/外部の手番待ちは正しい停止・対象外
   # cmd_914【一】T2(軍師設計§3.2): status=doneは手が空いただけで止まってはいない
   # (次割当待ち)。blockedと同じくstalledとして報せない。
@@ -370,7 +378,9 @@ for f in "$TASKS_DIR"/*.yaml; do
     read -r r_verdict r_rest <<< "$reconcile_out"
     if [ "$reconcile_rc" -eq 0 ] && [ "$r_verdict" = "CLOSE" ] && [ -n "$r_rest" ]; then
       new_status="$r_rest"
-      task_id=$(grep -E '^  task_id:\s*' "$f" | head -1 | sed 's/.*task_id:[[:space:]]*//' | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
+      # status:と同根の抽出(cmd_942派生): task_id:にinline commentが付いた場合も
+      # 通知文言にコメントの残骸が混じらぬよう、同じ規則で「空白+#」以降を切る。
+      task_id=$(grep -E '^  task_id:\s*' "$f" | head -1 | sed 's/.*task_id:[[:space:]]*//' | sed 's/[[:space:]]#.*$//' | tr -d '"' | tr -d "'" | sed 's/[[:space:]]*$//')
       if write_back_status "$f" "$new_status" "$m"; then
         if [ "$new_status" = "blocked" ]; then
           # ★条件6(軍師設計§4): blockedは「閉じた」と表現しない
