@@ -212,13 +212,27 @@ should_nudge_idle() {
     return 0
 }
 
+# task_scalar() — task YAML の task: 直下 scalar を inline comment を切って読む
+# 共通helper(cmd_942派生・lib/yaml_scalar.sh)。
+# ★SCRIPT_DIR でなく本スクリプト自身の実在位置から引く: テストハーネス
+# (tests/unit/test_busy_confirmed.bats 等)は SCRIPT_DIR を隔離一時dirへ
+# 差し替えた上で本物の inbox_watcher.sh を source するため、SCRIPT_DIR 経由
+# では lib が見つからない。
+# shellcheck source=../lib/yaml_scalar.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/yaml_scalar.sh"
+
 # get_task_status — reads status field from queue/tasks/${AGENT_ID}.yaml.
 # Returns the status string, or "unknown" on error.
+# inline comment付き(`status: assigned  # 家老が割当`)でも素の値を返す
+# (是正前はコメント残骸が付いて should_nudge_idle の判定に一致せず、
+# idle nudge が出ない見逃し方向の穴だった)。
 get_task_status() {
     local task_yaml="${SCRIPT_DIR}/queue/tasks/${AGENT_ID}.yaml"
     [ -f "$task_yaml" ] || { echo "unknown"; return 0; }
     local status
-    status=$(grep -m1 '^\s*status:' "$task_yaml" 2>/dev/null | sed "s/.*status:[[:space:]]*//" | tr -d "'\"[:space:]")
+    # ★stderrは潰さない: helperが未sourceなら「command not found」を見えるまま
+    # 残す(潰すと空→'unknown'→should_nudge_idleが永久に鳴らぬ無音の見逃しになる)
+    status=$(task_scalar status "$task_yaml")
     echo "${status:-unknown}"
 }
 

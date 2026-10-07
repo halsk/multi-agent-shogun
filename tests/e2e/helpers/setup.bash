@@ -31,11 +31,15 @@ setup_e2e_session() {
     chmod +x "$E2E_QUEUE/scripts/inbox_write.sh"
     chmod +x "$E2E_QUEUE/scripts/inbox_watcher.sh"
 
-    # Copy lib/ for cli_adapter.sh and agent_status.sh (needed by inbox_watcher)
+    # Copy lib/ for cli_adapter.sh, agent_status.sh and yaml_scalar.sh (needed by inbox_watcher)
+    # ★yaml_scalar.sh は inbox_watcher.sh がトップレベルで無条件に source する
+    # (cmd_942派生)。欠けると watcher が起動直後に死に、E2E-010 系が TIMEOUT する
+    # (PR#200 の CI 初回で実際に起きた)。ここは意図して `|| true` を付けない。
     if [ -d "$PROJECT_ROOT/lib" ]; then
         mkdir -p "$E2E_QUEUE/lib"
         cp "$PROJECT_ROOT/lib/cli_adapter.sh" "$E2E_QUEUE/lib/" 2>/dev/null || true
         cp "$PROJECT_ROOT/lib/agent_status.sh" "$E2E_QUEUE/lib/" 2>/dev/null || true
+        cp "$PROJECT_ROOT/lib/yaml_scalar.sh" "$E2E_QUEUE/lib/"
     fi
 
     # Copy config/ for cli_adapter settings resolution

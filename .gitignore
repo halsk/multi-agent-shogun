@@ -95,6 +95,7 @@
 !lib/lord_turn_stall_detect.sh
 !lib/orphan_listener_detect.sh
 !lib/model_drift_check.sh
+!lib/yaml_scalar.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md

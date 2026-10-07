@@ -15,6 +15,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/task_yaml_lock.sh
 source "$SCRIPT_DIR/scripts/lib/task_yaml_lock.sh"
+# shellcheck source=../lib/yaml_scalar.sh
+# cmd_942派生: status抽出をinline commentを切る共通helperへ寄せる
+source "$SCRIPT_DIR/lib/yaml_scalar.sh"
 
 AGENT_ID="${START_TASK_AGENT_ID:-}"
 if [ -z "$AGENT_ID" ]; then
@@ -34,9 +37,11 @@ if [ ! -f "$TASK_FILE" ]; then
   exit 1
 fi
 
+# inline comment付き(`status: assigned  # 家老が割当`)でも素の値を返す
+# (lib/yaml_scalar.sh・cmd_942派生。是正前はコメント残骸が付いて assigned と
+# 一致せず SKIP し、着手したのに台帳が assigned のまま残った)
 _read_status() {
-  grep -E '^[[:space:]]*status:[[:space:]]*' "$TASK_FILE" | head -1 \
-    | sed 's/.*status:[[:space:]]*//' | tr -d '"' | tr -d "'" | tr -d ' '
+  task_scalar status "$TASK_FILE"
 }
 
 _mtime() {
@@ -80,11 +85,12 @@ if [ -z "$tmp_file" ]; then
   exit 1
 fi
 
+# ★書き換える行は _read_status(task_scalar) が読んだ行と同じ錨(字下げ2つ)で
+# 選ぶ。読みと書きの錨が違うと、別の status: 行(入れ子の4字下げ等)を書き換える
+# 読み書きの非対称が生じる(self code-review指摘)
 if ! awk '
-  !done && $0 ~ /^[[:space:]]*status:[[:space:]]*/ {
-    match($0, /^[[:space:]]*/)
-    indent = substr($0, RSTART, RLENGTH)
-    print indent "status: in_progress"
+  !done && $0 ~ /^  status:[[:space:]]*/ {
+    print "  status: in_progress"
     done = 1
     next
   }
