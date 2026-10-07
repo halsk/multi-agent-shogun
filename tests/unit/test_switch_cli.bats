@@ -4,6 +4,36 @@
 
 # --- セットアップ ---
 
+# 前提確認(cmd_945 軍師QC N4 の調査結果に基づく)
+#
+# 本ファイルの update_settings 系は "${PROJECT_ROOT}/.venv/bin/python3" を直接呼び、
+# display_name 系は lib/cli_adapter.sh 経由で同じ python3 に依存する。ところが
+# cli_adapter.sh の _cli_adapter_read_yaml / get_cli_type は python3 の起動失敗を
+# 2>/dev/null で黙らせて既定値(claude / sonnet / thinking未設定)へ倒すため、
+# .venv が無い worktree で走らせると「Spark」「Sonnet」を期待する2件(ashigaru3・
+# ashigaru2)だけが assertion 不一致で落ち、ashigaru1 を見る件は偶然 "Sonnet+T" と
+# 一致して通る——前提の欠落が「テスト順序依存の flake」に見える形で現れていた
+# (2026-10-07・ashigaru1 が .venv 無しの worktree で full-suite を、.venv ありの
+# 本体 repo で単体を走らせて比べ、「full-suite でのみ2件落ちる」と誤診した実例)。
+#
+# 前提が欠けている場合は skip ではなく失敗にする(CLAUDE.md「SKIP = FAIL」)。
+# 原因を名指しした1件の失敗として現れるようにし、誤った assertion 失敗から
+# 存在しない順序依存を探す無駄を防ぐ。CI は unit tests 前に .venv を作る
+# (.github/workflows/test.yml「Setup Python venv with PyYAML」)ため影響しない。
+setup_file() {
+    local project_root venv_python
+    project_root="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+    venv_python="${project_root}/.venv/bin/python3"
+    if [ ! -x "$venv_python" ]; then
+        echo "PRECONDITION FAILED: ${venv_python} が存在しない。worktree なら 'python3 -m venv .venv && .venv/bin/pip install pyyaml' で用意せよ(test_switch_cli.bats は .venv の無い場所では走らせられない)" >&2
+        return 1
+    fi
+    if ! "$venv_python" -c "import yaml" 2>/dev/null; then
+        echo "PRECONDITION FAILED: ${venv_python} に PyYAML が無い。'.venv/bin/pip install pyyaml' で用意せよ" >&2
+        return 1
+    fi
+}
+
 setup() {
     TEST_TMP="$(mktemp -d)"
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
