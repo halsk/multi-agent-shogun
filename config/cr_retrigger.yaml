@@ -72,21 +72,30 @@ cr_decide:
   tool_repo: geolonia/skills
   # cmd_913 X2是正: origin/mainへのreset --hardによる自動追随を禁止し、
   # 検めた特定commitへ固定する(pin)。
-  # cmd_934 T1: 当家の足軽・家老の hook が使うものと同じ決める部品に揃える
-  # ため、この値を当機の同期(~/.claude/plugins/synced/…/geolonia-skills/
-  # skills/pr-review-flow/、lastUpdated 2026-10-01T15:33 JST)と
-  # 中身が一致する commit へ更新した——
-  # geolonia/skills a2113cd35c85f1668cae8d4b02ab54ec584a29fe
-  # (merged 2026-10-01T15:33:07+09:00、PR#141)。
-  # 検めた方法: state/cr_decide_clones/geolonia__skills を fetch し、
-  # 候補commitをgit worktreeへ取り出して、同期dirのskills/pr-review-flow/と
-  # `diff -r` した。SKILL.mdのYAML frontmatterの引用符・インデント差
-  # (マーケットプレース配布時の整形差、中身の変更ではない)のみで、
-  # scripts/・policy.jsonはbyte単位で一致(sha256照合済み)。
+  # cmd_928続き(2026-10-11): geonicdb-docs#226で spawnSync gh ENOBUFS が
+  # 48時間で200件連続発生(logs/cr_retrigger.jsonl実測)。旧pin(a2113cd・
+  # PR#141)はcmd_928【一】で殿ご裁可済みのmaxBuffer是正(PR#143)より1つ
+  # 前で止まっており、是正が9日間未反映だったことが根本原因と判明。
+  # 軍師が両pinで実際にnode review-next.mjsを実行して再現確認済み
+  # (旧pin=ENOBUFSで落ちる/新pin=正しくcheckを返す。
+  # queue/reports/gunshi_report_cmd928_pin_bump_review.yaml)。
+  # 検めた方法: a2113cd..e1e2117間の7commit・13file(skills/pr-review-flow
+  # 配下のみ・policy.json不変)を軍師が全件diff review。環境変数の改名
+  # (#150/#151)は旧名への後方互換あり・当機にその環境変数は無し、
+  # #142の決定ロジック見直しは当家が呼ぶ引数・出力JSON形を変えず、
+  # #147/#148/#149(個人org/Copilot席/fleet)は当家の用途に無関係で無害と
+  # 確認済み。
+  # geolonia/skills e1e21174ad8e127d803e883b9b7b1ade06f7edfa
+  # (merged 2026-10-02T06:16:09Z、PR#143「raise execFileSync maxBuffer past
+  # Node's 1 MiB default」)。
+  # ★e1e2117より後にもpr-review-flowへ触る9commit(#153/#155/#157/#158/
+  # #175/#184/#185/#186/#187)があるが、#158(高リスクPRの既定変更)・#185
+  # (待ち時間の読み方変更)は挙動に関わるため未検め。最新mainへの追随は
+  # 急がず別途検めてから行う(軍師推奨)。
   # 更新する時は、家老がgeolonia/skillsの差分を検めてから、この1行を
   # 明示的に書き換えること(origin/mainのreset --hard等、自動追随の
   # 仕組みは作らない)。
-  tool_ref: a2113cd35c85f1668cae8d4b02ab54ec584a29fe
+  tool_ref: e1e21174ad8e127d803e883b9b7b1ade06f7edfa
   script_relpath: skills/pr-review-flow/scripts/review-next.mjs
   policy_relpath: skills/pr-review-flow/policy.json
   # 読み取り専用cloneの置き場(allowlistの各repo + tool_repo自身の分)。
