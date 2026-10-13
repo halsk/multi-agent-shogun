@@ -51,10 +51,22 @@
 #   ① lsofコマンド自体が無い            → 失敗(非ゼロ・呼出元がERROR扱い)
 #   ② exit 1 かつ 出力なし(=該当なし)  → 成功扱い(exit 0・空出力)
 #   ③ それ以外の非ゼロ(権限不足等)     → 失敗(非ゼロ・呼出元がERROR扱い)
+#
+# subtask_stall_watchdog_cycle_latency_fix E1(軍師実測・
+# queue/reports/gunshi_report_stall_watchdog_cycle_latency.yaml): launchdの
+# PATH(/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin)に/usr/sbinが無いため
+# command -v lsof が2026-10-07の導入以来一度も成功せず、止め忘れサーバの
+# 見回りが毎周[ORPHAN-LISTENER-ERROR]のまま機能していなかった。PATH上に
+# 見つからない場合はOLISTEN_LSOF_FALLBACK(既定/usr/sbin/lsof)へ在処補完する。
+# D2: lsof呼出にもtimeout 10を付す(詰まりに上限を掛ける・gunshi設計)。
 _olisten_lsof_listen() {
-  command -v lsof >/dev/null 2>&1 || return 127
+  local lsof_bin
+  if ! lsof_bin=$(command -v lsof 2>/dev/null) || [[ -z "$lsof_bin" ]]; then
+    lsof_bin="${OLISTEN_LSOF_FALLBACK:-/usr/sbin/lsof}"
+    [[ -x "$lsof_bin" ]] || return 127
+  fi
   local out rc
-  out=$(lsof -nP -iTCP -sTCP:LISTEN -F pcn 2>/dev/null)
+  out=$(timeout 10 "$lsof_bin" -nP -iTCP -sTCP:LISTEN -F pcn 2>/dev/null)
   rc=$?
   if [[ "$rc" -eq 1 && -z "$out" ]]; then
     return 0

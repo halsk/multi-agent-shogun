@@ -1085,6 +1085,81 @@ rm -rf "$TMPDIR_TEST16"
 # ── サマリー ──────────────────────────────────────────────────────────────────
 
 echo ""
+echo "=== Section 17: subtask_stall_watchdog_cycle_latency_fix D1 — HCピングは見回りループの前で一度だけ呼ばれる(実行) ==="
+echo ""
+
+# 軍師実測(queue/reports/gunshi_report_stall_watchdog_cycle_latency.yaml):
+# 10:39の周は11分詰まり、末尾にあるpingがそのまま引きずられてHealthchecks.io側が
+# DOWNと誤認した。D1是正はpingをflock取得直後(見回りループの前)へ移し、詰まりの
+# 影響を受けないようにする。★実際にstall_watchdog.shをサブプロセスとして実行し、
+# curl(ping)とgh(見回りの一つを模して詰まらせる)をPATH shimで差し替えて測る
+# (関数モックでなく実行ファイルにする理由: 見回り本体はメインスクリプトの地の文に
+# あり、source guardではメインループを一切実行できないため)。
+TMPDIR_TEST17=$(mktemp -d)
+FAKE_BIN17="$TMPDIR_TEST17/bin"
+mkdir -p "$FAKE_BIN17"
+
+cat > "$FAKE_BIN17/curl" <<'EOF'
+#!/usr/bin/env bash
+echo "$(date +%s)" >> "$CURL_CALL_LOG"
+exit 0
+EOF
+chmod +x "$FAKE_BIN17/curl"
+
+# 最初の1回だけ5秒詰まらせ(gh呼出に依存する見回りの一つを意図的に遅延させる)、
+# それ以降は即失敗で返す(既存コードはgh失敗を前提に設計されており安全)。
+cat > "$FAKE_BIN17/gh" <<'EOF'
+#!/usr/bin/env bash
+if [[ ! -e "$GH_SLOW_MARKER" ]]; then
+    touch "$GH_SLOW_MARKER"
+    sleep 5
+fi
+exit 1
+EOF
+chmod +x "$FAKE_BIN17/gh"
+
+export CURL_CALL_LOG="$TMPDIR_TEST17/curl_calls.log"
+: > "$CURL_CALL_LOG"
+export GH_SLOW_MARKER="$TMPDIR_TEST17/gh_slow_marker"
+export HC_PING_URL_STALL_WATCHDOG="http://example.invalid/ping/test17"
+
+# dashboard.mdは実行中に見回りが書き込みうる(worktree内限定・無害)が、
+# 試験後は必ず元に戻す(他の試験・本作業へ影響させない)。
+cp "$SCRIPT_DIR/dashboard.md" "$TMPDIR_TEST17/dashboard.md.orig" 2>/dev/null || true
+
+SCRIPT_START_17=$(date +%s)
+PATH="$FAKE_BIN17:$PATH" bash "$SCRIPT_DIR/scripts/stall_watchdog.sh" >"$TMPDIR_TEST17/run.log" 2>&1
+SCRIPT_END_17=$(date +%s)
+TOTAL_ELAPSED_17=$(( SCRIPT_END_17 - SCRIPT_START_17 ))
+
+if [[ -f "$TMPDIR_TEST17/dashboard.md.orig" ]]; then
+    mv "$TMPDIR_TEST17/dashboard.md.orig" "$SCRIPT_DIR/dashboard.md"
+fi
+
+CURL_CALL_COUNT_17=$(wc -l < "$CURL_CALL_LOG" | tr -d ' ')
+if [[ "$CURL_CALL_COUNT_17" -ge 1 ]]; then
+    PING_TS_17=$(head -1 "$CURL_CALL_LOG")
+    PING_OFFSET_17=$(( PING_TS_17 - SCRIPT_START_17 ))
+else
+    PING_OFFSET_17=-1
+fi
+
+echo "  [debug] total_elapsed=${TOTAL_ELAPSED_17}s ping_offset=${PING_OFFSET_17}s curl_calls=${CURL_CALL_COUNT_17}"
+
+# D1: pingは見回り(ghが5秒詰まる)の完了を待たず、詰まりより先に呼ばれているべき
+if [[ "$PING_OFFSET_17" -ge 0 && "$PING_OFFSET_17" -lt 3 ]]; then
+    assert_eq "17a: pingは見回りループの前に呼ばれる(ghの5秒詰まりより先)" "early" "early"
+else
+    assert_eq "17a: pingは見回りループの前に呼ばれる(ghの5秒詰まりより先)" "early(offset<3s)" "offset=${PING_OFFSET_17}s total=${TOTAL_ELAPSED_17}s"
+fi
+
+# curlは1周につき1回のみ(末尾の重複ping送信が無いこと)
+assert_eq "17b: pingは1周につき1回のみ(末尾の重複送信なし)" "1" "$CURL_CALL_COUNT_17"
+
+rm -rf "$TMPDIR_TEST17"
+unset CURL_CALL_LOG GH_SLOW_MARKER HC_PING_URL_STALL_WATCHDOG
+
+echo ""
 echo "========================================"
 echo " テスト結果サマリー"
 echo "========================================"
