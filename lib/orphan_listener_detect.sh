@@ -60,8 +60,10 @@
 # 見つからない場合はOLISTEN_LSOF_FALLBACK(既定/usr/sbin/lsof)へ在処補完する。
 # D2: lsof呼出にもtimeout 10を付す(詰まりに上限を掛ける・gunshi設計)。
 _olisten_lsof_listen() {
+  # ★code-review指摘: command -v の非ゼロ終了は常に空出力を伴うため
+  # `|| [[ -z "$lsof_bin" ]]` は到達しても真にならない死に枝だった(簡素化)。
   local lsof_bin
-  if ! lsof_bin=$(command -v lsof 2>/dev/null) || [[ -z "$lsof_bin" ]]; then
+  if ! lsof_bin=$(command -v lsof 2>/dev/null); then
     lsof_bin="${OLISTEN_LSOF_FALLBACK:-/usr/sbin/lsof}"
     [[ -x "$lsof_bin" ]] || return 127
   fi
