@@ -575,6 +575,11 @@ _hrd_mock_gh_parse_args() {
 
 @test "T-HREV-037: detect_unreviewed_authored_pr_for_pr paginates reviews past a 50-item first page and recognises a human review on page 2 (FU-1b regression guard)" {
   source "$LIB_FILE"
+  # subtask_stall_watchdog_cycle_latency_fix D2: gh呼出が timeout 30 で包まれる
+  # ようになった。timeoutは外部コマンド(exec)のためサブシェルへforkで引き継がれる
+  # bash関数モックのgh()が直接は見えなくなる。timeout自身もpass-throughでモックし、
+  # 第1引数(秒数)を捨てて残りをそのまま実行することでgh()モックへ届かせる。
+  timeout() { shift; "$@"; }
 
   gh() {
     _hrd_mock_gh_parse_args "$@"
@@ -613,6 +618,9 @@ _hrd_mock_gh_parse_args() {
 @test "T-HREV-038: fetch_pr_review_data stops after HRD_MAX_PAGES extra pages and check_pagination_shortfall still reports the remaining shortfall" {
   source "$LIB_FILE"
   export HRD_MAX_PAGES=2
+  # subtask_stall_watchdog_cycle_latency_fix D2: timeout 30 包みを跨いでも
+  # gh()モックへ届くようpass-throughでモックする(T-HREV-037と同じ理由)。
+  timeout() { shift; "$@"; }
 
   gh() {
     _hrd_mock_gh_parse_args "$@"
@@ -646,6 +654,9 @@ _hrd_mock_gh_parse_args() {
 
 @test "T-HREV-039: detect_review_ball_holders_for_pr paginates reviewThreads and finds a human unresolved thread on page 2" {
   source "$LIB_FILE"
+  # subtask_stall_watchdog_cycle_latency_fix D2: timeout 30 包みを跨いでも
+  # gh()モックへ届くようpass-throughでモックする(T-HREV-037と同じ理由)。
+  timeout() { shift; "$@"; }
 
   gh() {
     _hrd_mock_gh_parse_args "$@"
@@ -679,6 +690,9 @@ _hrd_mock_gh_parse_args() {
 
 @test "T-HREV-040: fetch_pr_review_data makes exactly one gh call when no connection has a next page" {
   source "$LIB_FILE"
+  # subtask_stall_watchdog_cycle_latency_fix D2: timeout 30 包みを跨いでも
+  # gh()モックへ届くようpass-throughでモックする(T-HREV-037と同じ理由)。
+  timeout() { shift; "$@"; }
 
   gh() {
     _hrd_mock_gh_parse_args "$@"
@@ -693,4 +707,90 @@ _hrd_mock_gh_parse_args() {
   [ "$(wc -l < "$BATS_TEST_TMPDIR/gh_calls" | tr -d ' ')" -eq 1 ]
   [ "$(printf '%s' "$output" | jq -c '.data.repository.pullRequest.reviews.nodes | length')" -eq 1 ]
   [ "$(printf '%s' "$output" | jq -r '.data.repository.pullRequest.reviews.nodes[0].author.login')" == "dkastl" ]
+}
+
+# ── D2タイムアウト回帰(subtask_stall_watchdog_cycle_latency_fix・軍師実測
+# queue/reports/gunshi_report_stall_watchdog_cycle_latency.yaml): 3箇所のgh
+# 呼出がtimeout 30で打ち切られること。★ここではgh()をbash関数で差し替えず
+# 実行可能な実ファイルをPATH先頭へ置く——timeoutは外部コマンド(exec)であり、
+# bash関数モックは子プロセスへ継承されず実際には打ち切れない(T-HREV-037等の
+# pass-through stubはその境界を迂回するための試験専用の便法であり、timeout
+# そのものの効き目は検証できない)。実行ファイルでなければ「timeoutが本当に
+# 詰まりを止めるか」を試験できない。
+# ★RED対照はqueue/reports/ashigaru4_report.yamlに実測記録済み: 是正前は
+# いずれも30秒超(ghが固まったまま)かかり、下記の上限チェックで落ちていた。 ──
+
+@test "T-HREV-041: fetch_open_prs is bounded by a 30s gh timeout and does not hang when gh freezes (D2 regression guard)" {
+  source "$LIB_FILE"
+  local fakebin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh" <<'EOF'
+#!/usr/bin/env bash
+sleep 36
+EOF
+  chmod +x "$fakebin/gh"
+  PATH="$fakebin:$PATH"
+
+  local start elapsed
+  start=$SECONDS
+  run fetch_open_prs "geolonia/skills"
+  elapsed=$(( SECONDS - start ))
+  echo "elapsed=${elapsed}s" >&2
+  [ "$elapsed" -lt 33 ]
+}
+
+@test "T-HREV-042: fetch_pr_review_data's initial gh call is bounded by a 30s timeout and does not hang when gh freezes (D2 regression guard)" {
+  source "$LIB_FILE"
+  local fakebin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$fakebin"
+  cat > "$fakebin/gh" <<'EOF'
+#!/usr/bin/env bash
+sleep 36
+EOF
+  chmod +x "$fakebin/gh"
+  PATH="$fakebin:$PATH"
+
+  local start elapsed
+  start=$SECONDS
+  run fetch_pr_review_data "geolonia" "skills" 81
+  elapsed=$(( SECONDS - start ))
+  echo "elapsed=${elapsed}s" >&2
+  [ "$elapsed" -lt 33 ]
+  [ -z "$output" ]
+}
+
+@test "T-HREV-043: _fetch_pr_connection_pages' paginated gh call is bounded by a 30s timeout and does not hang when page 2 freezes (D2 regression guard)" {
+  source "$LIB_FILE"
+  local fakebin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$fakebin"
+  # 1ページ目(cursor無し)は即応答しhasNextPage=trueで2ページ目へ誘導、
+  # 2ページ目(cursor付き)は固まる(本番でPRが多いrepoのgraphqlが詰まる場面の再現)。
+  cat > "$fakebin/gh" <<'EOF'
+#!/usr/bin/env bash
+cursor=""
+prev=""
+for a in "$@"; do
+  if [[ "$prev" == "-f" && "$a" == cursor=* ]]; then
+    cursor="${a#cursor=}"
+  fi
+  prev="$a"
+done
+if [[ -z "$cursor" ]]; then
+  cat <<'JSON'
+{"data":{"repository":{"pullRequest":{"state":"OPEN","author":{"login":"halsk"},"createdAt":"2026-09-07T00:00:00Z","reviewDecision":null,"reviewThreads":{"totalCount":0,"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"reviews":{"totalCount":60,"pageInfo":{"hasNextPage":true,"endCursor":"cursor-50"},"nodes":[]},"commits":{"nodes":[]}}}}}
+JSON
+else
+  sleep 36
+fi
+EOF
+  chmod +x "$fakebin/gh"
+  PATH="$fakebin:$PATH"
+
+  local start elapsed
+  start=$SECONDS
+  run fetch_pr_review_data "geolonia" "skills" 81
+  elapsed=$(( SECONDS - start ))
+  echo "elapsed=${elapsed}s" >&2
+  [ "$elapsed" -lt 33 ]
+  [ "$status" -eq 0 ]
 }

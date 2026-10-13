@@ -1856,6 +1856,18 @@ if ! flock -n 9; then
     exit 0
 fi
 
+# Healthchecks.io ping — flock取得直後・見回りループの前(HC_PING_URL_STALL_WATCHDOG
+# 未設定時は no-op)。
+# subtask_stall_watchdog_cycle_latency_fix D1(軍師実測・queue/reports/
+# gunshi_report_stall_watchdog_cycle_latency.yaml): 従来は周の末尾でpingしており、
+# gh呼出等どこか一つの見回りが詰まればpingもその分だけ遅れた(10:39の周は11分
+# 詰まりHealthchecks側がDOWNと誤認)。pingを見回りの重さから切り離すため、
+# 見回りループの前へ移す(詰まりの検知そのものは周全体が止まればpingが来なく
+# なることで引き続き行える)。
+if [[ -n "${HC_PING_URL_STALL_WATCHDOG:-}" ]] && ! $DRY_RUN; then
+    curl -fsS -m 5 --retry 2 "${HC_PING_URL_STALL_WATCHDOG}" >/dev/null 2>&1 || true
+fi
+
 # ── メインループ ──────────────────────────────────────────────────────────────
 
 log "[START] stall_watchdog dry_run=$DRY_RUN observation_only=$OBSERVATION_ONLY"
@@ -2011,8 +2023,3 @@ log "[DONE] stall_watchdog scan complete"
 
 # cmd_771 ④ 24時間計数報告(自己ゲート・既存5分周期に相乗り・新規launchd不要)
 bash "$SCRIPT_DIR/scripts/stall_watchdog_report.sh" || true
-
-# Healthchecks.io ping — scan tick 完了 (HC_PING_URL_STALL_WATCHDOG 未設定時は no-op)
-if [[ -n "${HC_PING_URL_STALL_WATCHDOG:-}" ]] && ! $DRY_RUN; then
-    curl -fsS -m 5 --retry 2 "${HC_PING_URL_STALL_WATCHDOG}" >/dev/null 2>&1 || true
-fi

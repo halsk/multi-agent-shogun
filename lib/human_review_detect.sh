@@ -154,7 +154,11 @@
 
 fetch_open_prs() {
   local owner_repo="$1"
-  gh pr list --repo "$owner_repo" --state open --json number,url --limit 100 \
+  # subtask_stall_watchdog_cycle_latency_fix D2(軍師実測・queue/reports/
+  # gunshi_report_stall_watchdog_cycle_latency.yaml): gh呼出に上限が無く、
+  # 詰まれば周の全体が引きずられていた(10:39の周は11分詰まった)。
+  # timeout 30で打ち切る(失敗時は既存どおり呼出元が「そのPRは飛ばす」扱い)。
+  timeout 30 gh pr list --repo "$owner_repo" --state open --json number,url --limit 100 \
     --jq '.[] | "\(.number)|\(.url)"' 2>/dev/null
 }
 
@@ -200,7 +204,9 @@ _fetch_pr_connection_pages() {
     pages=$((pages + 1))
     prev_cursor="$cursor"
 
-    page_json=$(gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" -f cursor="$cursor" 2>/dev/null) || break
+    # subtask_stall_watchdog_cycle_latency_fix D2: timeout 30で打ち切る
+    # (失敗時は既存どおりそこまでの結果で打ち止め・break)。
+    page_json=$(timeout 30 gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" -f cursor="$cursor" 2>/dev/null) || break
     [[ -z "$page_json" ]] && break
 
     merged=$(printf '%s' "$json" | jq -c --arg c "$conn" --argjson page "$page_json" '
@@ -231,7 +237,9 @@ fetch_pr_review_data() {
   # 読み方(group_by/max_by・列挙順)は変わらない。
   query="query(\$owner:String!,\$repo:String!,\$pr:Int!){repository(owner:\$owner,name:\$repo){pullRequest(number:\$pr){state author{login} createdAt reviewDecision reviewThreads(first:${HRD_PAGE_SIZE}){totalCount pageInfo{hasNextPage endCursor} nodes{${rt_fields}}} reviews(first:${HRD_PAGE_SIZE}){totalCount pageInfo{hasNextPage endCursor} nodes{${rv_fields}}} commits(last:1){nodes{commit{committedDate}}}}}}"
 
-  json=$(gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null) || return 0
+  # subtask_stall_watchdog_cycle_latency_fix D2: timeout 30で打ち切る
+  # (失敗時は既存どおり「そのPRは飛ばす」=return 0)。
+  json=$(timeout 30 gh api graphql -f query="$query" -f owner="$owner" -f repo="$repo" -F pr="$pr_number" 2>/dev/null) || return 0
   [[ -z "$json" ]] && return 0
 
   json=$(_fetch_pr_connection_pages "$json" reviews "$owner" "$repo" "$pr_number")

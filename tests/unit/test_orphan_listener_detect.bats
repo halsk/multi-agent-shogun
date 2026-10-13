@@ -321,6 +321,13 @@ setup() {
 @test "T-OL-020: a genuine lsof exit-1-with-no-output (no listeners) is treated as success, not ERROR" {
   source "$LIB_FILE"
   lsof() { return 1; }
+  # subtask_stall_watchdog_cycle_latency_fix E1/D2: _olisten_lsof_listenは
+  # timeout 10でlsof呼出を包むようになった。timeoutは外部コマンドであり
+  # execで置き換わるため、現shellの関数テーブル(lsof()のモック)はtimeout
+  # 経由では見えない。timeoutそのものもモックし、第1引数(秒数)を捨てて
+  # 残りをそのまま実行する薄いpass-through関数にする(他の全テストと同じ
+  # 「bash関数のモックはサブシェルへforkで引き継がれる」前提を保つ)。
+  timeout() { shift; "$@"; }
   run _olisten_lsof_listen
   [ "$status" -eq 0 ]
   [[ -z "$output" ]]
@@ -337,7 +344,46 @@ setup() {
     fi
     builtin command "$@"
   }
+  # subtask_stall_watchdog_cycle_latency_fix E1: command -v lsofが失敗しても
+  # OLISTEN_LSOF_FALLBACK(既定/usr/sbin/lsof)へ在処補完するようになった。
+  # 「真に存在しない」場面を保つため、フォールバック先も存在しないパスへ
+  # 明示的に向ける(このMac実機には/usr/sbin/lsofが実在するため、何も
+  # 指定しなければ補完に成功してしまい本testの意図=全滅ケースが壊れる)。
+  export OLISTEN_LSOF_FALLBACK="/nonexistent/path/to/lsof-$$"
   run -127 _olisten_lsof_listen
+}
+
+# ── T-OL-025: subtask_stall_watchdog_cycle_latency_fix E1(軍師実測・
+# queue/reports/gunshi_report_stall_watchdog_cycle_latency.yaml) —
+# launchdのPATH(/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin)に/usr/sbinが
+# 無いため command -v lsof が失敗する場面を再現し、OLISTEN_LSOF_FALLBACKへの
+# 在処補完で成功することを示す(2026-10-07導入以来、本番で毎周
+# [ORPHAN-LISTENER-ERROR]を出し続けていた実バグの再現・是正確認)。
+# ★RED対照はqueue/reports/ashigaru4_report.yamlに実行結果を記録済み:
+# 是正前の_olisten_lsof_listenはcommand -v失敗時に即return 127するのみで
+# フォールバックが無く、本testはstatus=127で落ちていた。 ──
+
+@test "T-OL-025: lsof missing from PATH (launchd-like) falls back to OLISTEN_LSOF_FALLBACK and still succeeds" {
+  source "$LIB_FILE"
+  command() {
+    if [[ "$1" == "-v" && "$2" == "lsof" ]]; then
+      return 1
+    fi
+    builtin command "$@"
+  }
+  # フォールバック先に「本物のlsof実行ファイル」を模した実ファイルを置く
+  # (実環境の/usr/sbin/lsofの有無に依存させず、timeoutの実subprocess境界を
+  # 跨いでも正しく動くことを確かめるため、bash関数でなく実行可能な実ファイルにする)。
+  local fake_lsof="$BATS_TEST_TMPDIR/fake-lsof"
+  cat > "$fake_lsof" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$fake_lsof"
+  export OLISTEN_LSOF_FALLBACK="$fake_lsof"
+  run _olisten_lsof_listen
+  [ "$status" -eq 0 ]
+  [[ -z "$output" ]]
 }
 
 # ── T-OL-022: cmd_945事後是正N2 — detect_orphan_listenersの出力が出所の種
