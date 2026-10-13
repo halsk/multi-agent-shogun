@@ -1849,9 +1849,14 @@ check_orphan_listeners() {
 [[ "${BASH_SOURCE[0]}" != "${0}" ]] && return 0
 
 # ── flock 単一起動 ────────────────────────────────────────────────────────────
-LOCK_FILE="/tmp/stall_watchdog.lock"
+# 試験が本番と同じlockを奪い合って本番の周を飛ばした事故の是正:
+# 環境変数で差し替え可能にする(既定値=本番は不変)。
+LOCK_FILE="${STALL_WATCHDOG_LOCK_FILE:-/tmp/stall_watchdog.lock}"
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
+    # 空振りの見える化: 保持者のpidをlsofで拾えれば併記する
+    lock_holder=$(lsof -t "$LOCK_FILE" 2>/dev/null | head -1 || true)
+    log "[SKIP] lock held (by pid ${lock_holder:-unknown})" >/dev/null 2>&1 || true
     echo "[stall_watchdog] already running (lock held). exiting." >&2
     exit 0
 fi

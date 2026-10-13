@@ -3,6 +3,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# 本番(/tmp/stall_watchdog.lock)と同じlockを試験が握ると本番の周を飛ばす。
+# 必ず一時パスへ向ける(sourceより前・全sectionの実行に効かせる)。
+LOCK_TEST_DIR="$(mktemp -d)"
+export STALL_WATCHDOG_LOCK_FILE="$LOCK_TEST_DIR/stall_watchdog.lock"
+trap 'rm -rf "$LOCK_TEST_DIR"' EXIT
 source "$SCRIPT_DIR/lib/stall_detect.sh"
 # stall_watchdog.sh を source — source ガードにより flock とメインループはスキップされる
 source "$SCRIPT_DIR/scripts/stall_watchdog.sh"
@@ -1158,6 +1163,37 @@ assert_eq "17b: pingは1周につき1回のみ(末尾の重複送信なし)" "1"
 
 rm -rf "$TMPDIR_TEST17"
 unset CURL_CALL_LOG GH_SLOW_MARKER HC_PING_URL_STALL_WATCHDOG
+
+echo ""
+echo "=== Section 18: lock分離 — STALL_WATCHDOG_LOCK_FILEで本番lockと分離される ==="
+echo ""
+
+LOCK18="$LOCK_TEST_DIR/s18.lock"
+rm -f "$LOCK18"
+STALL_WATCHDOG_LOCK_FILE="$LOCK18" bash "$SCRIPT_DIR/scripts/stall_watchdog.sh" --dry-run >/dev/null 2>&1 || true
+if [[ -e "$LOCK18" ]]; then
+    assert_eq "18a: 指定した一時パスにlockファイルが作られる" "exists" "exists"
+else
+    assert_eq "18a: 指定した一時パスにlockファイルが作られる" "exists" "missing"
+fi
+
+# 背後のflockで握った状態では already running で抜けること(排他の実証)
+flock "$LOCK18" sleep 8 &
+HOLDER18=$!
+sleep 1
+OUT18=$(STALL_WATCHDOG_LOCK_FILE="$LOCK18" bash "$SCRIPT_DIR/scripts/stall_watchdog.sh" --dry-run 2>&1 || true)
+kill "$HOLDER18" 2>/dev/null || true
+wait "$HOLDER18" 2>/dev/null || true
+if [[ "$OUT18" == *"already running"* ]]; then
+    assert_eq "18b: 一時lockが握られていれば already running で抜ける" "already running" "already running"
+else
+    assert_eq "18b: 一時lockが握られていれば already running で抜ける" "already running" "$OUT18"
+fi
+if [[ "$OUT18" != *"dry_run=true"* ]]; then
+    assert_eq "18c: lock保持中は見回り本体が走らない" "skipped" "skipped"
+else
+    assert_eq "18c: lock保持中は見回り本体が走らない" "skipped" "ran"
+fi
 
 echo ""
 echo "========================================"
