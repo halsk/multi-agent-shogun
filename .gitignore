@@ -182,6 +182,9 @@
 !scripts/test_cr_retrigger.py
 !scripts/cr-retrigger-launcher.sh
 !scripts/com.swarm.cr-retrigger.plist
+!scripts/snapshot.sh
+!scripts/snapshot_init.sh
+!scripts/com.swarm.ledger-snapshot.plist
 !scripts/README.md
 
 # cmd_914 T1: start_task.sh / finish_task.sh(task YAML statusの始める/終える操作)
