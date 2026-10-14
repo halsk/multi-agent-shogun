@@ -31,7 +31,8 @@ print(os.path.getsize(path))
 PY
     [ "$status" -eq 0 ]
     # 旧方式では (部分書込み含め) 元の内容が失われる
-    ! grep -q "important: ledger" "$TMPD/ledger.yaml"
+    run grep -q "important: ledger" "$TMPD/ledger.yaml"
+    [ "$status" -ne 0 ]
 }
 
 @test "是正後: slim_yaml.save_yaml は dump失敗でも元ファイルが無傷" {
