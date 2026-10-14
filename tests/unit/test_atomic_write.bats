@@ -74,7 +74,7 @@ PY
     chmod 600 "$TMPD/ledger.yaml"
     "$PYTHON_BIN" -I "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$TMPD/ledger.yaml" <<< "new: content"
     [ "$(cat "$TMPD/ledger.yaml")" = "new: content" ]
-    [ "$(stat -f %Lp "$TMPD/ledger.yaml" 2>/dev/null || stat -c %a "$TMPD/ledger.yaml")" = "600" ]
+    [ "$(stat -c %a "$TMPD/ledger.yaml" 2>/dev/null || stat -f %Lp "$TMPD/ledger.yaml")" = "600" ]
 }
 
 @test "slim_yaml.py と cr_retrigger.py に非原子的な open(,'w') が残っていない" {
