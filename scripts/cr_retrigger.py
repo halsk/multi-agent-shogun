@@ -50,6 +50,9 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
+from atomic_write import atomic_write_text  # noqa: E402
+
 # ── §1: allowlist・上流拒否 ──────────────────────────────────────────
 UPSTREAM_DENYLIST_PREFIXES = ("yohey-w/", "digital-go-jp/")
 
@@ -693,8 +696,7 @@ def _save_state(path, state):
         heads_out[key] = hs
     out["heads"] = heads_out
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=2)
+    atomic_write_text(path, lambda f: json.dump(out, f, ensure_ascii=False, indent=2))
 
 
 def _gh_json(args, gh_bin="gh", timeout=30):
@@ -1567,8 +1569,8 @@ def _write_status_summary(status_path, log_path, now, window_hours=24,
         ],
     }
     os.makedirs(os.path.dirname(status_path), exist_ok=True)
-    with open(status_path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(summary, f, allow_unicode=True, sort_keys=False)
+    atomic_write_text(status_path, lambda f: yaml.safe_dump(
+        summary, f, allow_unicode=True, sort_keys=False))
     return summary
 
 

@@ -17,6 +17,9 @@ from pathlib import Path
 
 import yaml
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+from atomic_write import atomic_write_text  # noqa: E402
+
 CANONICAL_TASKS = {f'ashigaru{i}' for i in range(1, 9)} | {'gunshi'}
 CANONICAL_REPORTS = {f'ashigaru{i}_report' for i in range(1, 9)} | {'gunshi_report'}
 IDLE_STUB = {'task': {'status': 'idle'}}
@@ -50,8 +53,8 @@ def load_yaml(filepath):
 def save_yaml(filepath, data):
     """Safely save YAML file."""
     try:
-        with open(filepath, 'w', encoding='utf-8') as f:
-            yaml.dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        atomic_write_text(filepath, lambda f: yaml.dump(
+            data, f, allow_unicode=True, sort_keys=False, default_flow_style=False))
         return True
     except Exception as e:
         print(f"Error writing {filepath}: {e}", file=sys.stderr)
@@ -135,8 +138,8 @@ def write_last_run_metrics(before_sizes, after_sizes, archived_counts):
         'targets': targets,
     }
 
-    with open(metrics_file, 'w', encoding='utf-8') as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    atomic_write_text(metrics_file, lambda f: json.dump(
+        payload, f, ensure_ascii=False, indent=2))
 
 
 def archive_taskspec(filepath, archive_path, data, dry_run=False):
@@ -547,9 +550,9 @@ def slim_canonical_reports(dry_run=False):
                 return -1
         else:
             try:
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    yaml.dump_all(remaining, f, allow_unicode=True, sort_keys=False,
-                                  default_flow_style=False)
+                atomic_write_text(filepath, lambda f: yaml.dump_all(
+                    remaining, f, allow_unicode=True, sort_keys=False,
+                    default_flow_style=False))
             except Exception as e:
                 print(f"Error writing {filepath}: {e}", file=sys.stderr)
                 return -1

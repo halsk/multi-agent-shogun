@@ -80,6 +80,7 @@ seed_yaml() {
     root="$(mktemp -d "/tmp/e2e_slim_retention_XXXXXX")"
     build_tmp_project "$root"
     cp "$PROJECT_ROOT/scripts/slim_yaml.py" "$root/scripts/"
+    mkdir -p "$root/scripts/lib" && cp "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$root/scripts/lib/"
 
     seed_yaml "$root/queue/shogun_to_karo.yaml" $'commands:\n  - id: cmd_test\n    status: pending\n'
     seed_yaml "$root/queue/reports/ashigaru1_cmd_test_report.yaml" $'parent_cmd: cmd_test\nstatus: done\n'
@@ -104,6 +105,7 @@ seed_yaml() {
     root="$(mktemp -d "/tmp/e2e_slim_retention_XXXXXX")"
     build_tmp_project "$root"
     cp "$PROJECT_ROOT/scripts/slim_yaml.py" "$root/scripts/"
+    mkdir -p "$root/scripts/lib" && cp "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$root/scripts/lib/"
 
     seed_yaml "$root/queue/shogun_to_karo.yaml" $'commands:\n  - id: cmd_test\n    status: done\n'
     seed_yaml "$root/queue/reports/ashigaru1_cmd_test_report.yaml" $'parent_cmd: cmd_test\nstatus: done\n'
@@ -129,6 +131,7 @@ seed_yaml() {
     root="$(mktemp -d "/tmp/e2e_slim_retention_XXXXXX")"
     build_tmp_project "$root"
     cp "$PROJECT_ROOT/scripts/slim_yaml.py" "$root/scripts/"
+    mkdir -p "$root/scripts/lib" && cp "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$root/scripts/lib/"
 
     seed_yaml "$root/queue/shogun_to_karo.yaml" $'commands:\n  - id: cmd_test\n    status: done\n'
     seed_yaml "$root/queue/reports/ashigaru1_report.yaml" $'parent_cmd: cmd_done\nstatus: done\n'
