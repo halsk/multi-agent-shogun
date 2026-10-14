@@ -26,6 +26,7 @@ build_tmp_project() {
     local root="$1"
     mkdir -p "$root/scripts" "$root/queue"/{inbox,tasks,reports,archive,archive/reports,archive/tasks}
     cp "$PROJECT_ROOT/scripts/slim_yaml.py" "$root/scripts/"
+    mkdir -p "$root/scripts/lib" && cp "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$root/scripts/lib/"
 }
 
 run_slim_yaml() {

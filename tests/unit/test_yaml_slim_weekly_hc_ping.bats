@@ -190,6 +190,7 @@ MOCK_GS
   mkdir -p "$proj_copy/scripts" "$proj_copy/queue"/{inbox,tasks,reports,archive/tasks}
   cp "${PROJECT_ROOT}/scripts/slim_yaml.sh" "$proj_copy/scripts/"
   cp "${PROJECT_ROOT}/scripts/slim_yaml.py" "$proj_copy/scripts/"
+  mkdir -p "$proj_copy/scripts/lib" && cp "$PROJECT_ROOT/scripts/lib/atomic_write.py" "$proj_copy/scripts/lib/"
   cp "$job" "$proj_copy/scripts/yaml_slim_weekly.sh"
 
   printf 'commands: []\n' > "$proj_copy/queue/shogun_to_karo.yaml"
