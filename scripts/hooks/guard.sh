@@ -18,6 +18,28 @@ set -euo pipefail
 INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // ""')
 
+# ============================================================
+# P2: 台帳等の控え(軍師設計・ledger backup)
+# Edit/Writeのfile_path、またはBashコマンド文字列が台帳等の対象に触れる時、
+# 変更★前に scripts/snapshot.sh を呼ぶ(独立ローカルgitへ控える)。
+# 失敗・タイムアウトしてもツール実行は止めない(控えの失敗で家中を止めぬ)。
+# 対象: shogun_to_karo.yaml / dashboard.md / config/settings.yaml /
+#       queue/tasks/*.yaml / queue/inbox/*.yaml
+# ★検知は文字列一致のみ(間接経路は見えぬ)。定期launchd控えが本線・これは補助。
+# ============================================================
+_SNAP_TARGET_RE='(shogun_to_karo\.yaml|dashboard\.md|config/settings\.yaml|queue/tasks/[^[:space:]]*\.yaml|queue/inbox/[^[:space:]]*\.yaml)'
+_SNAP_PROBE="$(printf '%s' "$INPUT" | jq -r '[.tool_input.file_path // "", .tool_input.command // ""] | join("\n")' 2>/dev/null || true)"
+if [[ "$_SNAP_PROBE" =~ $_SNAP_TARGET_RE ]]; then
+  _SNAP_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd -P)/snapshot.sh"
+  if [[ -f "$_SNAP_SH" ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+      timeout 5 bash "$_SNAP_SH" >/dev/null 2>&1 || true
+    else
+      bash "$_SNAP_SH" >/dev/null 2>&1 || true
+    fi
+  fi
+fi
+
 if [[ -z "$COMMAND" ]]; then
   exit 0
 fi

@@ -1429,3 +1429,18 @@ console の進捗(commit / PR 状態変化 / console 関連 subtask の status �
 - Ashigaru report overdue → check pane status
 - Dashboard inconsistency → reconcile with YAML ground truth
 - Own context < 20% remaining → report to shogun via dashboard, prepare for /clear
+
+## 台帳復旧手順(定期控え・軍師設計P5・2026-10-14)
+
+台帳(queue/shogun_to_karo.yaml)はgitignore対象でgit履歴が無い。2026-10-13夜のデータ消失を受け、★別の独立ローカルgit(remote無し・非公開)へ10分ごと+台帳/dashboard/設定への操作の直前に控えを取る(scripts/snapshot.sh・置き場 ~/workspace/shogun-state-backup)。★本リポ(PUBLIC)のgitへ台帳を入れてはならぬ。壊れた状態もcommit messageの先頭に[BROKEN]を付けて履歴に残る。
+
+復旧の手順(家老/将軍が行う・上書きの前に必ず現物を確かめよ):
+
+1. 版を選ぶ: git -C ~/workspace/shogun-state-backup log --oneline -- queue/shogun_to_karo.yaml (先頭が[BROKEN]の版は避け、直前の健全な版を選ぶ)
+2. 一時ファイルへ書く: git -C ~/workspace/shogun-state-backup show REV:queue/shogun_to_karo.yaml > ./queue/shogun_to_karo.yaml.restore (REVは手順1で選んだ版。※控えの中のパスは queue/shogun_to_karo.yaml)
+3. 検証: python3 -c 'import yaml,sys; d=yaml.safe_load(open(sys.argv[1])); print(type(d))' ./queue/shogun_to_karo.yaml.restore がエラー無く読めること、かつ grep -c '^- id:' ./queue/shogun_to_karo.yaml.restore の件数が期待(現行台帳と比べ極端に少なくない)であること
+4. 入れ替え: python3 -c 'import os; os.replace("queue/shogun_to_karo.yaml.restore","queue/shogun_to_karo.yaml")' (os.replaceは原子的。cpやリダイレクトで直接上書きするな)
+5. 入れ替え後、もう一度手順3の検証を本番ファイルに対して行う。復旧した旨をdashboardへ記す。
+
+★台帳以外(dashboard.md・config/settings.yaml・queue/tasks・queue/inbox)も同じ控えにある。手順は同様(パスを読み替える)。
+★控え置き場の初期化は scripts/snapshot_init.sh(冪等)。launchd登録(scripts/com.swarm.ledger-snapshot.plist)は殿/将軍の裁可後に家老が行う。

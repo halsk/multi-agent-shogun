@@ -43,6 +43,11 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=commit.gpgsign
 export GIT_CONFIG_VALUE_0=false
 
+# P2(台帳控え): guard.shが対象ファイル名で呼ぶsnapshot.shが本物の控え置き場へ
+# 書かぬよう、本スクリプトの全呼出で隔離先へ向ける。
+export SNAPSHOT_DEST="$(mktemp -d "${TMPDIR:-/tmp}/test_hooks_snap.XXXXXX")"
+export SNAPSHOT_LOG="$SNAPSHOT_DEST/err.log"
+
 PASS=0
 FAIL=0
 
@@ -1817,6 +1822,10 @@ check "Hook12-G1 RED: gh api -X POST明示・[AI]無し(bodyフラグ無くと�
   'gh api -X POST repos/halsk/multi-agent-shogun/issues/1/comments'
 check "Hook12-G1 RED: gh api --input経由・[AI]は検証できぬためblock" block \
   'gh api repos/halsk/multi-agent-shogun/issues/1/comments --input payload.json'
+
+# P2(台帳控え): 対象ファイル名に触れるコマンドでもsnapshot.shの成否に関わらず止めない
+check "P2 GREEN: 台帳名を含むBashは控え取得を挟んでもallow" allow 'grep -c "^- id:" queue/shogun_to_karo.yaml'
+SNAPSHOT_DEST=/nonexistent/dir check "P2 GREEN: 控え置き場が不正でもallow(控えの失敗で家中を止めない)" allow 'cat dashboard.md'
 
 echo ""
 echo "================================"
