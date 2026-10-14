@@ -79,6 +79,16 @@ ncommits() { git -C "$SNAPSHOT_DEST" rev-list --count HEAD; }
     git -C "$SNAPSHOT_DEST" log -1 --format=%s | grep -q '^\[BROKEN\]'
 }
 
+@test "snapshot: PyYAMLが使えない環境でも0バイトは[BROKEN]・エラーログは空(縮退判定)" {
+    export SNAPSHOT_PYTHON=/usr/bin/false
+    bash "$SNAP"
+    git -C "$SNAPSHOT_DEST" log -1 --format=%s | grep -qv BROKEN
+    : > "$SNAPSHOT_SRC/queue/shogun_to_karo.yaml"
+    bash "$SNAP"
+    git -C "$SNAPSHOT_DEST" log -1 --format=%s | grep -q '^\[BROKEN\]'
+    [ ! -s "$SNAPSHOT_LOG" ]
+}
+
 @test "snapshot: DESTがgit repoでなくても異常終了せずエラーログへ記録する" {
     export SNAPSHOT_DEST="$T/nonexistent"
     run bash "$SNAP"

@@ -37,8 +37,11 @@ main() {
   fi
 
   # YAMLとして読めるか(0バイト=None も壊れ扱い)。壊れたものは名前を列挙
-  local broken
-  broken="$(cd "$SRC" && python3 -I - "${files[@]}" <<'PY' 2>>"$LOG"
+  # PyYAMLが無い環境(CIのsystem python等)では、空/コメントのみ=壊れとする縮退判定に落とす
+  local py="${SNAPSHOT_PYTHON:-python3}" broken=""
+  [[ -z "${SNAPSHOT_PYTHON:-}" && -x "$SELF_DIR/../.venv/bin/python3" ]] && py="$SELF_DIR/../.venv/bin/python3"
+  if "$py" -I -c 'import yaml' 2>/dev/null; then
+    broken="$(cd "$SRC" && "$py" -I - "${files[@]}" <<'PY' 2>>"$LOG"
 import sys, yaml
 L = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 for p in sys.argv[1:]:
@@ -53,6 +56,12 @@ for p in sys.argv[1:]:
         print(p)
 PY
 )" || { err "yaml check failed to run"; broken=""; }
+  else
+    for f in "${files[@]}"; do
+      [[ "$f" == *.yaml ]] || continue
+      grep -qvE '^[[:space:]]*(#.*)?$' "$SRC/$f" 2>/dev/null || broken+="$f"$'\n'
+    done
+  fi
 
   for f in "${files[@]}"; do
     { mkdir -p "$DEST/$(dirname "$f")" && cp -p "$SRC/$f" "$DEST/$f"; } || err "copy failed: $f"
