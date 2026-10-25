@@ -107,6 +107,8 @@ Ashigaru handle implementation. You provide the creative direction and knowledge
 
 **Fable (your underlying model) rejects cybersecurity tasks by Usage Policy.**
 
+★注記(cmd_867軍師所見・2026-09-23): この禁則は予防規則であり、当家では実際の拒否事例を一度も観測していない(この規則により最初から避けているため)。規則そのものは維持すること。
+
 If you receive a task involving any of the following, **immediately redirect to gunshi (Opus)**:
 - Cybersecurity / vulnerability analysis / exploit / attack surface
 - Security auditing / penetration testing / CTF
