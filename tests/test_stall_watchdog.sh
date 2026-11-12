@@ -311,7 +311,14 @@ echo "=== Section 3: --dry-run 統合テスト ==="
 echo ""
 
 # dry-run で実行 (inbox/ntfy を送らずに終了するか)
-DRY_RUN_OUTPUT=$(bash "$SCRIPT_DIR/scripts/stall_watchdog.sh" --dry-run 2>&1 || true)
+# cmd_967 D3: log()は端末でないstdoutへ出さずLOG_FILEへ直接追記する。
+# 実行前後のLOG_FILE増分を出力として読む(行数で切る・tailの窓切りはしない)。
+S3_LOG="$SCRIPT_DIR/logs/stall_watchdog.log"
+mkdir -p "$SCRIPT_DIR/logs"; touch "$S3_LOG"
+S3_BEFORE=$(wc -l < "$S3_LOG" | tr -d ' ')
+S3_STDOUT=$(bash "$SCRIPT_DIR/scripts/stall_watchdog.sh" --dry-run 2>&1 || true)
+DRY_RUN_OUTPUT="$S3_STDOUT
+$(tail -n +"$((S3_BEFORE + 1))" "$S3_LOG")"
 
 if echo "$DRY_RUN_OUTPUT" | grep -q '\[START\].*dry_run=true'; then
     assert_eq "3a: --dry-run フラグが機能する" "true" "true"
@@ -1194,6 +1201,96 @@ if [[ "$OUT18" != *"dry_run=true"* ]]; then
 else
     assert_eq "18c: lock保持中は見回り本体が走らない" "skipped" "ran"
 fi
+
+# ── Section 19: cmd_967 Defender負荷対策(D1/D2/D3) ─────────────────────────
+# 軍師設計 queue/reports/gunshi_report_cmd967_watchdog_design.yaml
+
+echo ""
+echo "=== Section 19: cmd_967 log二重化(D3)・state_get(D2)・ghレビュー上限(D1) ==="
+echo ""
+
+TMP19=$(mktemp -d)
+LOG_FILE_SAVED19="$LOG_FILE"
+
+# T1: launchd型(stdoutがLOG_FILEへ追記)でも1行だけ増える
+LOG_FILE="$TMP19/t1.log"; : > "$LOG_FILE"
+( log "probe1" ) >> "$LOG_FILE"
+assert_eq "19-T1: launchd型でlog1回→ファイル1行" "1" "$(grep -c probe1 "$LOG_FILE")"
+
+# T2: 端末でないstdoutには出さず、ファイルへは1行書く
+LOG_FILE="$TMP19/t2.log"; : > "$LOG_FILE"
+t2_out=$( ( log "probe2" ) | wc -l | tr -d ' ')
+assert_eq "19-T2a: log1回→ファイル1行" "1" "$(grep -c probe2 "$LOG_FILE")"
+assert_eq "19-T2b: 端末でないstdoutへは出さない" "0" "$t2_out"
+LOG_FILE="$LOG_FILE_SAVED19"
+
+# T3: state_getの値の読みが旧版(grep|head|sed|tr|tr)と一字も違わない
+_old_state_get() {
+    local f="$1/${2}.yaml" field="$3" default="${4:-}"
+    if [[ ! -f "$f" ]]; then echo "$default"; return; fi
+    grep -E "^${field}:" "$f" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '"' | tr -d "'" \
+        || echo "$default"
+}
+STATE_DIR_SAVED19="$STATE_DIR"
+STATE_DIR="$TMP19/state"; mkdir -p "$STATE_DIR"
+cat > "$STATE_DIR/ag.yaml" <<'EOF'
+a: 1
+b:
+c: "x y"
+d: 'q'
+e: 21|aa|bb
+f:   lead-space
+h: it's "mixed"
+EOF
+for k in a b c d e f g h; do
+    assert_eq "19-T3: state_get '$k' が旧版と一致" "$(_old_state_get "$STATE_DIR" ag "$k" DEF)" "$(state_get ag "$k" DEF)"
+done
+assert_eq "19-T3: キー無しはdefault" "DEF" "$(state_get ag g DEF)"
+assert_eq "19-T3: キーあり空値は空" "" "$(state_get ag b DEF)"
+assert_eq "19-T3: ファイル無しはdefault" "DEF" "$(state_get nofile a DEF)"
+# 試験が空でない証: 引用符を残す偽実装は旧版と一致しない
+_bad_state_get() { grep -E "^$2:" "$STATE_DIR/$1.yaml" | head -1 | sed "s/^$2:[[:space:]]*//"; }
+if [[ "$(_bad_state_get ag c)" != "$(_old_state_get "$STATE_DIR" ag c DEF)" ]]; then
+    assert_eq "19-T3: 偽実装は旧版と食い違う(試験が空でない)" "differs" "differs"
+else
+    assert_eq "19-T3: 偽実装は旧版と食い違う(試験が空でない)" "differs" "same"
+fi
+
+# T4/T5: ghレビュー確認の時間上限・最短見直し間隔・順繰り
+STATE_DIR="$TMP19/state2"; mkdir -p "$STATE_DIR"
+REVIEW_REPO_REGISTRY="own/repo"
+CALLS19="$TMP19/calls"; : > "$CALLS19"
+fetch_open_prs() { for i in 1 2 3 4 5; do echo "$i|https://example.com/pr/$i"; done; }
+detect_review_ball_holders_for_pr() { echo "$3" >> "$CALLS19"; sleep 1; echo ""; }
+detect_unreviewed_authored_pr_for_pr() { echo ""; }
+LOG_FILE="$TMP19/t4.log"; : > "$LOG_FILE"
+GH_REVIEW_BUDGET_SEC=2
+GH_REVIEW_MIN_INTERVAL_SEC=1800
+check_github_reviews >/dev/null 2>&1 || true
+r1=$(sort -u "$CALLS19" | wc -l | tr -d ' ')
+if [[ "$r1" -ge 1 && "$r1" -le 3 ]]; then
+    assert_eq "19-T4a: 1周目は上限で打ち切り(1〜3件)" "ok" "ok"
+else
+    assert_eq "19-T4a: 1周目は上限で打ち切り(1〜3件)" "1-3" "$r1"
+fi
+assert_eq "19-T4b: 上限到達がログに出る" "1" "$(grep -c 'GH-REVIEW-BUDGET' "$LOG_FILE" || true)"
+check_github_reviews >/dev/null 2>&1 || true
+check_github_reviews >/dev/null 2>&1 || true
+assert_eq "19-T4c: 3周目までに5件全部を見る" "5" "$(sort -u "$CALLS19" | wc -l | tr -d ' ')"
+assert_eq "19-T4d: 最短間隔内の再見直しは無い(重複呼出0)" "5" "$(wc -l < "$CALLS19" | tr -d ' ')"
+
+# T5: checked_atを31分前にしたPRだけが再び呼ばれる
+: > "$CALLS19"
+now19=$(date +%s)
+for i in 1 2 3 4 5; do state_set "ghrev__own__repo__$i" "checked_at" "$now19"; done
+state_set "ghrev__own__repo__3" "checked_at" "$(( now19 - 1860 ))"
+GH_REVIEW_BUDGET_SEC=60
+check_github_reviews >/dev/null 2>&1 || true
+assert_eq "19-T5: 最短間隔内は呼ばれず31分前のPRのみ呼ばれる" "3" "$(sort -u "$CALLS19" | tr '\n' ',' | sed 's/,$//')"
+
+STATE_DIR="$STATE_DIR_SAVED19"
+LOG_FILE="$LOG_FILE_SAVED19"
+rm -rf "$TMP19"
 
 echo ""
 echo "========================================"
