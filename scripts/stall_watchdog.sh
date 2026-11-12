@@ -304,7 +304,12 @@ log() {
     local ts
     ts=$(date '+%Y-%m-%dT%H:%M:%S')
     local msg="[$ts] $*"
-    echo "$msg" | tee -a "$LOG_FILE"
+    # cmd_967 D3: launchdのStandardOutPathもLOG_FILEと同じファイルのため、
+    # 旧tee方式は1行が2回書かれた。ファイルへ直接追記し、stdoutへは
+    # 端末の時だけ出す。return 0は[[ -t 1 ]]偽でset -eの呼び元を落とさぬため。
+    printf '%s\n' "$msg" >> "$LOG_FILE"
+    [[ -t 1 ]] && printf '%s\n' "$msg"
+    return 0
 }
 
 now_epoch() {
@@ -367,8 +372,21 @@ state_get() {
         echo "$default"
         return
     fi
-    grep -E "^${field}:" "$state_file" | head -1 | sed "s/^${field}:[[:space:]]*//" | tr -d '"' | tr -d "'" \
-        || echo "$default"
+    # cmd_967 D2: 旧版はgrep|head|sed|tr|trの5起動。bash組み込みのみで
+    # 同じ値を返す(キー無し=default・キーあり空値=空・引用符除去)。
+    # ★fieldは固定文字列比較(旧版の正規表現解釈とは、通常のキー名で一致)。
+    local line
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        if [[ "$line" == "${field}:"* ]]; then
+            line="${line#"${field}:"}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line//\"/}"
+            line="${line//\'/}"
+            printf '%s\n' "$line"
+            return 0
+        fi
+    done < "$state_file"
+    echo "$default"
 }
 
 # state ファイル書き込み (フィールド単体の upsert)
@@ -1380,50 +1398,41 @@ $entry
 # 差し戻し中/resolve待ちの手番(ball-holder)まで判定する。
 # dashboardは状態(件数|最古手番変更日時|内訳)が変化した時のみ追記する
 # (heartbeat/stale-errlogと同じ相乗り作法・毎tick重複追記を防ぐ)。
-check_unresolved_human_reviews() {
-    local owner_repo owner repo
-    while IFS= read -r owner_repo; do
-        [[ -z "$owner_repo" ]] && continue
-        owner="${owner_repo%%/*}"
-        repo="${owner_repo#*/}"
+_check_one_pr_unresolved() {
+    local owner_repo="$1" pr_number="$2" pr_url="$3"
+    local owner="${owner_repo%%/*}" repo="${owner_repo#*/}"
 
-        local pr_number pr_url
-        while IFS='|' read -r pr_number pr_url; do
-            [[ -z "$pr_number" ]] && continue
+    local result
+    result=$(detect_review_ball_holders_for_pr "$owner" "$repo" "$pr_number" "$pr_url" "$REVIEW_BOT_ALLOWLIST")
+    local state_key="review__${owner}__${repo}__${pr_number}"
 
-            local result
-            result=$(detect_review_ball_holders_for_pr "$owner" "$repo" "$pr_number" "$pr_url" "$REVIEW_BOT_ALLOWLIST")
-            local state_key="review__${owner}__${repo}__${pr_number}"
+    if [[ -z "$result" ]]; then
+        local was_notified
+        was_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ -n "$was_notified" ]]; then
+            log "[UNRESOLVED-REVIEW-RECOVERED] ${owner}/${repo}#${pr_number}: 解消 → state リセット"
+            state_set "$state_key" "notified_status" ""
+        fi
+        return 0
+    fi
 
-            if [[ -z "$result" ]]; then
-                local was_notified
-                was_notified=$(state_get "$state_key" "notified_status" "")
-                if [[ -n "$was_notified" ]]; then
-                    log "[UNRESOLVED-REVIEW-RECOVERED] ${owner}/${repo}#${pr_number}: 解消 → state リセット"
-                    state_set "$state_key" "notified_status" ""
-                fi
-                continue
-            fi
+    local count oldest breakdown problem_id
+    count=$(echo "$result" | cut -d'|' -f2)
+    oldest=$(echo "$result" | cut -d'|' -f3)
+    breakdown=$(echo "$result" | cut -d'|' -f4)
+    problem_id="${count}|${oldest}|${breakdown}"
 
-            local count oldest breakdown problem_id
-            count=$(echo "$result" | cut -d'|' -f2)
-            oldest=$(echo "$result" | cut -d'|' -f3)
-            breakdown=$(echo "$result" | cut -d'|' -f4)
-            problem_id="${count}|${oldest}|${breakdown}"
-
-            local already_notified
-            already_notified=$(state_get "$state_key" "notified_status" "")
-            if [[ "$already_notified" != "$problem_id" ]]; then
-                log "[UNRESOLVED-REVIEW] ${owner}/${repo}#${pr_number}: ${count}件(最古手番変更${oldest}・${breakdown})"
-                if ! $DRY_RUN; then
-                    notify_dashboard_unresolved_review "$pr_url" "$count" "$oldest" "$breakdown"
-                else
-                    log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unresolved-review)"
-                fi
-                state_set "$state_key" "notified_status" "$problem_id"
-            fi
-        done < <(fetch_open_prs "$owner_repo")
-    done <<< "$REVIEW_REPO_REGISTRY"
+    local already_notified
+    already_notified=$(state_get "$state_key" "notified_status" "")
+    if [[ "$already_notified" != "$problem_id" ]]; then
+        log "[UNRESOLVED-REVIEW] ${owner}/${repo}#${pr_number}: ${count}件(最古手番変更${oldest}・${breakdown})"
+        if ! $DRY_RUN; then
+            notify_dashboard_unresolved_review "$pr_url" "$count" "$oldest" "$breakdown"
+        else
+            log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unresolved-review)"
+        fi
+        state_set "$state_key" "notified_status" "$problem_id"
+    fi
 }
 
 # ── cmd_793拡張: 「我らが著者・レビュー0件のまま一定期間放置されたOPEN PR」検知 ──
@@ -1459,50 +1468,107 @@ $entry
 # レビュー0件・OPEN経過がUNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS営業日以上の
 # PRを検知する。dashboardは状態(created_at|elapsed_days)が変化した時のみ
 # 追記する(check_unresolved_human_reviewsと同じ相乗り作法)。
-check_unreviewed_authored_prs() {
-    local owner_repo owner repo
+_check_one_pr_unreviewed() {
+    local owner_repo="$1" pr_number="$2" pr_url="$3"
+    local owner="${owner_repo%%/*}" repo="${owner_repo#*/}"
+
+    local result
+    result=$(detect_unreviewed_authored_pr_for_pr "$owner" "$repo" "$pr_number" "$pr_url" \
+        "$UNREVIEWED_AUTHORED_PR_AUTHOR" "$UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS" "$REVIEW_BOT_ALLOWLIST")
+    local state_key="unreviewed_authored_pr__${owner}__${repo}__${pr_number}"
+
+    if [[ -z "$result" ]]; then
+        local was_notified
+        was_notified=$(state_get "$state_key" "notified_status" "")
+        if [[ -n "$was_notified" ]]; then
+            log "[UNREVIEWED-AUTHORED-PR-RECOVERED] ${owner}/${repo}#${pr_number}: 解消(レビュー付与/クローズ等) → state リセット"
+            state_set "$state_key" "notified_status" ""
+        fi
+        return 0
+    fi
+
+    local created_at elapsed_days problem_id
+    created_at=$(echo "$result" | cut -d'|' -f2)
+    elapsed_days=$(echo "$result" | cut -d'|' -f3)
+    problem_id="${created_at}|${elapsed_days}"
+
+    local already_notified
+    already_notified=$(state_get "$state_key" "notified_status" "")
+    if [[ "$already_notified" != "$problem_id" ]]; then
+        log "[UNREVIEWED-AUTHORED-PR] ${owner}/${repo}#${pr_number}: 著者=${UNREVIEWED_AUTHORED_PR_AUTHOR}・レビュー0件・経過約${elapsed_days}営業日(作成 ${created_at})"
+        if ! $DRY_RUN; then
+            notify_dashboard_unreviewed_authored_pr "$pr_url" "$created_at" "$elapsed_days"
+        else
+            log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unreviewed-authored-pr)"
+        fi
+        state_set "$state_key" "notified_status" "$problem_id"
+    fi
+}
+
+# ── cmd_967 D1: ghレビュー確認の時間上限つき順繰り ────────────────────────
+# 軍師設計(queue/reports/gunshi_report_cmd967_watchdog_design.yaml)。
+# 旧check_unresolved_human_reviews/check_unreviewed_authored_prsは周の約75%
+# (OPEN PR 21件×gh graphql・最悪時約450秒)を占めた。2つを1本にまとめ、
+#  - PR一覧(gh pr list)はリポごとにGH_REVIEW_MIN_INTERVAL_SEC間キャッシュ
+#  - 1周あたりGH_REVIEW_BUDGET_SEC秒で打ち切り、残りは次の周へ(古い順)
+#  - 各PRはGH_REVIEW_MIN_INTERVAL_SEC以内に見直さない
+# 通知先はdashboardのみ(ntfyは鳴らさぬ・cmd_795原則)ゆえ遅れても警報は壊れぬ。
+# 解消(RECOVERED)判定は各PRを見た時に従来どおり行う。
+: "${GH_REVIEW_BUDGET_SEC:=45}"
+: "${GH_REVIEW_MIN_INTERVAL_SEC:=1800}"
+
+# リポのOPEN PR一覧("number|url")をキャッシュ経由で返す。取得失敗時は旧キャッシュを使う。
+_ghrev_pr_list_cached() {
+    local owner_repo="$1"
+    local key="ghrev_list__${owner_repo//\//__}"
+    local cache="$STATE_DIR/${key}.txt"
+    local fetched_at now
+    fetched_at=$(state_get "$key" "fetched_at" 0)
+    now=$(now_epoch)
+    if [[ -f "$cache" ]] && (( now - fetched_at < GH_REVIEW_MIN_INTERVAL_SEC )); then
+        cat "$cache"
+        return 0
+    fi
+    local fresh
+    fresh=$(fetch_open_prs "$owner_repo" || true)
+    if [[ -n "$fresh" ]]; then
+        printf '%s\n' "$fresh" > "$cache"
+        state_set "$key" "fetched_at" "$now"
+        printf '%s\n' "$fresh"
+    elif [[ -f "$cache" ]]; then
+        cat "$cache"
+    fi
+    return 0
+}
+
+check_github_reviews() {
+    local started=$SECONDS owner_repo pr_number pr_url
+    local queue="" key last
     while IFS= read -r owner_repo; do
         [[ -z "$owner_repo" ]] && continue
-        owner="${owner_repo%%/*}"
-        repo="${owner_repo#*/}"
-
-        local pr_number pr_url
         while IFS='|' read -r pr_number pr_url; do
             [[ -z "$pr_number" ]] && continue
-
-            local result
-            result=$(detect_unreviewed_authored_pr_for_pr "$owner" "$repo" "$pr_number" "$pr_url" \
-                "$UNREVIEWED_AUTHORED_PR_AUTHOR" "$UNREVIEWED_AUTHORED_PR_THRESHOLD_DAYS" "$REVIEW_BOT_ALLOWLIST")
-            local state_key="unreviewed_authored_pr__${owner}__${repo}__${pr_number}"
-
-            if [[ -z "$result" ]]; then
-                local was_notified
-                was_notified=$(state_get "$state_key" "notified_status" "")
-                if [[ -n "$was_notified" ]]; then
-                    log "[UNREVIEWED-AUTHORED-PR-RECOVERED] ${owner}/${repo}#${pr_number}: 解消(レビュー付与/クローズ等) → state リセット"
-                    state_set "$state_key" "notified_status" ""
-                fi
-                continue
-            fi
-
-            local created_at elapsed_days problem_id
-            created_at=$(echo "$result" | cut -d'|' -f2)
-            elapsed_days=$(echo "$result" | cut -d'|' -f3)
-            problem_id="${created_at}|${elapsed_days}"
-
-            local already_notified
-            already_notified=$(state_get "$state_key" "notified_status" "")
-            if [[ "$already_notified" != "$problem_id" ]]; then
-                log "[UNREVIEWED-AUTHORED-PR] ${owner}/${repo}#${pr_number}: 著者=${UNREVIEWED_AUTHORED_PR_AUTHOR}・レビュー0件・経過約${elapsed_days}営業日(作成 ${created_at})"
-                if ! $DRY_RUN; then
-                    notify_dashboard_unreviewed_authored_pr "$pr_url" "$created_at" "$elapsed_days"
-                else
-                    log "[DRY-RUN] would notify dashboard for ${owner}/${repo}#${pr_number} (unreviewed-authored-pr)"
-                fi
-                state_set "$state_key" "notified_status" "$problem_id"
-            fi
-        done < <(fetch_open_prs "$owner_repo")
+            key="ghrev__${owner_repo//\//__}__${pr_number}"
+            last=$(state_get "$key" "checked_at" 0)
+            queue+="${last}|${owner_repo}|${pr_number}|${pr_url}"$'\n'
+        done < <(_ghrev_pr_list_cached "$owner_repo")
     done <<< "$REVIEW_REPO_REGISTRY"
+    [[ -z "$queue" ]] && return 0
+
+    local checked_at now
+    while IFS='|' read -r checked_at owner_repo pr_number pr_url; do
+        [[ -z "$pr_number" ]] && continue
+        if (( SECONDS - started >= GH_REVIEW_BUDGET_SEC )); then
+            log "[GH-REVIEW-BUDGET] 上限${GH_REVIEW_BUDGET_SEC}s到達 → 残りは次の周へ"
+            break
+        fi
+        now=$(now_epoch)
+        (( now - checked_at < GH_REVIEW_MIN_INTERVAL_SEC )) && continue
+        _check_one_pr_unresolved "$owner_repo" "$pr_number" "$pr_url"
+        _check_one_pr_unreviewed "$owner_repo" "$pr_number" "$pr_url"
+        state_set "ghrev__${owner_repo//\//__}__${pr_number}" "checked_at" "$now"
+    done < <(printf '%s' "$queue" | sort -t'|' -k1,1n -s)
+    return 0
 }
 
 # ── subtask_741_layer3_orphan_detection①相乗り: orphan test(実例④相当)検知 ──
@@ -2007,10 +2073,7 @@ check_ci_heartbeat
 check_stale_errlogs
 
 # cmd_789 相乗り: PR上の人間レビュアー(bot除く)による未解決の指摘の検知
-check_unresolved_human_reviews
-
-# cmd_793拡張: 我らが著者・レビュー0件のまま放置された上流PRの検知
-check_unreviewed_authored_prs
+check_github_reviews
 
 # subtask_741_layer3_orphan_detection①: orphan test(実例④相当)検知
 check_orphan_tests
