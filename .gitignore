@@ -83,6 +83,7 @@
 !lib/stall_detect.sh
 !lib/console_stall_detect.sh
 !lib/ledger_mismatch_detect.sh
+!lib/dashboard_insert.sh
 !lib/mgmt_bloat_thresholds.sh
 !lib/stall_watchdog_report.sh
 !lib/run_log.sh

@@ -29,6 +29,9 @@ source "$SCRIPT_DIR/lib/yaml_scalar.sh"
 # cmd_766 第一層: report done なのに台帳 cmd が pending/in_progress のまま
 # 残っている「done未遷移」を検知する(cmd_741 第二層watchdogへ相乗り・新機構は作らない)
 source "$SCRIPT_DIR/lib/ledger_mismatch_detect.sh"
+# shellcheck source=../lib/dashboard_insert.sh
+# cmd_974(B): dashboard追記のsed a\\が2048バイト超で落ちる欠陥の是正(awk挿入)
+source "$SCRIPT_DIR/lib/dashboard_insert.sh"
 # shellcheck source=../lib/heartbeat_detect.sh
 # cmd_767 第一層(心拍): 定期ジョブ(launchd等)がlast-run.jsonを書く共通規約
 # (lib/run_log.sh・halsk/automation scripts/lib/run-log.sh)に相乗りし、実行が
@@ -496,9 +499,7 @@ notify_dashboard_e4_limit() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -585,9 +586,7 @@ notify_dashboard() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -698,9 +697,7 @@ notify_dashboard_ledger_mismatch() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -757,9 +754,7 @@ notify_dashboard_blocked_reason_gap() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -838,9 +833,7 @@ notify_dashboard_three_way_mismatch() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -907,9 +900,7 @@ notify_dashboard_file_collision() {
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓)。一時ファイル経由へ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -951,9 +942,7 @@ notify_dashboard_undeclared_touches() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1025,9 +1014,7 @@ notify_dashboard_orphan_cmd() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1087,9 +1074,7 @@ notify_dashboard_heartbeat() {
         # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1271,9 +1256,7 @@ notify_dashboard_stale_errlog() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1385,9 +1368,7 @@ notify_dashboard_unresolved_review() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1456,9 +1437,7 @@ notify_dashboard_unreviewed_authored_pr() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1584,9 +1563,7 @@ notify_dashboard_orphan_test() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1633,9 +1610,7 @@ notify_dashboard_unconsumed_report() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1692,9 +1667,7 @@ notify_dashboard_lord_turn_stall() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
@@ -1822,9 +1795,7 @@ notify_dashboard_orphan_listener() {
     if [[ -n "$_dash_marker" ]]; then
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%s\n' "$entry" >> "$dashboard"
     fi
