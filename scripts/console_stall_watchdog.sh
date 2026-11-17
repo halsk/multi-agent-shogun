@@ -247,7 +247,7 @@ notify_dashboard() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"

@@ -496,7 +496,7 @@ notify_dashboard_e4_limit() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -583,7 +583,7 @@ notify_dashboard() {
     if [[ -n "$_dash_marker" ]]; then
         # 🚨要対応 直後の行に挿入
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -694,7 +694,7 @@ notify_dashboard_ledger_mismatch() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -751,7 +751,7 @@ notify_dashboard_blocked_reason_gap() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -830,7 +830,7 @@ notify_dashboard_three_way_mismatch() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -1011,7 +1011,7 @@ notify_dashboard_orphan_cmd() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
@@ -1071,7 +1071,7 @@ notify_dashboard_heartbeat() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
         dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"

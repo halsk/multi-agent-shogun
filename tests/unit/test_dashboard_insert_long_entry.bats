@@ -6,6 +6,8 @@
 #      「invalid command code」で落ちる(2026-10-17〜18 実害)
 #  (1) ledger_cmd_status() が "in_progress  # 注記" の注記まで返していた
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
   TMP_DIR="$(mktemp -d "$BATS_TMPDIR/dash_insert.XXXXXX")"
@@ -40,7 +42,7 @@ teardown() { rm -rf "$TMP_DIR" 2>/dev/null || true; }
 }
 
 @test "両scriptにsedのa\\\\挿入が残っていない(全17箇所を置換済み)" {
-  ! grep -n 'sed "${_dash_marker}a' "$PROJECT_ROOT/scripts/stall_watchdog.sh" "$PROJECT_ROOT/scripts/console_stall_watchdog.sh"
+  run ! grep -n 'sed "${_dash_marker}a' "$PROJECT_ROOT/scripts/stall_watchdog.sh" "$PROJECT_ROOT/scripts/console_stall_watchdog.sh"
 }
 
 @test "ledger_cmd_status: status行のインラインコメントを除いて返す" {
