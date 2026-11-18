@@ -25,6 +25,11 @@ ledger_cmd_status() {
         found && /^  status:/ {
             val = $0
             sub(/^  status:[[:space:]]*/, "", val)
+            # cmd_974(B): 引用符の外の「空白+#」以降はYAMLのインラインコメント。
+            # 切らないと数KBの注記がstatus値として返っていた(cmd_932・2026-10-17)
+            if (val ~ /^"[^"]*"/) { match(val, /^"[^"]*"/); val = substr(val, 1, RLENGTH) }
+            else if (val ~ /^'"'"'[^'"'"']*'"'"'/) { match(val, /^'"'"'[^'"'"']*'"'"'/); val = substr(val, 1, RLENGTH) }
+            else sub(/[[:space:]]+#.*$/, "", val)
             gsub(/["'"'"']/, "", val)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
             print val

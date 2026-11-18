@@ -28,6 +28,9 @@ source "$SCRIPT_DIR/lib/console_stall_detect.sh"
 # shellcheck source=../lib/yaml_scalar.sh
 # cmd_942派生: task YAMLのstatus抽出をinline commentを切る共通helperへ寄せる
 source "$SCRIPT_DIR/lib/yaml_scalar.sh"
+# shellcheck source=../lib/dashboard_insert.sh
+# cmd_974(B): sed a\\が2048バイト超で落ちる欠陥の是正(awk挿入)
+source "$SCRIPT_DIR/lib/dashboard_insert.sh"
 
 # ★テストが閾値等を書き換える際、実在の config/settings.yaml を直接
 # sed+mv するのではなく、この環境変数でテスト専用の一時ファイルへ差し替え
@@ -244,12 +247,10 @@ notify_dashboard() {
     _dash_marker=$([[ -f "$dashboard" ]] && grep -m1 -nE '^## .*要対応.*殿のご判断|^## .*🚨.*要対応' "$dashboard" | cut -d: -f1 || true)
     if [[ -n "$_dash_marker" ]]; then
         # sed -i ''(BSD専用書式)はGNU sedでは壊れる(cmd_766教訓・PR#71で
-        # ubuntu-latest実機再現済み)。一時ファイル経由のsed→mvへ。
+        # ubuntu-latest実機再現済み)。一時ファイル経由のawk挿入→mvへ。
         local _dash_tmp
         _dash_tmp=$(mktemp)
-        sed "${_dash_marker}a\\
-$entry
-" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
+        dashboard_insert_after_line "$_dash_marker" "$entry" "$dashboard" > "$_dash_tmp" && mv "$_dash_tmp" "$dashboard"
     else
         printf '\n%b\n' "$entry" >> "$dashboard"
     fi

@@ -281,6 +281,7 @@ cp "$SCRIPT_DIR/scripts/console_stall_watchdog.sh" "$TMPDIR_TEST12/scripts/conso
 cp "$SCRIPT_DIR/lib/console_stall_detect.sh" "$TMPDIR_TEST12/lib/console_stall_detect.sh"
 cp "$SCRIPT_DIR/lib/run_log.sh" "$TMPDIR_TEST12/lib/run_log.sh"
 cp "$SCRIPT_DIR/lib/yaml_scalar.sh" "$TMPDIR_TEST12/lib/yaml_scalar.sh"
+cp "$SCRIPT_DIR/lib/dashboard_insert.sh" "$TMPDIR_TEST12/lib/dashboard_insert.sh"
 
 cat > "$TMPDIR_TEST12/dashboard.md" <<'DASH'
 # dashboard
